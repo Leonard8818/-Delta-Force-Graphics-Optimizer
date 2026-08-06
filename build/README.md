@@ -1,7 +1,9 @@
 # DeltaForceBooster 分发与更新说明
 
 本目录负责两件事：**打 Windows 安装包**、**发布版本更新清单**（配合内置更新提醒）。
-全部只用系统自带组件（PowerShell + IExpress），不需要安装任何第三方工具。
+全部只用系统自带组件（PowerShell + .NET Framework csc），不需要安装任何第三方工具。
+v0.3 起弃用 IExpress：它的解压界面不可定制、安装位置只能硬编码，改为 csc 现场编译
+`setup-wizard.cs`（WPF 图形安装向导，官网同款三角洲视觉）。
 （macOS 不做：三角洲行动没有 macOS 版，本工具改的全是 Windows 注册表/电源计划/系统服务，Mac 上没有对应物。）
 
 ## 一、构建安装包
@@ -14,16 +16,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
 | 产物 | 用途 |
 |---|---|
-| `DeltaForceBooster-Setup-vX.Y.exe` | 双击安装：解包到 `%LOCALAPPDATA%\DeltaForceBooster`，开始菜单创建「三角洲行动优化助手」「卸载优化助手」两个快捷方式 |
-| `DeltaForceBooster-Portable-vX.Y.zip` | 绿色版：解压到任意目录，双击「启动优化工具.bat」即用 |
+| `DeltaForceBooster-Setup-vX.Y.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/自选安装位置/进度/完成四页，创建开始菜单「三角洲行动优化助手」「卸载优化助手」快捷方式 |
+| `DeltaForceBooster-Portable-vX.Y.zip` | 绿色版：解压到任意目录，双击「启动优化工具.exe」即用 |
 
 设计要点：
 
-- **安装不需要管理员**（只写用户目录）；程序**运行时**自己弹 UAC 提权（优化要改 HKLM/电源计划）。
-- 覆盖安装时 `profiles\` 里用户自存的方案**不会被覆盖**，`backup\`（系统还原凭据）完全不动。
-- 卸载时默认**保留 backup 目录**——那是撤销系统改动的唯一凭据；用户明确选「否」才全删。
-- 安装过程日志写在 `%TEMP%\dfb-install-log.txt`，装不上时先看它。
-- 环境变量 `DFB_INSTALL_SILENT=1` 可让安装/卸载全程不弹框（自动化测试用）。
+- **安装位置可自选**：默认 `%LOCALAPPDATA%\DeltaForceBooster`（写用户目录不需要管理员）；
+  「开始安装」前做**真实写入预检**，选了 Program Files 等受保护目录会明确提示并可一键
+  以管理员身份重启向导（`/dir=` 回传已选路径），不会默默失败。位置页显示所需/剩余空间。
+- 安装器清单是 asInvoker，程序**运行时**自己弹 UAC 提权（优化要改 HKLM/电源计划）。
+- 覆盖安装时 `profiles\`（自存方案）、`backup\`（系统还原凭据）、`config\`（运行状态）
+  里**已存在的文件一律不覆盖不删除**。
+- 卸载目标以 `uninstall.ps1` 自身所在目录为准（位置可自选后不能再假定 LOCALAPPDATA）；
+  默认**保留 backup 目录**——那是撤销系统改动的唯一凭据；用户明确选「否」才全删。
+- 自动化验证参数（普通用户双击即图形向导，无需了解）：
+  `/silent /dir=<路径> /log=<文件>` 静默安装；`/checkdir=<路径> /log=<文件>` 只跑权限
+  预检（退出码 0 可写 / 2 需管理员 / 3 无效）；`/render=<目录>` 离屏渲染各页为 PNG 并
+  导出界面字符串（验证视觉与中文编码）。静默安装读 `LOCALAPPDATA`/`APPDATA` 环境变量，
+  可重定向到沙箱。卸载脚本仍认 `DFB_INSTALL_SILENT=1`（不弹框、保留备份）。
 
 ## 二、两个必须知道的现实问题（别指望能绕过）
 
@@ -43,17 +53,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
 ## 三、维护者备忘（踩过的坑）
 
-- SED 里 `AppLaunched` 必须**直接写 `install.cmd`**。写成 `cmd /c install.cmd` 时
-  wextract 会静默跳过安装命令（本机 Win11 26200 实测复现，构建正常、运行退出码 0、
-  什么都没发生）。
-- 调 `iexpress.exe /N <sed>` 时**不要给路径手动加引号**，收到带引号路径会静默退回
-  向导界面把构建吊死。
-- 安装脚本里**不能用 `WScript.Shell` 创建快捷方式或弹窗**：它按系统 ANSI 代码页转
-  字符串，系统区域设置非中文（ACP=1252，本机就是）时中文全变 `?`，快捷方式直接
-  保存失败。快捷方式走 `IShellLinkW` COM 接口（原生 Unicode），弹窗走 WinForms
-  `MessageBox`。
-- SED 文件与 install.cmd 保持 ASCII 内容；中间产物放 `%TEMP%` 的 ASCII 路径构建，
-  成品再移回 build\（仓库路径含「桌面」，非中文代码页下 IExpress 处理不了）。
+- **不能用 `WScript.Shell` 创建快捷方式或弹窗**：它按系统 ANSI 代码页转字符串，
+  系统区域设置非中文（ACP=1252，本机就是）时中文全变 `?`，快捷方式直接保存失败。
+  快捷方式走 `IShellLinkW` COM 接口（原生 Unicode），弹窗走 WPF/WinForms `MessageBox`。
+- `setup-wizard.cs` 必须 **UTF-8 带 BOM** 保存，构建脚本编译时再加 `/codepage:65001`
+  双保险——csc 默认按当前代码页（1252）读源文件，中文字符串会在编译期被打碎。
+  编译产物的中文是否完好，用 `/render=` 导出的 `strings.txt` 与页面 PNG 实测核对。
+- csc 的默认应答文件（csc.rsp）已引用 `System.Windows.Forms.dll`，`/r:` 再给一遍
+  GAC 路径会报 CS1703 重复引用；WPF（PresentationFramework 等）与 System.IO.Compression
+  不在 Framework 目录里，要用 `LoadWithPartialName` 从 GAC 解析真实路径后传 `/r:`。
+- `卸载.bat` 里「运行 + exit」必须写在**同一行**：卸载会删掉 bat 自身，而 cmd 逐行
+  回读批处理文件，分行写会在删除后打出「找不到批处理文件」并返回退出码 1。
+- 构建脚本必须用 **Windows PowerShell 5.1** 跑（不能用 pwsh 7）：pwsh 7 解析出的
+  压缩程序集是 .NET Core 版路径，喂给 Framework csc 会炸；Compress-Archive 的
+  反斜杠条目分隔符行为也按 5.1 处理（安装器解包时两种分隔符都认）。
+- 中间产物放 `%TEMP%` 的 ASCII 路径构建，成品再移回 build\（仓库路径含「桌面」，
+  非中文代码页下命令行工具处理中文路径容易翻车）。
 
 ## 四、发布版本更新（配合内置更新提醒）
 
