@@ -1,6 +1,12 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.4
+  DeltaForceBooster 核心脚本 — v0.6
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
+  v0.6：移除「关闭引导虚拟化」（ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错）；
+        新增 MMCSS 游戏档位、关闭窗口化游戏优化（复合串只改目标子键）、VC++ 运行库体检、
+        内存 XMP 体检；检测类项目改为按 Check 字段分发，新增检测项不再需要改分发逻辑。
+  v0.5：Invoke-Apply 支持进度回调（不传则行为不变）；电源计划创建/激活逐步查退出码并
+        带回 powercfg 原始错误；工具自建方案改用专属名「三角洲优化 · 卓越性能」并记录
+        GUID 到 config\（防与用户自建方案混淆、防重复堆方案）；power-tuning 逐项容错。
   v0.4：新增 MPO/服务精简/休眠/MMCSS/显卡锁频/中断绑核/PCIe 体检/BCD/虚拟内存等 12 项，
         预设方案按「费利克斯Fx」调试路线重组（电源→优先级→中断→精简→驱动层）。
 
@@ -93,6 +99,24 @@ $script:GuidRx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 
 $script:UltimateGuid = 'e9a42b02-d5df-448d-aa00-03f14749eb61'
 
+# 工具自建方案的专属名：用户可能自建过任意名字的方案（实测有人的方案就叫「4060」），
+# 新建的方案必须一眼能认出来自本工具，避免与用户自己维护的方案混淆
+$script:ToolSchemeName = '三角洲优化 · 卓越性能'
+$script:ConfigDir = Join-Path $script:Root 'config'
+
+# 自建方案 GUID 记在 config\ 而不是 profiles\：profiles 下的 *.json 会被扫描成用户预设方案
+function Get-ToolSchemeGuid {
+  $f = Join-Path $script:ConfigDir 'power-scheme.json'
+  if (-not (Test-Path -LiteralPath $f)) { return $null }
+  try { (Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).Guid } catch { $null }
+}
+
+function Save-ToolSchemeGuid([string]$SchemeGuid) {
+  if (-not (Test-Path -LiteralPath $script:ConfigDir)) { New-Item -ItemType Directory -Path $script:ConfigDir | Out-Null }
+  @{ Guid = $SchemeGuid; Name = $script:ToolSchemeName; Created = (Get-Date).ToString('s') } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $script:ConfigDir 'power-scheme.json') -Encoding UTF8
+}
+
 # 方案名在注册表里是资源引用串 "@...powrprof.dll,-19,Ultimate Performance"，
 # 末段英文名与系统显示语言无关，取它比解析 powercfg 文本可靠
 function Get-SchemeDisplayName([string]$FriendlyName) {
@@ -124,19 +148,63 @@ function Get-PowerSchemes {
 
 function Get-ActiveScheme { Get-PowerSchemes | Where-Object Active | Select-Object -First 1 }
 
+# setactive 后必须回读 ActivePowerScheme 确认真切过去了：实机踩过「激活失败但被静默
+# 当成成功」的坑（模板方案不可激活），powercfg 的输出留在 $script:LastActivateOut 供报错用
+function Invoke-SchemeActivate([string]$SchemeGuid) {
+  $ErrorActionPreference = 'SilentlyContinue'
+  $out = & powercfg /setactive $SchemeGuid 2>&1
+  $script:LastActivateOut = ("$out").Trim()
+  if ($LASTEXITCODE -ne 0) { return $false }
+  $now = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme'
+  ("$now" -ieq $SchemeGuid)
+}
+
 function Enable-UltimateScheme {
-  # 多数 Win10/11 上卓越性能方案已存在（只是控制面板不显示），直接激活即可；
-  # 确实没有时才从模板复制一份，避免重复运行堆出一堆同名方案
-  $target = Get-PowerSchemes | Where-Object { $_.Guid -eq $script:UltimateGuid -or $_.Name -match '卓越|Ultimate' } |
-    Select-Object -First 1
-  if (-not $target) {
-    $out = powercfg -duplicatescheme $script:UltimateGuid
-    if ("$out" -match "($script:GuidRx)") {
-      $target = [pscustomobject]@{ Guid = $Matches[1] }
-    } else { throw "无法创建卓越性能电源计划：$out" }
+  # 实机结论（i5-12600KF / Win11 22631）：卓越性能 GUID e9a42b02 在多数非工作站版上只是
+  # 注册表里可见的「模板」，直接 setactive 会失败，必须 duplicatescheme 实例化后才能激活。
+  # 因此候选按「工具自建实例 → 名字匹配的其他实例 → 模板本身」排序逐个试激活（每次都
+  # 回读校验），全部失败才实例化新方案——保证反复执行复用现成方案、不堆积
+  $schemes = @(Get-PowerSchemes)
+  $cands = New-Object System.Collections.Generic.List[object]
+  $toolGuid = Get-ToolSchemeGuid
+  if ($toolGuid) {
+    $t = $schemes | Where-Object { $_.Guid -ieq $toolGuid } | Select-Object -First 1
+    if ($t) { [void]$cands.Add($t) }
   }
-  powercfg /setactive $target.Guid | Out-Null
-  $target.Guid
+  foreach ($s in $schemes) {
+    if ($s.Guid -ne $script:UltimateGuid -and $s.Name -match '卓越|Ultimate' -and
+        -not ($cands | Where-Object { $_.Guid -ieq $s.Guid })) { [void]$cands.Add($s) }
+  }
+  $tpl = $schemes | Where-Object { $_.Guid -eq $script:UltimateGuid } | Select-Object -First 1
+  if ($tpl) { [void]$cands.Add($tpl) }
+
+  # 同类方案堆了多个时提示用户可手动清理；绝不自动删除（可能正被用户使用）
+  $note = $null
+  $dup = @($schemes | Where-Object { $_.Guid -ne $script:UltimateGuid -and $_.Name -match '卓越|Ultimate' })
+  if ($dup.Count -gt 1) {
+    $note = "检测到 $($dup.Count) 个卓越性能类方案，多余的可在控制面板→电源选项里手动删除（本工具不会自动删）"
+  }
+
+  foreach ($c in $cands) {
+    if (Invoke-SchemeActivate $c.Guid) {
+      return [pscustomobject]@{ Guid = $c.Guid; Created = $false; Note = $note }
+    }
+  }
+
+  # 没有可直接激活的现成方案：从模板实例化，挂工具专属名（防与用户自建方案混淆），再激活
+  $ErrorActionPreference = 'SilentlyContinue'
+  $out = & powercfg -duplicatescheme $script:UltimateGuid 2>&1
+  if ($LASTEXITCODE -ne 0 -or "$out" -notmatch "($script:GuidRx)") {
+    throw "无法创建卓越性能电源计划（powercfg 原话：$(("$out").Trim())）"
+  }
+  $newGuid = $Matches[1]
+  $ren = & powercfg -changename $newGuid $script:ToolSchemeName '由 DeltaForceBooster 创建，还原优化后如不需要可手动删除' 2>&1
+  if ($LASTEXITCODE -ne 0) { Write-Warning "电源计划已创建但命名失败：$(("$ren").Trim())" }
+  Save-ToolSchemeGuid $newGuid
+  if (-not (Invoke-SchemeActivate $newGuid)) {
+    throw "新方案已创建但激活失败（powercfg 原话：$script:LastActivateOut）"
+  }
+  [pscustomobject]@{ Guid = $newGuid; Created = $true; Note = $note }
 }
 
 $script:PsRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings'
@@ -175,15 +243,17 @@ function Show-PowerSetting([string]$Sub, [string]$Setting) {
   if (-not (Test-PowerSettingHidden $Sub $Setting)) { return $null }
   $old = Get-RegValue "$script:PsRoot\$Sub\$Setting" 'Attributes'
   $ErrorActionPreference = 'SilentlyContinue'
-  & powercfg -attributes $Sub $Setting -ATTRIB_HIDE 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw '解除电源项隐藏失败（需要管理员权限）' }
+  $out = & powercfg -attributes $Sub $Setting -ATTRIB_HIDE 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "解除电源项隐藏失败$(if ("$out") { "（powercfg 原话：$(("$out").Trim())）" } else { '（需要管理员权限）' })" }
   $old
 }
 
 function Set-PowerSettingAc([string]$Sub, [string]$Setting, [int]$Value) {
   $ErrorActionPreference = 'SilentlyContinue'
-  & powercfg /setacvalueindex SCHEME_CURRENT $Sub $Setting $Value 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw '写入电源项失败' }
+  # 把 powercfg 的原话带进异常：曾有 12 代机器报「尝试写入不受支持的设置」，
+  # 只抛笼统的「写入失败」会让用户完全没法定位
+  $out = & powercfg /setacvalueindex SCHEME_CURRENT $Sub $Setting $Value 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "写入电源项失败$(if ("$out") { "（powercfg 原话：$(("$out").Trim())）" } else { '' })" }
   & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
 
@@ -349,6 +419,72 @@ function Get-GpuIrqOps($Hw) {
 
 # PCIe 链路体检（纯读取）。只看"最大能力"：空闲时当前速率降到 x8 1.1 是正常省电，
 # 上限本身只有 x8/x4 才说明插错槽/延长线劣质，这种问题白丢帧且没有软件能修
+# DirectXUserGlobalSettings 这类值是 "键=值;键=值;" 的复合串，多个功能共用一个注册表值。
+# 必须逐项解析、只替换目标键，整串覆盖会把别人的设置一起抹掉。
+function Get-KvStringItem([string]$Raw, [string]$Key) {
+  if (-not $Raw) { return $null }
+  foreach ($pair in ($Raw -split ';')) {
+    if ($pair -match "^\s*$([regex]::Escape($Key))\s*=\s*(.*?)\s*$") { return $Matches[1] }
+  }
+  $null
+}
+
+function Set-KvStringItem([string]$Raw, [string]$Key, [string]$Value) {
+  $parts = @()
+  $found = $false
+  foreach ($pair in (@($Raw -split ';') | Where-Object { $_.Trim() })) {
+    if ($pair -match "^\s*$([regex]::Escape($Key))\s*=") {
+      $parts += "$Key=$Value"; $found = $true
+    } else { $parts += $pair.Trim() }
+  }
+  if (-not $found) { $parts += "$Key=$Value" }
+  # 原值本来就以分号收尾，保持同样形态，免得其他读取方解析出空项
+  ($parts -join ';') + ';'
+}
+
+# VC++ 2015-2022(v14) 运行库错乱是 2026-07 游戏更新后的高发问题。只看 v14 系：
+# 更早的 2010/2012/2013 是各自独立的运行库，多版本共存本来就正常，不该报警。
+function Get-VcRedistStatus {
+  $keys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  $all = @(Get-ItemProperty $keys -ErrorAction SilentlyContinue |
+           Where-Object { $_.DisplayName -match 'Visual C\+\+' -and $_.DisplayVersion -match '^14\.' })
+  if ($all.Count -eq 0) {
+    return @{ Ok = $false; Text = '未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动，建议装一次' }
+  }
+  # 同一批运行库的 x64/x86 应当是同一个次版本；错开说明某次安装只覆盖了一半
+  $minors = @($all | ForEach-Object { if ($_.DisplayVersion -match '^(14\.\d+)') { $Matches[1] } } |
+              Select-Object -Unique | Sort-Object)
+  $verList = ($minors -join ' / ')
+  if ($minors.Count -gt 1) {
+    return @{ Ok = $false
+              Text = "检测到 v14 运行库版本不一致（$verList）—— 这正是掉帧/闪退的常见原因。建议到微软官网下载最新 VC++ 2015-2022 x64 与 x86 各装一遍覆盖修复" }
+  }
+  @{ Ok = $true; Text = "v14 运行库版本一致（$verList，共 $($all.Count) 个组件），正常" }
+}
+
+# 内存没开 XMP/EXPO 会跑在 JEDEC 保守频率上。SPD 里的 XMP 档位 WMI 读不到，
+# 所以只能保守判断：跑不满标称=明确没开；等于 JEDEC 基准频率=可疑，提示用户自己去 BIOS 确认。
+function Get-MemoryXmpStatus {
+  $mem = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+  if ($mem.Count -eq 0) { return @{ Ok = $null; Text = '无法读取内存信息' } }
+  $cur = ($mem | ForEach-Object { [int]$_.ConfiguredClockSpeed } | Measure-Object -Minimum).Minimum
+  $rated = ($mem | ForEach-Object { [int]$_.Speed } | Measure-Object -Minimum).Minimum
+  # SMBIOSMemoryType: 26=DDR4, 34=DDR5；JEDEC 基准最高频率据此区分
+  $type = ($mem | Select-Object -First 1).SMBIOSMemoryType
+  $ddr  = $(if ($type -eq 34) { 'DDR5' } elseif ($type -eq 26) { 'DDR4' } else { '内存' })
+  $jedecMax = $(if ($type -eq 34) { 5600 } else { 3200 })
+
+  if ($cur -le 0) { return @{ Ok = $null; Text = '无法读取内存运行频率' } }
+  if ($rated -gt 0 -and $cur -lt $rated) {
+    return @{ Ok = $false; Text = "$ddr 实际 $cur MHz 低于标称 $rated MHz —— XMP/EXPO 多半没开，去 BIOS 开启可白捡性能" }
+  }
+  if ($cur -le $jedecMax) {
+    return @{ Ok = $null; Text = "$ddr 运行在 $cur MHz（正好是 JEDEC 基准上限）—— 如果你的内存条标称更高，说明 XMP/EXPO 没开，值得去 BIOS 确认" }
+  }
+  @{ Ok = $true; Text = "$ddr 运行在 $cur MHz，已超过 JEDEC 基准，XMP/EXPO 已生效" }
+}
+
 function Get-PcieLinkStatus {
   if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
     return @{ Ok = $null; Text = '无法检测（无 nvidia-smi；A 卡/核显可用 GPU-Z 查看总线接口）' }
@@ -573,16 +709,40 @@ function Get-OptItems([string]$GamePath) {
                Ops  = (Get-GpuIrqOps $hw)
                Note = '把独显中断固定到编号最大的物理核（大小核机型按 EfficiencyClass 选最后一个 P 核），避开挤满系统中断的 CPU0，压低 DPC 延迟。读不到核拓扑时本项自动不可用（宁可不做不能做错）。重启生效，还原即删除策略。' }
 
+  # 与 sys-responsiveness 同属 MMCSS，是同一父键下的兄弟项：那个调后台保留比例，这个调游戏任务本身的档位
+  $mmTasks = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+  $items += @{ Id = 'mmcss-games'; Tier = 'safe'; Name = 'MMCSS 游戏任务档位拉满'; Admin = $true; Default = $true; Kind = 'multi'
+               Ops  = @(
+                 @{ Kind = 'reg'; Path = $mmTasks; Name = 'GPU Priority';        Value = 8;      Kind2 = 'DWord';  Label = 'GPU 优先级' }
+                 @{ Kind = 'reg'; Path = $mmTasks; Name = 'Priority';            Value = 6;      Kind2 = 'DWord';  Label = '任务优先级' }
+                 @{ Kind = 'reg'; Path = $mmTasks; Name = 'Scheduling Category'; Value = 'High'; Kind2 = 'String'; Label = '调度类别' }
+                 @{ Kind = 'reg'; Path = $mmTasks; Name = 'SFIO Priority';       Value = 'High'; Kind2 = 'String'; Label = '文件IO优先级' }
+               )
+               Note = '把系统给"游戏"这类多媒体任务的 GPU/IO 调度档位调到最高。收益微弱（不是博主说的立竿见影），但零副作用且可完整还原，属于体系补齐。' }
+
+  # DirectXUserGlobalSettings 是分号分隔的复合串（还含 AutoHDREnable 等），必须只改目标子键
+  $items += @{ Id = 'windowed-opt-off'; Tier = 'safe'; Name = '关闭「窗口化游戏优化」'; Admin = $false; Default = $false; Kind = 'multi'
+               Ops  = @(@{ Kind = 'kvstr'; Path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+                           Name = 'DirectXUserGlobalSettings'; Key = 'SwapEffectUpgradeEnable'; Value = '0'
+                           Label = '窗口化游戏优化' })
+               Note = '对应「设置→系统→显示→图形→默认图形设置」里的开关。微软说开启能降低窗口模式延迟，但社区普遍反馈它与叠加层/反作弊冲突时反而掉帧——两种说法都有人实测支持，所以默认不勾选，建议自己开关各测一次再定。' }
+
+  # 检测类项目：Check 字段指明检测函数，只读不写。新增检测项只要加一行 + 写个返回 @{Ok;Text} 的函数
   $items += @{ Id = 'pcie-check'; Tier = 'safe'; Name = 'PCIe 通道体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
+               Check = 'Get-PcieLinkStatus'
                Note = '读取独显 PCIe 链路的最大能力。上限只有 x8/x4 多半是插错插槽或用了劣质延长线，这种硬件问题白丢帧、软件修不了。空闲时当前速率自动降档属正常省电。' }
+
+  $items += @{ Id = 'vcredist-check'; Tier = 'safe'; Name = 'VC++ 运行库冲突体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
+               Check = 'Get-VcRedistStatus'
+               Note = '2026 年 7 月底游戏更新后的高发问题：VC++ 2015-2022(v14) 运行库版本错乱会让帧数从 300 掉到 100 甚至闪退。本项只检测不修——卸载重装运行库会波及其他软件，须你自己判断后手动处理。' }
+
+  $items += @{ Id = 'xmp-check'; Tier = 'safe'; Name = '内存 XMP/EXPO 体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
+               Check = 'Get-MemoryXmpStatus'
+               Note = '内存没开 XMP/EXPO 时会跑在 JEDEC 保守频率上，白白损失几十帧。BIOS 设置无法由软件修改，本项只负责把"你的内存在摸鱼"这件事告诉你。' }
 
   $items += @{ Id = 'dyntick-off'; Tier = 'safe'; Name = '禁用动态计时器（bcdedit）'; Admin = $true; Default = $false; Kind = 'multi'
                Ops  = @(@{ Kind = 'bcd'; Name = 'disabledynamictick'; Value = 'yes'; Label = '动态计时器' })
                Note = '恢复固定时钟中断，部分机器帧生成间隔更稳。副作用：空闲功耗略升、笔记本续航变差，默认不勾选。重启生效。' }
-
-  $items += @{ Id = 'hypervisor-off'; Tier = 'safe'; Name = '关闭引导虚拟化（影响 WSL/模拟器！）'; Admin = $true; Default = $false; Kind = 'multi'
-               Ops  = @(@{ Kind = 'bcd'; Name = 'hypervisorlaunchtype'; Value = 'Off'; Label = '引导虚拟化' })
-               Note = '关闭 Hyper-V 引导层，消除虚拟化的少量性能损耗。代价很大：WSL2、Hyper-V、安卓模拟器、内核隔离（内存完整性）等安全与虚拟化功能全部失效——用得到其中任何一个就别勾。必须手动勾选，重启生效。' }
 
   # 费利克斯公式：初始=内存GB×1024×1.5、最大=×2；他本人也只在闪退/卡死时才建议改
   $ramInt = $(if ($hw) { [int][math]::Round($hw.RamGB) } else { 0 })
@@ -637,23 +797,25 @@ function Get-BuiltinPresets {
       Id = 'felix'; Name = '费利克斯路线（主推全套）'; Builtin = $true
       Note = '按费利克斯Fx 的调试顺序全套执行：电源→优先级→中断绑核→系统精简→显卡层。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
       Items = @('power-ultimate','power-tuning','powerplan-lock',
-                'prio-separation','game-priority','sys-responsiveness','net-throttling-off','game-mode',
+                'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',
                 'dvr-off','wer-off','sysmain-off','wsearch-off','hibernate-off','mem-compress-off',
                 'paging-exec','transparency-off','mpo-off','dyntick-off','mouse-accel-off',
-                'hags','fso-off','gpu-pref','gpu-pstate-lock','nvidia-profile')
+                'hags','fso-off','gpu-pref','gpu-pstate-lock','nvidia-profile',
+                'pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
       Id = 'balanced'; Name = '均衡推荐'; Builtin = $true
-      Note = '收益明确、副作用小的一组，适合绝大多数人。不改桌面外观和鼠标手感，不禁用任何服务，不动休眠。'
+      Note = '收益明确、副作用小的一组，适合绝大多数人。不改桌面外观和鼠标手感，不禁用任何服务，不动休眠。顺带做三项硬件体检。'
       Items = @('power-ultimate','power-tuning','hags','game-mode','dvr-off','prio-separation',
                 'paging-exec','wer-off','transparency-off','mpo-off','net-throttling-off',
-                'sys-responsiveness','fso-off','gpu-pref','game-priority')
+                'sys-responsiveness','mmcss-games','fso-off','gpu-pref','game-priority',
+                'pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
       Id = 'safe-only'; Name = '保守（只改当前用户）'; Builtin = $true
       Note = '只动 HKCU 用户级设置，不碰系统全局、不需要重启。适合公司电脑或不想动系统的人。'
-      Items = @('game-mode','dvr-off','wer-off','transparency-off','fso-off','gpu-pref')
+      Items = @('game-mode','dvr-off','wer-off','transparency-off','fso-off','gpu-pref','windowed-opt-off')
     }
   )
 }
@@ -753,6 +915,11 @@ function Get-OpState($Op, $ItemId) {
       if ($null -eq $on) { return @{ Ok = $false; Text = "$($Op.Label)=读取失败" } }
       return @{ Ok = (-not $on); Text = "$($Op.Label)=$(if ($on) { '开启' } else { '已关闭' })" }
     }
+    'kvstr' {
+      $cur = Get-KvStringItem (Get-RegValue $Op.Path $Op.Name) $Op.Key
+      $shown = $(if ($null -eq $cur) { '(未设置)' } else { $cur })
+      return @{ Ok = ("$cur" -eq "$($Op.Value)"); Text = "$($Op.Label)=$shown" }
+    }
     default { return @{ Ok = $false; Text = '未知操作' } }
   }
 }
@@ -760,7 +927,12 @@ function Get-OpState($Op, $ItemId) {
 function Get-ItemState($Item) {
   if ($Item.Kind -eq 'power') {
     $act = Get-ActiveScheme
-    return @{ Optimized = [bool]($act -and $act.Name -match '卓越|Ultimate')
+    # 判定不能只靠显示名：工具自建的方案挂的是专属名，按 GUID（原生卓越/工具自建）优先，
+    # 名字匹配只作兜底——否则改名后会「明明成功了却永远显示待优化」
+    $toolGuid = Get-ToolSchemeGuid
+    return @{ Optimized = [bool]($act -and ($act.Guid -eq $script:UltimateGuid -or
+                                            ($toolGuid -and $act.Guid -eq $toolGuid) -or
+                                            $act.Name -match '卓越|Ultimate'))
               Current   = $(if ($act) { $act.Name } else { '未知' }) }
   }
   if ($Item.Kind -eq 'sched') {
@@ -769,7 +941,7 @@ function Get-ItemState($Item) {
   }
   if ($Item.Kind -eq 'npi') { return @{ Optimized = $null; Current = '无法读取驱动内状态' } }
   if ($Item.Kind -eq 'check') {
-    $st = Get-PcieLinkStatus
+    $st = & $Item.Check
     return @{ Optimized = $st.Ok; Current = $st.Text }
   }
   if (-not $Item.Ops) {
@@ -799,6 +971,8 @@ function Get-GpuGuideText([string]$Vendor) {
       '  4. 着色器缓存大小 = 无限制'
       '  5. 线程优化 = 开'
       '  6. 最大预渲染帧数 = 1'
+      '【重要】NVIDIA App → 设置 → 关闭「自动优化新添加的游戏及应用程序」'
+      '        它开着会自动覆写你游戏内的画质设置，等于白调。此开关无法脚本化，只能手动关。'
       '游戏内：开启 NVIDIA Reflex（开+加速）；帧数不够时开 DLSS（画质/平衡档）。'
       '进阶：NVIDIA App → 图形 → 三角洲行动 → DLSS 模型预设 → 选 Preset K；'
       '      或下载 NVIDIA Profile Inspector 放入本工具 tools\ 目录后一键导入。'
@@ -880,6 +1054,14 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       Set-MMAgentState $Op.Feature $false
       $BackupOps.Value += @{ Kind = 'mmagent'; Feature = $Op.Feature; OldEnabled = $old }
     }
+    'kvstr' {
+      # 整串备份、只改目标子键：这个值里还住着 AutoHDREnable 等别人的设置，整串覆盖会误伤
+      $oldKind = Get-RegValueKind $Op.Path $Op.Name
+      $oldRaw  = $(if ($null -ne $oldKind) { Get-RegValue $Op.Path $Op.Name } else { $null })
+      Set-RegValue $Op.Path $Op.Name (Set-KvStringItem $oldRaw $Op.Key $Op.Value) 'String'
+      $BackupOps.Value += @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
+                             Existed = ($null -ne $oldKind); OldValue = $oldRaw; OldKind = "$oldKind" }
+    }
     'hib' {
       $old = Get-HibernateState
       Set-HibernateEnabled $false
@@ -897,7 +1079,10 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
   $null
 }
 
-function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky) {
+# $Progress 为可选进度回调（不传时行为与旧版完全一致，CLI 与 SKILL.md 契约不受影响）：
+# 每项开始时以 Stage='start' 调用一次（带 Index/Total/Name），完成时以 Stage='done'
+# 再调一次（额外带该项的 Result），GUI 靠它做进度条与实时日志
+function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, [scriptblock]$Progress) {
   # powershell -File 不会把 "a,b" 解析成数组，整串会当成单个元素传进来，这里统一拆开
   $ItemIds = @($ItemIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   if (-not $GamePath) { $GamePath = Find-GamePath }
@@ -920,47 +1105,71 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky) 
   }
 
   $backupOps = @(); $results = @()
+  $total = $sel.Count; $seq = 0
   foreach ($it in $sel) {
+    $seq++
+    if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = $it.Name; Result = $null }) }
     try {
       if ($it.Kind -eq 'power') {
         $old = (Get-ActiveScheme).Guid
-        Enable-UltimateScheme | Out-Null
-        $backupOps += @{ Kind = 'power'; Old = $old }
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Msg = '已切换到卓越性能' }
+        $ps = Enable-UltimateScheme
+        # ToolCreated 进备份：还原逻辑据此区分「原本就存在的方案」与「本工具新建的方案」
+        $backupOps += @{ Kind = 'power'; Old = $old; ToolCreated = [bool]$ps.Created; NewGuid = $ps.Guid }
+        $msg = $(if ($ps.Created) { "已创建「$script:ToolSchemeName」并激活（还原后该方案会保留，可手动删除）" }
+                 else { '已切换到卓越性能方案' })
+        if ($ps.Note) { $msg += "；$($ps.Note)" }
+        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = $msg }
       }
       elseif ($it.Kind -eq 'sched') {
         $guid = (Get-ActiveScheme).Guid
         & schtasks /Create /TN $script:LockTask /TR "powercfg.exe /setactive $guid" /SC MINUTE /MO 1 /RU SYSTEM /RL HIGHEST /F 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw '计划任务创建失败' }
         $backupOps += @{ Kind = 'sched'; TaskName = $script:LockTask }
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Msg = '已锁定到当前电源计划（每分钟重设一次）' }
+        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已锁定到当前电源计划（每分钟重设一次）' }
       }
       elseif ($it.Kind -eq 'npi') {
         & $it.Npi -silentImport $it.Nip
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Msg = '已导入驱动配置档（此项不在自动备份内）' }
+        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已导入驱动配置档（此项不在自动备份内）' }
       }
       elseif ($it.Kind -eq 'check') {
         # 纯检测项：把检测结论当作执行结果输出，绝不写任何东西
-        $st = Get-PcieLinkStatus
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($st.Ok -ne $false); Msg = "纯检测：$($st.Text)" }
+        $st = & $it.Check
+        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($st.Ok -ne $false); Skipped = $false; Msg = "纯检测：$($st.Text)" }
       }
       else {
         if (-not $it.Ops) {
           $why = $(if ($it.RequiresGame) { '未找到游戏路径，已跳过；请用 -GamePath 指定游戏 exe' } else { '本机不满足此项前提，已跳过' })
-          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Msg = $why }
-          continue
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $true; Msg = $why }
         }
-        $notes = @()
-        foreach ($op in $it.Ops) {
-          $n = Invoke-ApplyOp $op $it.Id ([ref]$backupOps)
-          if ($n) { $notes += $n }
+        else {
+          # 逐操作容错：某个子操作写入失败（如 12 代大小核机器上个别电源项不受支持）
+          # 不再拖垮整项，其余子操作照常执行，失败的逐条记录进结果
+          $notes = @(); $errs = @()
+          foreach ($op in $it.Ops) {
+            try {
+              $n = Invoke-ApplyOp $op $it.Id ([ref]$backupOps)
+              if ($n) { $notes += $n }
+            } catch {
+              $opLabel = $(if ($op.Label) { $op.Label } elseif ($op.Name) { $op.Name } else { $op.Kind })
+              $errs += "$opLabel：$($_.Exception.Message)"
+            }
+          }
+          if ($errs.Count -eq 0) {
+            $msg = $(if ($notes.Count -gt 0) { "已写入（$($notes -join '；')）" } else { '已写入' })
+            $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = $msg }
+          } elseif ($errs.Count -lt @($it.Ops).Count) {
+            $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false
+                                           Msg = "部分子项写入失败（其余已写入）：$($errs -join '；')" }
+          } else {
+            $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false
+                                           Msg = "失败：$($errs -join '；')" }
+          }
         }
-        $msg = $(if ($notes.Count -gt 0) { "已写入（$($notes -join '；')）" } else { '已写入' })
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Msg = $msg }
       }
     } catch {
-      $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Msg = "失败：$($_.Exception.Message)" }
+      $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false; Msg = "失败：$($_.Exception.Message)" }
     }
+    if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = $it.Name; Result = $results[-1] }) }
   }
 
   $bf = $null
@@ -980,11 +1189,17 @@ function Invoke-Restore([string]$File) {
   if (-not $File) { throw '未找到任何备份文件，无法还原' }
   $b = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json
   $ops = @($b.Ops); [array]::Reverse($ops)
-  $restored = 0; $failed = @()
+  $restored = 0; $failed = @(); $restoreNotes = @()
   foreach ($op in $ops) {
     try {
       switch ($op.Kind) {
-        'power'   { if ($op.Old) { powercfg /setactive $op.Old | Out-Null; $restored++ } }
+        'power'   {
+          if ($op.Old) { powercfg /setactive $op.Old | Out-Null; $restored++ }
+          # 工具自建的方案保留不删：用户可能已经在用它，静默删除是破坏性动作
+          if ($op.ToolCreated) {
+            $restoreNotes += "工具创建的电源计划「$script:ToolSchemeName」已保留，如不需要可在控制面板→电源选项里手动删除"
+          }
+        }
         'pcfg'    { Set-PowerSettingAc $op.Sub $op.Setting ([int]$op.OldValue); $restored++ }
         'mmagent' { Set-MMAgentState $op.Feature ([bool]$op.OldEnabled); $restored++ }
         'sched'   { & schtasks /Delete /TN $op.TaskName /F 2>&1 | Out-Null; $restored++ }
@@ -1008,7 +1223,7 @@ function Invoke-Restore([string]$File) {
       }
     } catch { $failed += "$($op.Kind) $($op.Name)$($op.Label)：$($_.Exception.Message)" }
   }
-  [pscustomobject]@{ File = $File; RestoredOps = $restored; Failed = $failed }
+  [pscustomobject]@{ File = $File; RestoredOps = $restored; Failed = $failed; Notes = $restoreNotes }
 }
 
 # ---------- 输出 ----------
@@ -1095,7 +1310,11 @@ elseif ($Apply) {
   $r = Invoke-Apply $Items $GamePath ([bool]$Risky)
   if ($Json) { $r | ConvertTo-Json -Depth 5 }
   else {
-    foreach ($x in $r.Results) { Write-Output "  $(if ($x.Ok) { '[成功]' } else { '[跳过/失败]' }) $($x.Name) — $($x.Msg)" }
+    foreach ($x in $r.Results) { Write-Output "  $(if ($x.Ok) { '[成功]' } elseif ($x.Skipped) { '[跳过]' } else { '[失败]' }) $($x.Name) — $($x.Msg)" }
+    $okN = @($r.Results | Where-Object Ok).Count
+    $skipN = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped }).Count
+    $failN = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped }).Count
+    Write-Output "执行完成：共 $(@($r.Results).Count) 项 — $okN 成功、$failN 失败、$skipN 跳过。"
     if ($r.Backup) { Write-Output "备份已保存：$($r.Backup)（用 -Restore 可一键还原）" }
     Write-Output "提示：HAGS、电源计划等项重启后完全生效。"
   }
@@ -1106,5 +1325,6 @@ elseif ($Restore) {
   else {
     Write-Output "已按备份还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
     foreach ($f in $r.Failed) { Write-Output "  [还原失败] $f" }
+    foreach ($n in $r.Notes) { Write-Output "  [提示] $n" }
   }
 }

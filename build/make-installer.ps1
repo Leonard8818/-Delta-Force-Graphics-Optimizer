@@ -1,9 +1,12 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.1
+  DeltaForceBooster 安装包构建脚本 — v0.2
   只用系统自带组件（Compress-Archive + IExpress），零第三方依赖：
     build\DeltaForceBooster-Setup-vX.Y.exe   —— 双击安装：解包到 %LOCALAPPDATA%\DeltaForceBooster
                                                 并创建开始菜单快捷方式（含卸载入口）
-    build\DeltaForceBooster-Portable-vX.Y.zip —— 绿色版：解压即用，双击「启动优化工具.bat」
+    build\DeltaForceBooster-Portable-vX.Y.zip —— 绿色版：解压即用，双击「启动优化工具.exe」
+                                                （.bat 保留为后备入口）
+  v0.2：主入口从 .bat 换成 make-launcher.ps1 编译的 .exe（不闪黑框、自带 UAC 清单、
+        不受执行策略限制），快捷方式图标直接用 exe 自带图标。
 
   用法：powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
@@ -33,8 +36,15 @@ if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Path $stage, $pkg -Force | Out-Null
 
 # ---------- 1. 收集要分发的文件 ----------
-# backup\ 是本机改动记录、build\ 是构建目录，都不进包；profiles\ 里的预设随包分发
-$parts = @('启动优化工具.bat', 'README.md', 'SKILL.md', 'scripts', 'gui', 'tools', 'profiles')
+# exe 启动器是主入口，缺了先现场编译一份（只依赖系统自带 csc）
+$launcher = Join-Path $root '启动优化工具.exe'
+if (-not (Test-Path -LiteralPath $launcher)) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'make-launcher.ps1')
+  if (-not (Test-Path -LiteralPath $launcher)) { throw '启动器 exe 缺失且现场编译失败，先运行 build\make-launcher.ps1 排查' }
+}
+# backup\ 是本机改动记录、build\ 是构建目录、config\ 是运行期状态，都不进包；
+# profiles\ 里的预设随包分发；.bat 保留为后备入口
+$parts = @('启动优化工具.exe', '启动优化工具.bat', 'README.md', 'SKILL.md', 'scripts', 'gui', 'tools', 'profiles', 'data')
 foreach ($p in $parts) {
   $src = Join-Path $root $p
   if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $stage -Recurse }
@@ -54,7 +64,7 @@ $silent = ($env:DFB_INSTALL_SILENT -eq '1')
 $keep = $true
 if (-not $silent) {
   $r = [Windows.Forms.MessageBox]::Show(
-    "是否保留优化备份（backup 目录）？`n`n还没「撤离还原」过系统改动的话，请选「是」。",
+    "是否保留优化备份（backup 目录）？`n`n还没「还原设置」过系统改动的话，请选「是」。",
     'DeltaForceBooster 卸载', 'YesNo', 'Question')
   $keep = ($r -ne 'No')
 }
@@ -158,11 +168,18 @@ try {
   }
   Remove-Item $tmp -Recurse -Force
 
-  # 开始菜单快捷方式：主入口 + 卸载
+  # 开始菜单快捷方式：主入口 + 卸载。主入口优先指 exe（自带图标与 UAC 清单），
+  # 老包里没有 exe 时退回 bat，保证覆盖安装不炸
   if (-not (Test-Path $menuDir)) { New-Item -ItemType Directory -Path $menuDir | Out-Null }
-  [DfbShortcut]::Create((Join-Path $menuDir '三角洲行动优化助手.lnk'),
-    (Join-Path $dest '启动优化工具.bat'), $dest,
-    "$env:SystemRoot\System32\imageres.dll", 262, '三角洲行动 画面/帧率优化助手')
+  $mainTarget = Join-Path $dest '启动优化工具.exe'
+  if (Test-Path $mainTarget) {
+    [DfbShortcut]::Create((Join-Path $menuDir '三角洲行动优化助手.lnk'),
+      $mainTarget, $dest, $mainTarget, 0, '三角洲行动 画面/帧率优化助手')
+  } else {
+    [DfbShortcut]::Create((Join-Path $menuDir '三角洲行动优化助手.lnk'),
+      (Join-Path $dest '启动优化工具.bat'), $dest,
+      "$env:SystemRoot\System32\imageres.dll", 262, '三角洲行动 画面/帧率优化助手')
+  }
   [DfbShortcut]::Create((Join-Path $menuDir '卸载优化助手.lnk'),
     (Join-Path $dest '卸载.bat'), $dest,
     "$env:SystemRoot\System32\imageres.dll", 271, '卸载 DeltaForceBooster')

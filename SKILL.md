@@ -1,4 +1,4 @@
----
+﻿---
 name: delta-force-boost
 description: 三角洲行动（Delta Force）一键画面/帧率优化。检测用户电脑硬件与当前系统设置，经用户确认后批量应用 Windows 层帧率优化（电源计划、HAGS、游戏模式、关闭后台录制、禁用全屏优化、强制独显等），并给出对应显卡厂商的驱动设置清单。所有改动自动备份、支持一键还原。当用户提到"三角洲行动卡顿/掉帧/帧数低/画面优化/FPS 优化"时使用。
 ---
@@ -14,6 +14,8 @@ description: 三角洲行动（Delta Force）一键画面/帧率优化。检测�
 - Windows 10/11；脚本兼容自带的 Windows PowerShell 5.1，无需安装任何东西。
 - 部分优化项（电源计划、HAGS）需要**管理员权限**的 PowerShell。
 - 所有命令都在本技能所在目录执行（下文用 `<root>` 表示本文件所在文件夹）。
+- 调用脚本必须带 `-ExecutionPolicy Bypass`（下载解压的脚本带网络标记，部分机器默认
+  策略会拒绝未签名 .ps1）。普通用户的图形入口是根目录 `启动优化工具.exe`（bat 为后备）。
 
 ## 流程
 
@@ -35,12 +37,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 注意事项（如实告知用户）：
 - `visualfx-perf`（视觉效果最佳性能）会让桌面外观明显变朴素，默认不做；
 - `mouse-accel-off` 会改变鼠标手感，只推荐给愿意重新适应的 FPS 玩家；
-- `hypervisor-off`（关引导虚拟化）会让 WSL2/Hyper-V/安卓模拟器/内核隔离全部失效，
-  必须用户明确知情才可选；`pagefile-custom`（固定虚拟内存）只在闪退/爆内存时才建议；
+- `pagefile-custom`（固定虚拟内存）只在闪退/爆内存时才建议；
+- `windowed-opt-off`（关窗口化游戏优化）微软说开着能降延迟、社区说关掉才不掉帧，
+  两派都有实测支持，默认不勾选，建议让用户开关各测一次再定；
 - `wsearch-off` 会让系统搜索变慢，`hibernate-off` 会顺带关掉快速启动；
 - 笔记本用户切「卓越性能」电源计划会更耗电；
 - HAGS、MPO、服务禁用、bcdedit、中断绑核等项需要重启后完全生效；
-- `pcie-check` 是纯检测项，只读不写，报告链路异常时应引导用户检查插槽/延长线。
+- `pcie-check` / `vcredist-check` / `xmp-check` 是纯检测项，只读不写：分别报告 PCIe 链路
+  异常（引导查插槽/延长线）、VC++ v14 运行库版本错乱（引导手动重装，**不要代劳卸载**）、
+  内存未开 XMP/EXPO（引导进 BIOS，软件改不了）。
+- **不要建议关闭引导虚拟化**：ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错进不去，
+  该项已于 v0.6 移除。
 
 ### 第 3 步：应用（需用户同意；含系统级项时需管理员）
 
@@ -65,6 +72,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 - 权限不足时脚本会报错并列出需要管理员的项——此时用管理员身份重开终端再执行，
   或让用户以管理员运行。
 - 每次 Apply 自动把旧值备份到 `<root>\backup\backup-时间戳.json`。
+- 结果里每项带 `Ok` 与 `Skipped` 字段，末尾有「x 成功、y 失败、z 跳过」汇总；
+  失败消息内含 powercfg 等命令的原始报错，直接转述给用户即可。
+- **电源计划命名行为**：系统没有可直接激活的卓越性能方案时（e9a42b02 在多数版本上只是
+  不可激活的模板），脚本会实例化一份并命名为「三角洲优化 · 卓越性能」，GUID 记在
+  `<root>\config\power-scheme.json`，重复执行只复用不堆积。`-Restore` 会切回原方案但
+  **保留**该自建方案（输出的 Notes 字段里有说明，请一并念给用户）。
+- 优化后某项仍「未达标」时，让用户以管理员运行只读诊断并回传输出：
+  `powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\diagnose.ps1"`。
 
 ### 第 4 步：显卡驱动部分（手动，念给用户听）
 
@@ -93,7 +108,7 @@ risky 档必须同时用 `-Items` 点名并加 `-Risky` 才会执行（当前版
 
 | Id | 作用 | 默认 | 管理员 |
 |---|---|---|---|
-| power-ultimate | 电源计划切到卓越性能 | 是 | 需要 |
+| power-ultimate | 电源计划切到卓越性能（无可激活方案时自建「三角洲优化 · 卓越性能」并激活，激活后回读校验） | 是 | 需要 |
 | power-tuning | 电源计划隐藏项调优：USB3 链路省电关闭、性能时间检查间隔 5000ms、大小核调度强制高性能核、关电源节流 | 是 | 需要 |
 | powerplan-lock | 建计划任务锁定电源计划，防游戏篡改 | 否 | 需要 |
 | hags | 开启硬件加速 GPU 计划 | 是 | 需要 |
@@ -119,7 +134,10 @@ risky 档必须同时用 `-Items` 点名并加 `-Risky` 才会执行（当前版
 | gpu-irq-affinity | 显卡中断绑核（DevicePolicy=4 + KAFFINITY 掩码，绑最后一个 P 核） | 否 | 需要 |
 | pcie-check | PCIe 链路体检（纯检测，nvidia-smi 读上限） | 否 | 否 |
 | dyntick-off | 禁用动态计时器（bcdedit disabledynamictick yes） | 否 | 需要 |
-| hypervisor-off | 关闭引导虚拟化（bcdedit，WSL/模拟器会失效！） | 否 | 需要 |
+| mmcss-games | MMCSS 游戏任务档位拉满（GPU/IO 调度，收益微弱但零副作用） | 是 | 需要 |
+| windowed-opt-off | 关闭「窗口化游戏优化」（复合串只改目标子键） | 否 | 否 |
+| vcredist-check | VC++ v14 运行库冲突体检（纯检测） | 否 | 否 |
+| xmp-check | 内存 XMP/EXPO 体检（纯检测） | 否 | 否 |
 | pagefile-custom | 虚拟内存固定（初始=内存×1.5、最大=×2，仅闪退时用） | 否 | 需要 |
 | nvidia-profile | 导入 N 卡配置档（需 tools\ 就位） | 否 | 需要 |
 

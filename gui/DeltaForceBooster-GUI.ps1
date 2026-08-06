@@ -1,11 +1,15 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.6
+  DeltaForceBooster 图形界面 — v0.7
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
     近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
     等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
     + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
-  双击根目录「启动优化工具.bat」运行；本文件点源加载 scripts\delta-booster.ps1 作为引擎，
-  scripts\updater.ps1 作为更新检查模块（异步、静默失败、绝不自动下载）。
+  v0.7：文案从军事黑话改回平实功能名；新增「优化 / 主播设置参考」标签页（参考数据来自
+        data\streamer-settings.json，纯展示不可应用）；执行优化改为逐项进度条 + 实时日志
+        + 完成度汇总，执行期间按钮全部禁用。
+  双击根目录「启动优化工具.exe」（或后备的 .bat）运行；本文件点源加载
+  scripts\delta-booster.ps1 作为引擎，scripts\updater.ps1 作为更新检查模块
+  （异步、静默失败、绝不自动下载）。
 #>
 #requires -Version 5.1
 
@@ -18,11 +22,12 @@ if (-not $isAdmin) {
 }
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\delta-booster.ps1')
+$script:RootDir = Split-Path -Parent $PSScriptRoot
+. (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.6'
-$script:UpdaterPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\updater.ps1'
+$script:GuiVersion = '0.7'
+$script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
 
@@ -31,7 +36,7 @@ Add-Type -AssemblyName PresentationFramework
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="三角洲行动 · 画面优化助手" Width="780" Height="830"
+        Title="三角洲行动 · 画面优化助手" Width="780" Height="860"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
         BorderBrush="#FF1B2E28" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
@@ -221,6 +226,34 @@ $xaml = @'
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
+    <!-- 标签页按钮：官网标签页手法——选中项绿色文字 + 底部绿色下划线，未选中灰色。
+         不用 WPF TabControl：其默认模板白底黑字，整套重模板不如自绘两个按钮可控 -->
+    <Style x:Key="TabBtn" TargetType="Button">
+      <Setter Property="Foreground" Value="{StaticResource TextSec}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Grid Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="16,9,16,11"/>
+              <Border x:Name="UL" Height="2" Background="{StaticResource Green}" VerticalAlignment="Bottom"
+                      Margin="12,0" Visibility="Collapsed"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="Tag" Value="on">
+                <Setter TargetName="UL" Property="Visibility" Value="Visible"/>
+                <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                <Setter Property="FontWeight" Value="Bold"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource Green}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- 侧边刻度尺装饰：官网页面两侧贯穿整屏的细刻度 + 等宽小数字 -->
     <Style x:Key="RulerNum" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="Consolas"/>
@@ -354,6 +387,7 @@ $xaml = @'
   <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
@@ -372,10 +406,10 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.6 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.7 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
-        <!-- 等宽技术标注块：官网左上角 DELTA FORCE / S.T.I SQUAD 手法 -->
-        <TextBlock Text="S.T.I // SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
+        <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
+        <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,84,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="MinBtn" Content="—" Style="{StaticResource WinBtn}"/>
@@ -384,7 +418,16 @@ $xaml = @'
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1">
+    <!-- 标签页导航：优化 / 主播设置参考 -->
+    <Border Grid.Row="1" Background="{StaticResource TopBar}" BorderBrush="{StaticResource Line}"
+            BorderThickness="0,0,0,1">
+      <StackPanel Orientation="Horizontal" Margin="15,0,0,0">
+        <Button x:Name="TabOptBtn" Content="优化" Style="{StaticResource TabBtn}" Tag="on"/>
+        <Button x:Name="TabRefBtn" Content="主播设置参考" Style="{StaticResource TabBtn}" Tag=""/>
+      </StackPanel>
+    </Border>
+
+    <Grid Grid.Row="2" x:Name="OptPage">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="*"/>
@@ -449,13 +492,13 @@ $xaml = @'
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
-              <TextBlock Text="作战单元" Style="{StaticResource HeadCn}"/>
-              <TextBlock Text="SYSTEM LOADOUT" Style="{StaticResource HeadEn}"/>
+              <TextBlock Text="系统信息" Style="{StaticResource HeadCn}"/>
+              <TextBlock Text="SYSTEM INFO" Style="{StaticResource HeadEn}"/>
               <Border Style="{StaticResource HeadBar}"/>
             </StackPanel>
             <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
                     VerticalAlignment="Bottom" Margin="12,0,12,4"/>
-            <TextBlock Grid.Column="2" x:Name="ScanState" Text="侦察中…" Style="{StaticResource Mono}"
+            <TextBlock Grid.Column="2" x:Name="ScanState" Text="检测中…" Style="{StaticResource Mono}"
                        Foreground="{StaticResource Green}" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
           </Grid>
 
@@ -482,8 +525,8 @@ $xaml = @'
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
-              <TextBlock Text="作战指令" Style="{StaticResource HeadCn}"/>
-              <TextBlock Text="OPTIMIZE ORDERS" Style="{StaticResource HeadEn}"/>
+              <TextBlock Text="优化项" Style="{StaticResource HeadCn}"/>
+              <TextBlock Text="OPTIMIZATION ITEMS" Style="{StaticResource HeadEn}"/>
               <Border Style="{StaticResource HeadBar}"/>
             </StackPanel>
             <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
@@ -536,7 +579,7 @@ $xaml = @'
             <Border Style="{StaticResource Dash}"/>
             <Border Style="{StaticResource Dash}"/>
             <Border Style="{StaticResource Dash}"/>
-            <TextBlock Text="战 术 优 化 · 改 前 备 份 · 一 键 还 原" Foreground="{StaticResource TextMut}"
+            <TextBlock Text="系 统 优 化 · 改 前 备 份 · 一 键 还 原" Foreground="{StaticResource TextMut}"
                        FontSize="10" Margin="10,0" VerticalAlignment="Center"/>
             <Border Style="{StaticResource Dash}"/>
             <Border Style="{StaticResource Dash}"/>
@@ -547,30 +590,52 @@ $xaml = @'
       </ScrollViewer>
     </Grid>
 
-    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="29,6,29,8">
-      <!-- 主 CTA：绿色实底 + 深色字 + 左侧图标（官网下载按钮三要素） -->
-      <Button x:Name="ApplyBtn" Style="{StaticResource Primary}" Width="230">
-        <StackPanel Orientation="Horizontal">
-          <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF04241B"
-                Width="18" Height="15" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
-          <TextBlock Text="执行优化" VerticalAlignment="Center"/>
-        </StackPanel>
-      </Button>
-      <Button x:Name="RestoreBtn" Content="撤离还原" Style="{StaticResource Ghost}" Width="130" Margin="9,0,0,0"/>
-      <Button x:Name="RefreshBtn" Content="重新侦察" Style="{StaticResource Ghost}" Width="115" Margin="9,0,0,0"/>
-      <Button x:Name="GuideBtn" Content="显卡指引" Style="{StaticResource Ghost}" Width="115" Margin="9,0,0,0"/>
+    <!-- 主播设置参考页：纯展示（内容由代码按 data\streamer-settings.json 构建） -->
+    <Grid Grid.Row="2" x:Name="RefPage" Visibility="Collapsed">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="21,10">
+        <StackPanel x:Name="RefPanel"/>
+      </ScrollViewer>
+    </Grid>
+
+    <StackPanel Grid.Row="3" x:Name="ActionRow" Margin="29,6,29,8">
+      <StackPanel Orientation="Horizontal">
+        <!-- 主 CTA：绿色实底 + 深色字 + 左侧图标（官网下载按钮三要素） -->
+        <Button x:Name="ApplyBtn" Style="{StaticResource Primary}" Width="230">
+          <StackPanel Orientation="Horizontal">
+            <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF04241B"
+                  Width="18" Height="15" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
+            <TextBlock Text="执行优化" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
+        <Button x:Name="RestoreBtn" Content="还原设置" Style="{StaticResource Ghost}" Width="130" Margin="9,0,0,0"/>
+        <Button x:Name="RefreshBtn" Content="重新检测" Style="{StaticResource Ghost}" Width="115" Margin="9,0,0,0"/>
+        <Button x:Name="GuideBtn" Content="显卡指引" Style="{StaticResource Ghost}" Width="115" Margin="9,0,0,0"/>
+      </StackPanel>
+      <!-- 执行进度：进度条 + 当前项 + n/m 计数；只在执行期间和结束后可见 -->
+      <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Margin="0,9,0,0">
+        <Border x:Name="ProgTrack" Height="6" Background="{StaticResource PanelDeep}"
+                BorderBrush="{StaticResource Line}" BorderThickness="1">
+          <Border x:Name="ProgFill" Background="{StaticResource Green}" HorizontalAlignment="Left" Width="0"/>
+        </Border>
+        <Grid Margin="0,5,0,0">
+          <TextBlock x:Name="ProgText" Style="{StaticResource Mono}" Foreground="{StaticResource TextSec}"
+                     Text="" TextTrimming="CharacterEllipsis" HorizontalAlignment="Left" Margin="0,0,120,0"/>
+          <TextBlock x:Name="ProgCount" Style="{StaticResource Mono}" Foreground="{StaticResource Green}"
+                     Text="" HorizontalAlignment="Right"/>
+        </Grid>
+      </StackPanel>
     </StackPanel>
 
-    <StackPanel Grid.Row="3" Margin="29,0,29,6">
+    <StackPanel Grid.Row="4" x:Name="LogRow" Margin="29,0,29,6">
       <Grid Margin="0,0,0,5">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal">
-          <TextBlock Text="作战日志" Foreground="{StaticResource TextPri}" FontSize="12"
+          <TextBlock Text="运行日志" Foreground="{StaticResource TextPri}" FontSize="12"
                      FontWeight="Bold" VerticalAlignment="Center"/>
-          <TextBlock Text="COMBAT LOG" Style="{StaticResource Mono}" FontSize="8" Margin="8,2,0,0"/>
+          <TextBlock Text="RUN LOG" Style="{StaticResource Mono}" FontSize="8" Margin="8,2,0,0"/>
         </StackPanel>
         <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
                 VerticalAlignment="Center" Margin="12,0,0,0"/>
@@ -583,7 +648,7 @@ $xaml = @'
     </StackPanel>
 
     <!-- 页脚 HUD 线：等宽小字 + 金色短段 + 空心小方块 -->
-    <Grid Grid.Row="4" Margin="29,0,29,9" VerticalAlignment="Center">
+    <Grid Grid.Row="5" Margin="29,0,29,9" VerticalAlignment="Center">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
@@ -595,7 +660,7 @@ $xaml = @'
       <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
-      <TextBlock Grid.Column="4" Text="[ V0.6 ] 改动前自动备份 · 可一键撤离还原" Style="{StaticResource Mono}" FontSize="9"/>
+      <TextBlock Grid.Column="4" Text="[ V0.7 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
     </Grid>
   </Grid>
 </Window>
@@ -605,7 +670,9 @@ $window = [Windows.Markup.XamlReader]::Parse($xaml)
 $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','LogBox',
-               'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote') {
+               'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
+               'TabOptBtn','TabRefBtn','OptPage','RefPage','RefPanel','ActionRow','LogRow',
+               'ProgressPanel','ProgTrack','ProgFill','ProgText','ProgCount') {
   $ui[$n] = $window.FindName($n)
 }
 
@@ -757,6 +824,240 @@ function Write-Log([string]$Msg) {
   $ui.LogBox.ScrollToEnd()
 }
 
+# ---------- 主播设置参考页（纯展示，数据来自 data\streamer-settings.json） ----------
+
+$script:DataFile = Join-Path $script:RootDir 'data\streamer-settings.json'
+
+function New-WrapText([string]$Content, [string]$Color, [int]$Size) {
+  $t = New-Text $Content $Color $Size
+  $t.TextWrapping = 'Wrap'
+  $t
+}
+
+function New-RefCell([Windows.Controls.Grid]$Table, [int]$Row, [int]$Col, $Child, [bool]$Header) {
+  $b = New-Object Windows.Controls.Border
+  $b.BorderBrush = New-Brush $script:C.LineSoft
+  $b.BorderThickness = New-Object Windows.Thickness 0, 0, 1, 1
+  $b.Padding = New-Object Windows.Thickness 10, 5, 10, 5
+  if ($Header) { $b.Background = New-Brush '#FF0B1713' }
+  $b.Child = $Child
+  [Windows.Controls.Grid]::SetRow($b, $Row)
+  [Windows.Controls.Grid]::SetColumn($b, $Col)
+  $Table.Children.Add($b) | Out-Null
+}
+
+function Add-RefNotice([string]$Title, [string]$Detail) {
+  # 数据缺失/损坏时的降级提示：本页是参考内容，任何情况下都不该抛错打断界面
+  $b = New-Object Windows.Controls.Border
+  $b.Background = New-Brush $script:C.Panel
+  $b.BorderBrush = New-Brush $script:C.Line
+  $b.BorderThickness = New-Object Windows.Thickness 1
+  $b.Padding = New-Object Windows.Thickness 16, 14, 16, 14
+  $b.Margin = New-Object Windows.Thickness 0, 8, 0, 0
+  $sp = New-Object Windows.Controls.StackPanel
+  $t = New-Text $Title $script:C.TextPri 13
+  $t.FontWeight = 'Bold'
+  $sp.Children.Add($t) | Out-Null
+  $d = New-WrapText $Detail $script:C.TextSec 11
+  $d.Margin = New-Object Windows.Thickness 0, 6, 0, 0
+  $sp.Children.Add($d) | Out-Null
+  $b.Child = $sp
+  $ui.RefPanel.Children.Add($b) | Out-Null
+}
+
+function Update-StreamerPage {
+  $ui.RefPanel.Children.Clear()
+
+  # 免责声明放最上面：必须让用户第一眼知道这页只是参考、工具改不了游戏内设置
+  $warn = New-Object Windows.Controls.Border
+  $warn.Background = New-Brush '#FF2A2008'
+  $warn.BorderBrush = New-Brush $script:C.Gold
+  $warn.BorderThickness = New-Object Windows.Thickness 1
+  $warn.Padding = New-Object Windows.Thickness 12, 8, 12, 8
+  $wsp = New-Object Windows.Controls.StackPanel
+  $wt = New-Text '仅供参考 · 本工具不会也无法修改游戏内设置' $script:C.Gold 12
+  $wt.FontWeight = 'Bold'
+  $wsp.Children.Add($wt) | Out-Null
+  $wd = New-WrapText '下表是头部主播公开的游戏内画质设置记录，请进入游戏后在「设置 → 画面」里手动对照调整。主播设置随游戏版本和硬件不同而变化，不保证适合你的机器。' $script:C.TextSec 11
+  $wd.Margin = New-Object Windows.Thickness 0, 4, 0, 0
+  $wsp.Children.Add($wd) | Out-Null
+  $warn.Child = $wsp
+  $ui.RefPanel.Children.Add($warn) | Out-Null
+
+  if (-not (Test-Path -LiteralPath $script:DataFile)) {
+    Add-RefNotice '数据尚未就绪' '主播画面设置数据（data\streamer-settings.json）还没有生成。数据到位后切回本页会自动加载。'
+    return
+  }
+  $data = $null
+  try { $data = Get-Content -LiteralPath $script:DataFile -Raw -Encoding UTF8 | ConvertFrom-Json }
+  catch { Add-RefNotice '数据读取失败' "streamer-settings.json 暂时无法解析（可能正在生成中）：$($_.Exception.Message)"; return }
+
+  $streamers = @($data.streamers | Where-Object { $_ })
+  if ($streamers.Count -eq 0) { Add-RefNotice '数据尚未就绪' '数据文件里还没有主播条目。'; return }
+
+  # 行头顺序优先用数据声明的 settings_schema；缺失时按各主播设置键的出现顺序取并集
+  $schema = @($data.settings_schema | Where-Object { "$_" -ne '' })
+  if ($schema.Count -eq 0) {
+    $seen = New-Object System.Collections.Generic.List[string]
+    foreach ($s in $streamers) {
+      if ($s.settings) {
+        foreach ($p in $s.settings.PSObject.Properties) {
+          if (-not $seen.Contains($p.Name)) { [void]$seen.Add($p.Name) }
+        }
+      }
+    }
+    $schema = @($seen)
+  }
+
+  $meta = New-Text "数据更新：$(if ($data.updated) { $data.updated } else { '未知' })$(if ($data.note) { "　·　$($data.note)" })" $script:C.TextMut 10 -Mono
+  $meta.Margin = New-Object Windows.Thickness 2, 8, 0, 8
+  $meta.TextWrapping = 'Wrap'
+  $ui.RefPanel.Children.Add($meta) | Out-Null
+
+  if ($schema.Count -gt 0) {
+    # 对照表：行=设置项、列=主播，逐格自绘（WPF 无深色现成表格控件）
+    $tbl = New-Object Windows.Controls.Grid
+    $c0 = New-Object Windows.Controls.ColumnDefinition
+    $c0.Width = [Windows.GridLength]::Auto
+    $tbl.ColumnDefinitions.Add($c0) | Out-Null
+    foreach ($s in $streamers) {
+      $c = New-Object Windows.Controls.ColumnDefinition
+      $c.Width = [Windows.GridLength]::Auto
+      $c.MinWidth = 110
+      $tbl.ColumnDefinitions.Add($c) | Out-Null
+    }
+    for ($r = 0; $r -le $schema.Count; $r++) {
+      $rd = New-Object Windows.Controls.RowDefinition
+      $rd.Height = [Windows.GridLength]::Auto
+      $tbl.RowDefinitions.Add($rd) | Out-Null
+    }
+    New-RefCell $tbl 0 0 (New-Text '设置项' $script:C.TextMut 11 -Mono) $true
+    for ($j = 0; $j -lt $streamers.Count; $j++) {
+      $s = $streamers[$j]
+      $hs = New-Object Windows.Controls.StackPanel
+      $nm = New-Text "$(if ($s.name) { $s.name } else { "主播$($j + 1)" })" $script:C.Green 12
+      $nm.FontWeight = 'Bold'
+      $hs.Children.Add($nm) | Out-Null
+      if ($s.platform) { $hs.Children.Add((New-Text "$($s.platform)" $script:C.TextMut 10 -Mono)) | Out-Null }
+      New-RefCell $tbl 0 ($j + 1) $hs $true
+    }
+    for ($i = 0; $i -lt $schema.Count; $i++) {
+      $key = "$($schema[$i])"
+      New-RefCell $tbl ($i + 1) 0 (New-Text $key $script:C.TextSec 11) $false
+      for ($j = 0; $j -lt $streamers.Count; $j++) {
+        $s = $streamers[$j]
+        $v = $null
+        if ($s.settings) {
+          $p = $s.settings.PSObject.Properties[$key]
+          if ($p -and "$($p.Value)" -ne '') { $v = "$($p.Value)" }
+        }
+        $cell = New-Text $(if ($v) { $v } else { '—' }) $(if ($v) { $script:C.TextPri } else { $script:C.TextMut }) 11
+        New-RefCell $tbl ($i + 1) ($j + 1) $cell $false
+      }
+    }
+    $tblWrap = New-Object Windows.Controls.Border
+    $tblWrap.BorderBrush = New-Brush $script:C.Line
+    $tblWrap.BorderThickness = New-Object Windows.Thickness 1, 1, 0, 0
+    $tblWrap.HorizontalAlignment = 'Left'
+    $tblWrap.Child = $tbl
+    $hsv = New-Object Windows.Controls.ScrollViewer
+    $hsv.HorizontalScrollBarVisibility = 'Auto'
+    $hsv.VerticalScrollBarVisibility = 'Disabled'
+    $hsv.Content = $tblWrap
+    $ui.RefPanel.Children.Add($hsv) | Out-Null
+  }
+
+  # 来源与硬件卡片：每位主播一张，来源链接只放行 http/https（与更新入口同一条红线）
+  foreach ($s in $streamers) {
+    $card = New-Object Windows.Controls.Border
+    $card.Background = New-Brush $script:C.Panel
+    $card.BorderBrush = New-Brush $script:C.Line
+    $card.BorderThickness = New-Object Windows.Thickness 1
+    $card.Padding = New-Object Windows.Thickness 12, 8, 12, 8
+    $card.Margin = New-Object Windows.Thickness 0, 8, 0, 0
+    $csp = New-Object Windows.Controls.StackPanel
+    $head = New-Object Windows.Controls.StackPanel
+    $head.Orientation = 'Horizontal'
+    $nm2 = New-Text "$(if ($s.name) { $s.name } else { '未命名主播' })" $script:C.TextPri 12
+    $nm2.FontWeight = 'Bold'
+    $head.Children.Add($nm2) | Out-Null
+    if ($s.platform) {
+      $plat = New-Text "$($s.platform)" $script:C.TextMut 10 -Mono
+      $plat.Margin = New-Object Windows.Thickness 8, 0, 0, 0
+      $head.Children.Add($plat) | Out-Null
+    }
+    if ("$($s.url)" -match '^https?://') {
+      $lnk = New-Object Windows.Controls.Button
+      $lnk.Style = $window.FindResource('Ghost')
+      $lnk.Content = '查看来源'
+      $lnk.FontSize = 10
+      $lnk.Height = 20
+      $lnk.Margin = New-Object Windows.Thickness 10, 0, 0, 0
+      $lnk.Tag = "$($s.url)"
+      # 循环里挂的处理器不能直接引用 $s（点击时 $s 早已是最后一个元素），从 sender.Tag 取
+      $lnk.Add_Click({ $u = "$($this.Tag)"; if ($u -match '^https?://') { Start-Process $u } })
+      $head.Children.Add($lnk) | Out-Null
+    }
+    $csp.Children.Add($head) | Out-Null
+    $hw2 = New-WrapText "硬件：$(if ($s.hardware) { $s.hardware } else { '未注明' })$(if ($s.captured) { "　·　记录于 $($s.captured)" })" $script:C.TextSec 11
+    $hw2.Margin = New-Object Windows.Thickness 0, 4, 0, 0
+    $csp.Children.Add($hw2) | Out-Null
+    if ($s.notes) {
+      $nt = New-WrapText "备注：$($s.notes)" $script:C.TextMut 10
+      $nt.Margin = New-Object Windows.Thickness 0, 3, 0, 0
+      $csp.Children.Add($nt) | Out-Null
+    }
+    $tail = New-Text '设置随版本/硬件而异，仅供参考' $script:C.Gold 10
+    $tail.Margin = New-Object Windows.Thickness 0, 4, 0, 0
+    $csp.Children.Add($tail) | Out-Null
+    $card.Child = $csp
+    $ui.RefPanel.Children.Add($card) | Out-Null
+  }
+}
+
+# ---------- 标签页切换与执行态 ----------
+
+$script:Busy = $false
+
+function Select-Tab([string]$Which) {
+  $opt = ($Which -eq 'opt')
+  $ui.TabOptBtn.Tag = $(if ($opt) { 'on' } else { '' })
+  $ui.TabRefBtn.Tag = $(if ($opt) { '' } else { 'on' })
+  $ui.OptPage.Visibility = $(if ($opt) { 'Visible' } else { 'Collapsed' })
+  $ui.RefPage.Visibility = $(if ($opt) { 'Collapsed' } else { 'Visible' })
+  # 执行按钮和日志只属于优化页，参考页收起以免让人误以为参考设置能「执行」
+  $ui.ActionRow.Visibility = $(if ($opt) { 'Visible' } else { 'Collapsed' })
+  $ui.LogRow.Visibility = $(if ($opt) { 'Visible' } else { 'Collapsed' })
+  # 每次切入都重建：数据文件可能是界面启动之后才生成的
+  if (-not $opt) { Update-StreamerPage }
+}
+
+function Set-BusyState([bool]$On) {
+  # 执行期间禁用一切入口防重复点击；窗口关闭在 CloseBtn 处单独拦截
+  $script:Busy = $On
+  foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','BrowseBtn',
+                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn') {
+    if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
+  }
+}
+
+function Update-ApplyProgress($p) {
+  # 引擎每处理一项回调两次：start 刷「正在处理」，done 落一条实时日志并推进进度条
+  if ($p.Stage -eq 'start') {
+    $ui.ProgText.Text = "正在处理：$($p.Name)"
+    $ui.ProgCount.Text = "第 $($p.Index) / 共 $($p.Total) 项"
+  } else {
+    $r = $p.Result
+    $tag = $(if ($r.Ok) { '[成功]' } elseif ($r.Skipped) { '[跳过]' } else { '[失败]' })
+    Write-Log "$tag $($r.Name) — $($r.Msg)"
+    $w = $ui.ProgTrack.ActualWidth - 2
+    if ($w -gt 0 -and $p.Total -gt 0) { $ui.ProgFill.Width = [math]::Max(0, $w * $p.Index / $p.Total) }
+  }
+  # 单线程模型：手动泵一次渲染队列让进度立即上屏。用 Render 优先级不放行输入事件，
+  # 执行期间的点击一律进不来（按钮禁用之外的第二道保险），界面也不会整体假死
+  $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+}
+
 # 贴合主题的输入对话框：项目禁用原生 InputBox 风格弹窗
 function Show-NameDialog {
   $dxaml = @'
@@ -776,7 +1077,7 @@ function Show-NameDialog {
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
-    <TextBlock Text="把当前勾选的指令保存为方案，输入方案名：" Foreground="#FF9AA5A0" Margin="14,12,14,8"/>
+    <TextBlock Text="把当前勾选的优化项保存为方案，输入方案名：" Foreground="#FF9AA5A0" Margin="14,12,14,8"/>
     <Border Background="#FF0B1712" BorderBrush="#FF2C443B" BorderThickness="1" Margin="14,0,14,12">
       <TextBox x:Name="NameBox" BorderThickness="0" Background="Transparent" Foreground="#FFFFFFFF"
                CaretBrush="#FF00E884" Padding="9,6" FontSize="12" MaxLength="40"/>
@@ -1023,7 +1324,7 @@ $window.Add_ContentRendered({
     $ui.HwGrid.Children.Add((New-HwCard 'GPU' $gpu.Name "$($gpu.Vendor) · $(if (@($hw.Gpus).Count -gt 1) { '双显卡' } else { '单显卡' })" -Ribbon)) | Out-Null
     $ui.HwGrid.Children.Add((New-HwCard 'MEMORY' "$($hw.RamGB) GB" "$(if ($hw.IsLaptop) { '笔记本' } else { '台式机' }) / Build $($hw.Build)")) | Out-Null
 
-    Write-Log '开始侦察硬件与系统状态…'
+    Write-Log '开始检测硬件与系统状态…'
     $script:TargetExe = Find-GamePath
     if ($script:TargetExe) {
       $ui.GameText.Text = $script:TargetExe
@@ -1034,18 +1335,25 @@ $window.Add_ContentRendered({
     }
     Update-ItemList
     Update-PresetList
-    $ui.ScanState.Text = '侦察完成'
-    Write-Log '侦察完成。选预设方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
+    $ui.ScanState.Text = '检测完成'
+    Write-Log '检测完成。选预设方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
     Start-UpdateCheck
   } catch {
-    $ui.ScanState.Text = '侦察失败'
+    $ui.ScanState.Text = '检测失败'
     Write-Log "初始化失败：$($_.Exception.Message)"
   }
 })
 
 $ui.TitleBar.Add_MouseLeftButtonDown({ $window.DragMove() })
 $ui.MinBtn.Add_Click({ $window.WindowState = 'Minimized' })
-$ui.CloseBtn.Add_Click({ $window.Close() })
+# 执行中途关窗会让备份文件写不出来（备份在全部执行完才落盘），必须拦下
+$ui.CloseBtn.Add_Click({
+  if ($script:Busy) { Write-Log '正在执行优化，请等本轮执行结束后再关闭。'; return }
+  $window.Close()
+})
+
+$ui.TabOptBtn.Add_Click({ Select-Tab 'opt' })
+$ui.TabRefBtn.Add_Click({ Select-Tab 'ref' })
 
 $ui.BrowseBtn.Add_Click({
   $dlg = New-Object Microsoft.Win32.OpenFileDialog
@@ -1091,7 +1399,7 @@ $ui.SavePresetBtn.Add_Click({
   try {
     $ids = @((@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children)) |
              Where-Object { $_.Child.Children[0].IsChecked } | ForEach-Object { $_.Child.Children[0].Tag })
-    if ($ids.Count -eq 0) { Write-Log '未勾选任何指令，无法存为方案。'; return }
+    if ($ids.Count -eq 0) { Write-Log '未勾选任何优化项，无法存为方案。'; return }
     $newName = Show-NameDialog
     if (-not $newName) { return }
     Save-UserPreset $newName $ids | Out-Null
@@ -1123,26 +1431,48 @@ $ui.ApplyBtn.Add_Click({
   try {
     $ids = @($ui.ItemPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
              ForEach-Object { $_.Child.Children[0].Tag })
-    if ($ids.Count -eq 0) { Write-Log '未勾选任何指令。'; return }
+    if ($ids.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
     $names = @(Get-OptItems $script:TargetExe | Where-Object { $ids -contains $_.Id } | ForEach-Object { $_.Name })
-    $msg = "将执行以下 $($ids.Count) 项优化（改动前自动备份，可一键撤离还原）：`n`n" + ($names -join "`n")
+    $msg = "将执行以下 $($ids.Count) 项优化（改动前自动备份，可一键还原）：`n`n" + ($names -join "`n")
     if ([Windows.MessageBox]::Show($msg, '确认执行', 'OKCancel', 'Question') -ne 'OK') { return }
-    $r = Invoke-Apply $ids $script:TargetExe $false
-    foreach ($x in $r.Results) { Write-Log "$(if ($x.Ok) { '[完成]' } else { '[跳过]' }) $($x.Name) — $($x.Msg)" }
+    Set-BusyState $true
+    $ui.ProgressPanel.Visibility = 'Visible'
+    $ui.ProgFill.Width = 0
+    $ui.ProgText.Text = '准备执行…'
+    $ui.ProgCount.Text = ''
+    Write-Log "开始执行 $($ids.Count) 项优化…"
+    # 进度回调逐项刷新界面并实时落日志，不再等全部跑完才一次性输出
+    $r = Invoke-Apply $ids $script:TargetExe $false ${function:Update-ApplyProgress}
+    $okN = @($r.Results | Where-Object Ok).Count
+    $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
+    $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped })
+    $total = @($r.Results).Count
+    # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到
+    $ui.ProgText.Text = "执行完成：$okN 成功 / $($failList.Count) 失败 / $($skipList.Count) 跳过"
+    $ui.ProgCount.Text = "共 $total 项"
     if ($r.Backup) { Write-Log "备份已保存：$($r.Backup)" }
-    Write-Log '执行结束。电源计划、HAGS 等项重启电脑后完全生效。'
+    Write-Log "执行完成：共 $total 项 — $okN 成功、$($failList.Count) 失败、$($skipList.Count) 跳过。"
+    if ($failList.Count -gt 0) {
+      Write-Log "以下 $($failList.Count) 项失败，请把日志原文反馈或运行 scripts\diagnose.ps1 排查："
+      foreach ($x in $failList) { Write-Log "  [失败] $($x.Name) — $($x.Msg)" }
+    }
+    Write-Log '电源计划、HAGS 等项重启电脑后完全生效。'
     Update-ItemList
   } catch { Write-Log "执行失败：$($_.Exception.Message)" }
+  finally { Set-BusyState $false }
 })
 
 $ui.RestoreBtn.Add_Click({
   try {
-    if ([Windows.MessageBox]::Show('按最近一次备份撤离还原全部改动？', '确认还原', 'OKCancel', 'Question') -ne 'OK') { return }
+    if ([Windows.MessageBox]::Show('按最近一次备份还原全部改动？', '确认还原', 'OKCancel', 'Question') -ne 'OK') { return }
+    Set-BusyState $true
     $r = Invoke-Restore $null
     Write-Log "已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
     foreach ($f in $r.Failed) { Write-Log "[还原失败] $f" }
+    foreach ($n in $r.Notes) { Write-Log "[提示] $n" }
     Update-ItemList
   } catch { Write-Log "还原失败：$($_.Exception.Message)" }
+  finally { Set-BusyState $false }
 })
 
 $window.ShowDialog() | Out-Null

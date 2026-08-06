@@ -12,6 +12,8 @@ tools/*.dll
 build/out/
 build/*.exe
 build/*.zip
+# 根目录启动器 exe 由 build\make-launcher.ps1 现场编译，不进仓库
+启动优化工具.exe
 
 # 编辑器与系统
 .vs/
