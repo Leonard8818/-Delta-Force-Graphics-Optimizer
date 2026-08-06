@@ -10,18 +10,15 @@
 #>
 #requires -Version 5.1
 
-# 清单地址：**发版前必须填成真实地址**。留空时更新检查直接跳过（静默、不报错、不影响启动），
-# 所以填错或忘填不会有任何提示，只是永远检查不到新版本。
-#
-# 仓库 github.com/Leonard8818/delta-force-display-utilizer 当前是私有的，
-# 私有仓库的 Release 附件外部无法匿名下载，因此清单只能挂自有服务器，例如：
-#   $script:BoosterManifestUrl = 'https://df.ltz88.cn/update-manifest.json'
-# 将来若把仓库转为公开，才可改用 GitHub Releases 的固定资产链接（永远指向最新版）：
+# 清单地址：托管在自有服务器（/opt/df-booster，Caddy 站点 df.ltz88.cn）。
+# 之所以不用 GitHub Releases——仓库是私有的，私有仓库的 Release 附件外部无法匿名下载。
+# 若将来仓库转为公开，可改用永远指向最新版的固定资产链接：
 #   'https://github.com/Leonard8818/delta-force-display-utilizer/releases/latest/download/update-manifest.json'
 #
 # 清单格式：{ "version": "0.7.0", "notes": "更新说明", "url": "下载页地址" }
+# 发新版时同步更新服务器上的 update-manifest.json，客户端下次启动即可发现。
 # 本地测试用 Test-BoosterUpdate -ManifestUrl 'file:///C:/.../manifest.json' 临时覆盖。
-$script:BoosterManifestUrl = ''
+$script:BoosterManifestUrl = 'https://df.ltz88.cn/update-manifest.json'
 
 # 本模块位于 scripts\，工具根目录是它的上一级；「不再提醒」状态落在根目录 config\ 下，
 # 不放 profiles\（那里每个 *.json 都会被引擎当成用户预设方案扫出来）
