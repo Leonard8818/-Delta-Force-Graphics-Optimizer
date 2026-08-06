@@ -1,9 +1,16 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.7
+  DeltaForceBooster 图形界面 — v0.9
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
     近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
     等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
     + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
+  v0.9：还原设置改为逐项进度反馈（复用执行优化的进度面板，引擎 Invoke-Restore 新增
+        可选回调），结束弹主题化完成提示——此前同步跑完才刷新，界面卡一下就结束，
+        用户不知道还原有没有真的发生。
+  v0.8：全部原生 MessageBox 换成主题化对话框（确认执行/确认还原/确认删除/显卡指引）；
+        标题栏新增 Discord 式「有新版本」常驻入口（检测到更新才出现，点击弹主题化详情，
+        仍只允许浏览器打开 https 链接）；检测类项目结果改用金色「提示」语义不再计入失败；
+        修复主播设置参考页滚轮失灵（内层横向 ScrollViewer 吞掉 MouseWheel，改抛父级冒泡）。
   v0.7：文案从军事黑话改回平实功能名；新增「优化 / 主播设置参考」标签页（参考数据来自
         data\streamer-settings.json，纯展示不可应用）；执行优化改为逐项进度条 + 实时日志
         + 完成度汇总，执行期间按钮全部禁用。
@@ -26,7 +33,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.7'
+$script:GuiVersion = '0.9'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -406,12 +413,34 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.7 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.9 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
         <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,84,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <!-- Discord 式更新入口：检测到新版本才出现的小绿胶囊，点击弹更新详情。
+               图标用固定坐标小 Path（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
+          <Button x:Name="UpdateBtn" Visibility="Collapsed" VerticalAlignment="Center" Margin="0,0,10,0"
+                  Foreground="#FF04241B" Cursor="Hand">
+            <Button.Template>
+              <ControlTemplate TargetType="Button">
+                <Border x:Name="B" Background="#FF00E884" CornerRadius="10" Padding="9,3">
+                  <StackPanel Orientation="Horizontal">
+                    <Path Data="M 3,0 L 6,0 L 6,4 L 9,4 L 4.5,9 L 0,4 L 3,4 Z M 0,11 L 9,11 L 9,12.5 L 0,12.5 Z"
+                          Fill="#FF04241B" Width="9" Height="13" VerticalAlignment="Center"/>
+                    <TextBlock Text="有新版本" FontSize="11" FontWeight="Bold" Foreground="#FF04241B"
+                               VerticalAlignment="Center" Margin="6,0,0,0"/>
+                  </StackPanel>
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="B" Property="Background" Value="#FF33F09E"/>
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
           <Button x:Name="MinBtn" Content="—" Style="{StaticResource WinBtn}"/>
           <Button x:Name="CloseBtn" Content="✕" Style="{StaticResource WinBtn}"/>
         </StackPanel>
@@ -660,7 +689,7 @@ $xaml = @'
       <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
-      <TextBlock Grid.Column="4" Text="[ V0.7 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+      <TextBlock Grid.Column="4" Text="[ V0.9 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
     </Grid>
   </Grid>
 </Window>
@@ -668,7 +697,7 @@ $xaml = @'
 
 $window = [Windows.Markup.XamlReader]::Parse($xaml)
 $ui = @{}
-foreach ($n in 'TitleBar','MinBtn','CloseBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
+foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
                'TabOptBtn','TabRefBtn','OptPage','RefPage','RefPanel','ActionRow','LogRow',
@@ -797,8 +826,14 @@ function New-ItemRow($Item, $State, [bool]$Last) {
   [Windows.Controls.Grid]::SetColumn($detail, 1)
   $g.Children.Add($detail) | Out-Null
 
-  # 状态徽标（官网金色分类标签改造）：就绪=绿实底，待优化=金实底，待定=灰描边
-  $pill = if ($State.Optimized -eq $true) { New-Pill '已就绪' $script:C.GreenDark $script:C.Green $script:C.Green }
+  # 状态徽标（官网金色分类标签改造）：就绪=绿实底，待优化=金实底，待定=灰描边。
+  # 检测类项目语义不同：发现问题不是「待优化」（工具改不了），用金色「需关注」示警
+  $pill = if ($Item.Kind -eq 'check') {
+            if ($State.Optimized -eq $true) { New-Pill '正常' $script:C.GreenDark $script:C.Green $script:C.Green }
+            elseif ($State.Optimized -eq $false) { New-Pill '需关注' $script:C.GoldDark $script:C.Gold $script:C.Gold }
+            else { New-Pill '待定' $script:C.Gray '#00000000' $script:C.Line }
+          }
+          elseif ($State.Optimized -eq $true) { New-Pill '已就绪' $script:C.GreenDark $script:C.Green $script:C.Green }
           elseif ($State.Optimized -eq $false) { New-Pill '待优化' $script:C.GoldDark $script:C.Gold $script:C.Gold }
           else { New-Pill '待定' $script:C.Gray '#00000000' $script:C.Line }
   [Windows.Controls.Grid]::SetColumn($pill, 2)
@@ -964,6 +999,20 @@ function Update-StreamerPage {
     $hsv.HorizontalScrollBarVisibility = 'Auto'
     $hsv.VerticalScrollBarVisibility = 'Disabled'
     $hsv.Content = $tblWrap
+    # 滚轮失灵的根因在这：ScrollViewer 的类处理器无条件把 MouseWheel 标记成已处理，
+    # 哪怕纵向滚动被 Disabled 也不放行，事件到不了外层页面 ScrollViewer；对照表又占满
+    # 首屏，于是整页滚轮像坏了一样。纵向滚轮对这个横向表没有任何用处，改成拦下原事件、
+    # 以父容器为起点重新冒泡，让外层页面 ScrollViewer 接管
+    $hsv.Add_PreviewMouseWheel({
+      param($s, $e)
+      if ($e.Handled) { return }
+      $e.Handled = $true
+      $fwd = New-Object Windows.Input.MouseWheelEventArgs($e.MouseDevice, $e.Timestamp, $e.Delta)
+      $fwd.RoutedEvent = [Windows.UIElement]::MouseWheelEvent
+      $fwd.Source = $s
+      $parent = [Windows.Media.VisualTreeHelper]::GetParent($s)
+      if ($parent) { $parent.RaiseEvent($fwd) }
+    })
     $ui.RefPanel.Children.Add($hsv) | Out-Null
   }
 
@@ -1036,7 +1085,7 @@ function Set-BusyState([bool]$On) {
   # 执行期间禁用一切入口防重复点击；窗口关闭在 CloseBtn 处单独拦截
   $script:Busy = $On
   foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','BrowseBtn',
-                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn') {
+                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn','UpdateBtn') {
     if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
   }
 }
@@ -1048,7 +1097,8 @@ function Update-ApplyProgress($p) {
     $ui.ProgCount.Text = "第 $($p.Index) / 共 $($p.Total) 项"
   } else {
     $r = $p.Result
-    $tag = $(if ($r.Ok) { '[成功]' } elseif ($r.Skipped) { '[跳过]' } else { '[失败]' })
+    # 检测项发现问题挂 Attention：是「体检查出了东西」不是「工具失败了」，标签要分开
+    $tag = $(if ($r.Attention) { '[提示]' } elseif ($r.Ok) { '[成功]' } elseif ($r.Skipped) { '[跳过]' } else { '[失败]' })
     Write-Log "$tag $($r.Name) — $($r.Msg)"
     $w = $ui.ProgTrack.ActualWidth - 2
     if ($w -gt 0 -and $p.Total -gt 0) { $ui.ProgFill.Width = [math]::Max(0, $w * $p.Index / $p.Total) }
@@ -1056,6 +1106,100 @@ function Update-ApplyProgress($p) {
   # 单线程模型：手动泵一次渲染队列让进度立即上屏。用 Render 优先级不放行输入事件，
   # 执行期间的点击一律进不来（按钮禁用之外的第二道保险），界面也不会整体假死
   $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+}
+
+function Update-RestoreProgress($p) {
+  # 还原复用执行优化的进度面板；粒度是备份里的「值」而不是优化项，单条极快且可能有
+  # 几十条，逐条落日志会刷爆日志框——只推进度条和当前项文案，失败明细由汇总统一给
+  if ($p.Stage -eq 'start') {
+    $ui.ProgText.Text = "正在还原：$($p.Name)"
+    $ui.ProgCount.Text = "第 $($p.Index) / 共 $($p.Total) 项"
+  } else {
+    $w = $ui.ProgTrack.ActualWidth - 2
+    if ($w -gt 0 -and $p.Total -gt 0) { $ui.ProgFill.Width = [math]::Max(0, $w * $p.Index / $p.Total) }
+  }
+  $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+}
+
+# 主题化确认/信息对话框：原生 MessageBox 白底系统样式与深色主题完全不搭（用户实测吐槽），
+# 全站确认（执行/还原/删除）和长文本指引统一走这里。正文放 ScrollViewer：
+# 执行清单可达 30 行、显卡指引更长，超高时内部滚动而不是把对话框撑出屏幕
+function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message,
+                            [string]$OkText = '确定', [switch]$InfoOnly) {
+  $cxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="440" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <StackPanel Margin="0,0,0,14">
+    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+      <StackPanel Orientation="Horizontal">
+        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock x:Name="ChipTxt" Text="" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        </Border>
+        <TextBlock x:Name="EnTxt" Text="" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+                   VerticalAlignment="Center" Margin="9,0,0,0"/>
+      </StackPanel>
+    </Border>
+    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,12,14,12">
+      <ScrollViewer MaxHeight="340" VerticalScrollBarVisibility="Auto">
+        <TextBlock x:Name="MsgTxt" Text="" Foreground="#FF9AA5A0" FontSize="12" LineHeight="19"
+                   TextWrapping="Wrap" Padding="12,9"/>
+      </ScrollViewer>
+    </Border>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
+      <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" Foreground="#FF04241B" FontWeight="Bold">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+                    Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bg" Property="Fill" Value="#FF33F09E"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock x:Name="OkTxt" Text="确定"/>
+      </Button>
+      <Button x:Name="CancelBtn" Width="80" Height="30" IsCancel="True" Foreground="#FF00E884" Margin="9,0,0,0">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock Text="取消"/>
+      </Button>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+  # 事件处理器在模态期间回调，与 Show-UpdateDialog 同理：要用的对象放 script 作用域最稳
+  $script:CfmDlg = [Windows.Markup.XamlReader]::Parse($cxaml)
+  $script:CfmDlg.Owner = $window
+  $script:CfmDlg.FindName('ChipTxt').Text = $ChipText
+  $script:CfmDlg.FindName('EnTxt').Text = $EnText
+  $script:CfmDlg.FindName('MsgTxt').Text = $Message
+  $script:CfmDlg.FindName('OkTxt').Text = $OkText
+  # 信息模式（如显卡指引）没有「取消」的语义，只留一个确认按钮
+  if ($InfoOnly) { $script:CfmDlg.FindName('CancelBtn').Visibility = 'Collapsed' }
+  $script:CfmDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:CfmDlg.DragMove() })
+  $script:CfmDlg.FindName('OkBtn').Add_Click({ $script:CfmDlg.DialogResult = $true })
+  $script:CfmDlg.FindName('CancelBtn').Add_Click({ $script:CfmDlg.DialogResult = $false })
+  [bool]$script:CfmDlg.ShowDialog()
 }
 
 # 贴合主题的输入对话框：项目禁用原生 InputBox 风格弹窗
@@ -1255,9 +1399,13 @@ function Show-UpdateDialog($UpdInfo) {
   $script:UpdDlg.FindName('LaterBtn').Add_Click({ $script:UpdDlg.DialogResult = $false })
   $script:UpdDlg.ShowDialog() | Out-Null
   if ($skipChk.IsChecked -and (Get-Command Set-BoosterSkipVersion -ErrorAction SilentlyContinue)) {
-    Set-BoosterSkipVersion $UpdInfo.Version
+    # 返回值必须吞掉：现在函数输出会被调用方接住，落盘结果混进去会把 $skipped 变成数组
+    Set-BoosterSkipVersion $UpdInfo.Version | Out-Null
     Write-Log "已设置不再提醒 v$($UpdInfo.Version)。"
+    # 返回「用户选择了跳过」：调用方据此把标题栏的更新入口一并收起，语义保持一致
+    return $true
   }
+  $false
 }
 
 function Update-ItemList {
@@ -1300,8 +1448,11 @@ function Start-UpdateCheck {
         $r = @($script:UpdateJob.EndInvoke($script:UpdateAsync))
         $found = $r | Where-Object { $_ } | Select-Object -First 1
         if ($found) {
-          Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)）。"
-          Show-UpdateDialog $found
+          # 不再启动即弹框打断用户：只点亮标题栏的常驻入口（Discord 手法），详情由用户点开
+          $script:UpdateInfo = $found
+          $ui.UpdateBtn.ToolTip = "新版本 v$($found.Version) 可用（当前 v$($found.Current)），点击查看详情"
+          $ui.UpdateBtn.Visibility = 'Visible'
+          Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)），点右上角「有新版本」查看详情。"
         }
       } catch {} finally { $script:UpdateJob.Dispose() }
     })
@@ -1312,6 +1463,7 @@ function Start-UpdateCheck {
 $script:TargetExe = $null
 $script:PresetList = @()
 $script:ApplyingPreset = $false
+$script:UpdateInfo = $null
 
 $window.Add_ContentRendered({
   try {
@@ -1346,6 +1498,11 @@ $window.Add_ContentRendered({
 
 $ui.TitleBar.Add_MouseLeftButtonDown({ $window.DragMove() })
 $ui.MinBtn.Add_Click({ $window.WindowState = 'Minimized' })
+$ui.UpdateBtn.Add_Click({
+  if (-not $script:UpdateInfo) { return }
+  # 用户在详情框里勾了「不再提醒此版本」就把入口收起，和跳过语义保持一致
+  if (Show-UpdateDialog $script:UpdateInfo) { $ui.UpdateBtn.Visibility = 'Collapsed' }
+})
 # 执行中途关窗会让备份文件写不出来（备份在全部执行完才落盘），必须拦下
 $ui.CloseBtn.Add_Click({
   if ($script:Busy) { Write-Log '正在执行优化，请等本轮执行结束后再关闭。'; return }
@@ -1371,7 +1528,7 @@ $ui.RefreshBtn.Add_Click({ Update-ItemList; Write-Log '状态已刷新。' })
 
 $ui.GuideBtn.Add_Click({
   $hw = Get-HardwareInfo
-  [Windows.MessageBox]::Show((Get-GpuGuideText $hw.MainGpuVendor), '显卡驱动设置指引（需手动）', 'OK', 'Information') | Out-Null
+  Show-ConfirmDialog '显卡指引' 'GPU DRIVER GUIDE' (Get-GpuGuideText $hw.MainGpuVendor) '知道了' -InfoOnly | Out-Null
 })
 
 # ---------- 预设方案 ----------
@@ -1419,7 +1576,7 @@ $ui.DelPresetBtn.Add_Click({
     if ($idx -lt 0) { Write-Log '请先在下拉里选中要删除的方案。'; return }
     $p = $script:PresetList[$idx]
     if ($p.Builtin) { Write-Log "「$($p.Name)」是内置方案，不能删除。"; return }
-    if ([Windows.MessageBox]::Show("删除自存方案「$($p.Name)」？", '确认删除', 'OKCancel', 'Warning') -ne 'OK') { return }
+    if (-not (Show-ConfirmDialog '确认删除' 'CONFIRM DELETE' "删除自存方案「$($p.Name)」？删除后不可恢复。" '删除')) { return }
     Remove-UserPreset $p.Id | Out-Null
     Update-PresetList
     $ui.PresetNote.Text = ''
@@ -1433,8 +1590,9 @@ $ui.ApplyBtn.Add_Click({
              ForEach-Object { $_.Child.Children[0].Tag })
     if ($ids.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
     $names = @(Get-OptItems $script:TargetExe | Where-Object { $ids -contains $_.Id } | ForEach-Object { $_.Name })
-    $msg = "将执行以下 $($ids.Count) 项优化（改动前自动备份，可一键还原）：`n`n" + ($names -join "`n")
-    if ([Windows.MessageBox]::Show($msg, '确认执行', 'OKCancel', 'Question') -ne 'OK') { return }
+    $msg = "将执行以下 $($ids.Count) 项优化（改动前自动备份，可一键还原）：`n`n" +
+           (@($names | ForEach-Object { "· $_" }) -join "`n")
+    if (-not (Show-ConfirmDialog '确认执行' 'CONFIRM APPLY' $msg '执行优化')) { return }
     Set-BusyState $true
     $ui.ProgressPanel.Visibility = 'Visible'
     $ui.ProgFill.Width = 0
@@ -1444,17 +1602,24 @@ $ui.ApplyBtn.Add_Click({
     # 进度回调逐项刷新界面并实时落日志，不再等全部跑完才一次性输出
     $r = Invoke-Apply $ids $script:TargetExe $false ${function:Update-ApplyProgress}
     $okN = @($r.Results | Where-Object Ok).Count
+    $attList = @($r.Results | Where-Object Attention)
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
-    $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped })
+    $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention })
     $total = @($r.Results).Count
-    # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到
-    $ui.ProgText.Text = "执行完成：$okN 成功 / $($failList.Count) 失败 / $($skipList.Count) 跳过"
+    # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到；
+    # 体检发现的问题单列——那是检测项立功了，混进「失败」会让用户误以为工具坏了
+    $att = $(if ($attList.Count -gt 0) { " / $($attList.Count) 项体检发现问题" })
+    $ui.ProgText.Text = "执行完成：$okN 成功 / $($failList.Count) 失败 / $($skipList.Count) 跳过$att"
     $ui.ProgCount.Text = "共 $total 项"
     if ($r.Backup) { Write-Log "备份已保存：$($r.Backup)" }
-    Write-Log "执行完成：共 $total 项 — $okN 成功、$($failList.Count) 失败、$($skipList.Count) 跳过。"
+    Write-Log "执行完成：共 $total 项 — $okN 成功、$($failList.Count) 失败、$($skipList.Count) 跳过$(if ($attList.Count -gt 0) { "、$($attList.Count) 项体检发现问题" })。"
     if ($failList.Count -gt 0) {
       Write-Log "以下 $($failList.Count) 项失败，请把日志原文反馈或运行 scripts\diagnose.ps1 排查："
       foreach ($x in $failList) { Write-Log "  [失败] $($x.Name) — $($x.Msg)" }
+    }
+    if ($attList.Count -gt 0) {
+      Write-Log "体检发现以下问题（工具改不了，需按提示手动处理）："
+      foreach ($x in $attList) { Write-Log "  [提示] $($x.Name) — $($x.Msg)" }
     }
     Write-Log '电源计划、HAGS 等项重启电脑后完全生效。'
     Update-ItemList
@@ -1464,13 +1629,29 @@ $ui.ApplyBtn.Add_Click({
 
 $ui.RestoreBtn.Add_Click({
   try {
-    if ([Windows.MessageBox]::Show('按最近一次备份还原全部改动？', '确认还原', 'OKCancel', 'Question') -ne 'OK') { return }
+    if (-not (Show-ConfirmDialog '确认还原' 'CONFIRM RESTORE' '按最近一次备份还原全部改动？还原后各项会回到优化前的状态。' '还原设置')) { return }
     Set-BusyState $true
-    $r = Invoke-Restore $null
+    # 此前同步跑完才刷新，界面「卡一下」就结束，用户不知道还原有没有在干活（实测吐槽）；
+    # 现在和执行优化共用进度面板，逐项推进 + 结束弹明确的完成提示
+    $ui.ProgressPanel.Visibility = 'Visible'
+    $ui.ProgFill.Width = 0
+    $ui.ProgText.Text = '正在还原…'
+    $ui.ProgCount.Text = ''
+    $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+    $r = Invoke-Restore $null ${function:Update-RestoreProgress}
+    $failN = @($r.Failed).Count
+    $bakName = Split-Path -Leaf $r.File
+    $ui.ProgText.Text = "还原完成：$($r.RestoredOps) 项已还原 / $failN 项失败"
+    $ui.ProgCount.Text = "备份：$bakName"
     Write-Log "已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
     foreach ($f in $r.Failed) { Write-Log "[还原失败] $f" }
     foreach ($n in $r.Notes) { Write-Log "[提示] $n" }
     Update-ItemList
+    # 成功与否都要有明确收尾：全成给定心丸，有失败的把数量点出来引导看日志
+    $sum = "已按备份「$bakName」还原 $($r.RestoredOps) 项改动。" +
+           $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，明细见运行日志。" }
+             else { "`n`n全部还原成功，各项已回到优化前的状态。" })
+    Show-ConfirmDialog '还原完成' 'RESTORE DONE' $sum '知道了' -InfoOnly | Out-Null
   } catch { Write-Log "还原失败：$($_.Exception.Message)" }
   finally { Set-BusyState $false }
 })

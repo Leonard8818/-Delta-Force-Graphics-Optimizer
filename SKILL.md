@@ -26,7 +26,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 ```
 
 返回 JSON：`Hardware`（CPU/内存/显卡/系统版本/是否管理员）、`GamePath`（自动找到的
-游戏主程序，找不到为空）、`Items`（每个优化项的 Id、当前状态 Optimized、说明）、
+游戏主程序，按可靠性多路查找：运行中的游戏进程 → 卸载注册表 → WeGame/Steam 平台目录 →
+盘符常见位置兜底；仍找不到为空）、`Items`（每个优化项的 Id、当前状态 Optimized、说明）、
 `GpuGuide`（按用户显卡厂商生成的驱动设置手动清单）。
 
 ### 第 2 步：向用户汇报并确认
@@ -45,7 +46,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 - HAGS、MPO、服务禁用、bcdedit、中断绑核等项需要重启后完全生效；
 - `pcie-check` / `vcredist-check` / `xmp-check` 是纯检测项，只读不写：分别报告 PCIe 链路
   异常（引导查插槽/延长线）、VC++ v14 运行库版本错乱（引导手动重装，**不要代劳卸载**）、
-  内存未开 XMP/EXPO（引导进 BIOS，软件改不了）。
+  内存未开 XMP/EXPO（引导进 BIOS，软件改不了）。检测项查出问题时结果标 `Attention`
+  归入「体检发现问题」，不计入失败。
 - **不要建议关闭引导虚拟化**：ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错进不去，
   该项已于 v0.6 移除。
 
@@ -57,14 +59,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 
 - 默认应用所有推荐项；用 `-Items power-ultimate,dvr-off,...` 只应用用户选中的项。
 - 也可以整套套用预设方案：`-Apply -Preset balanced`。先用 `-ListPresets` 看可选方案，
-  把方案名和说明念给用户听、让他选，比逐项解释 28 个开关更省事。
+  把方案名和说明念给用户听、让他选，比逐项解释 32 个开关更省事。
   内置三套（顺序即界面下拉顺序，第一套为主推）：
-  - `felix` 费利克斯路线（25 项主推全套）：按抖音博主费利克斯Fx 的调试链路排列——
+  - `felix` 费利克斯路线（30 项主推全套）：按抖音博主费利克斯Fx 的调试链路排列——
     ①电源深度定制 → ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层。
     代价要如实告知：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高、
     笔记本更耗电；不含关引导虚拟化，WSL/模拟器不受影响。
-  - `balanced` 均衡推荐（15 项，副作用小）：不改桌面外观和鼠标手感、不禁用服务、不动休眠。
-  - `safe-only` 保守（6 项）：只改当前用户 HKCU、不需重启。
+  - `balanced` 均衡推荐（20 项，副作用小）：不改桌面外观和鼠标手感、不禁用服务、不动休眠。
+  - `safe-only` 保守（7 项）：只改当前用户 HKCU、不需重启。
 - 用户想保留自己的搭配：`-SavePreset "方案名" -Items id1,id2`（存到 `<root>\profiles\`），
   之后可 `-Apply -Preset 方案名`；`-DeletePreset 方案名` 删除（内置方案删不掉）。
 - 若检测未找到游戏路径，追加 `-GamePath "游戏主程序完整路径"`（主程序通常是
@@ -72,7 +74,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 - 权限不足时脚本会报错并列出需要管理员的项——此时用管理员身份重开终端再执行，
   或让用户以管理员运行。
 - 每次 Apply 自动把旧值备份到 `<root>\backup\backup-时间戳.json`。
-- 结果里每项带 `Ok` 与 `Skipped` 字段，末尾有「x 成功、y 失败、z 跳过」汇总；
+- 结果里每项带 `Ok`、`Skipped`、`Attention` 字段，末尾有「x 成功、y 失败、z 跳过
+  （、n 项体检发现问题）」汇总。`Attention=true` 表示纯检测项查出了真实问题——这是
+  检测项「立功」而不是工具失败，转述时务必与失败区分开，别让用户误以为工具坏了；
   失败消息内含 powercfg 等命令的原始报错，直接转述给用户即可。
 - **电源计划命名行为**：系统没有可直接激活的卓越性能方案时（e9a42b02 在多数版本上只是
   不可激活的模板），脚本会实例化一份并命名为「三角洲优化 · 卓越性能」，GUID 记在
@@ -131,6 +135,7 @@ risky 档必须同时用 `-Items` 点名并加 `-Risky` 才会执行（当前版
 | wsearch-off | 禁用 Windows Search 索引（Start=4，搜索会变慢） | 否 | 需要 |
 | hibernate-off | 关闭休眠与快速启动（powercfg -h off） | 台式机默认 | 需要 |
 | gpu-pstate-lock | 禁止显卡动态降频（DisableDynamicPstate=1，待机功耗升） | 否 | 需要 |
+| nv-autoopt-off | 关闭 NVIDIA App「自动优化游戏设置」（EnableAutomaticApplyOPS=0，防 OPS 覆写玩家手调画质；备份整个 config.xml，还原逐字节写回；没装 NVIDIA App 时自动不适用） | 是 | 否 |
 | gpu-irq-affinity | 显卡中断绑核（DevicePolicy=4 + KAFFINITY 掩码，绑最后一个 P 核） | 否 | 需要 |
 | pcie-check | PCIe 链路体检（纯检测，nvidia-smi 读上限） | 否 | 否 |
 | dyntick-off | 禁用动态计时器（bcdedit disabledynamictick yes） | 否 | 需要 |

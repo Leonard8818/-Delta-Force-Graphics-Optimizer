@@ -1,6 +1,15 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.6
+  DeltaForceBooster 核心脚本 — v0.8
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
+  v0.8：Invoke-Restore 支持可选进度回调（与 Invoke-Apply 同约定，不传行为不变），
+        界面还原时能逐项反馈进度不再整体假死；新增 nv-autoopt-off（关闭 NVIDIA App
+        自动优化，防止 OPS 覆写玩家手调的游戏画质）及配套的 file 操作类型——正则只替换
+        目标片段保持文件其余部分逐字节不变，备份存整文件原始字节、还原逐字节写回。
+  v0.7：电源隐藏项写入不再要求「读得到当前值」——方案下没有显式值就是「继承默认」，
+        照常写入并在备份里记 Existed=$false，还原时删除该设置子键回到继承态（此前
+        新建方案 GUID 不在 DefaultPowerSchemeValues 表里，power-ultimate 之后
+        power-tuning 必然全军覆没）；检测类项目发现问题不再计成「失败」，改用独立的
+        Attention（提示）状态，汇总里单独列「x 项体检发现问题」。
   v0.6：移除「关闭引导虚拟化」（ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错）；
         新增 MMCSS 游戏档位、关闭窗口化游戏优化（复合串只改目标子键）、VC++ 运行库体检、
         内存 XMP 体检；检测类项目改为按 Check 字段分发，新增检测项不再需要改分发逻辑。
@@ -227,6 +236,9 @@ function Test-PowerSettingHidden([string]$Sub, [string]$Setting) {
 # 读当前活动方案下该项的交流电(AC)取值。直接读注册表而不用 powercfg /q：
 # 隐藏项 /q 不输出，且中文系统输出无法用英文关键字解析。
 # 方案未显式设值时回落到该项的默认值，这才是系统实际生效的值。
+# 注意：DefaultPowerSchemeValues 下只有三个内置方案 GUID（平衡/高性能/节能），
+# duplicatescheme 复制出的方案（含本工具自建的卓越性能）两级都读不到、返回 $null——
+# 这是「继承默认」的合法状态，调用方绝不能把它当成错误。
 function Get-PowerSettingAc([string]$Sub, [string]$Setting) {
   if (-not (Test-PowerSetting $Sub $Setting)) { return $null }
   $act = Get-ActiveScheme
@@ -236,6 +248,30 @@ function Get-PowerSettingAc([string]$Sub, [string]$Setting) {
   $v = Get-RegValue "$script:PsRoot\$Sub\$Setting\DefaultPowerSchemeValues\$($act.Guid)" 'ACSettingIndex'
   if ($null -ne $v) { return [int]$v }
   $null
+}
+
+# 只读方案下的显式值（不回落默认表）：备份要的是「写入前方案里到底有没有值」，
+# 回落值写进备份会在还原时把「继承」固化成显式设置，语义就变了
+function Get-PowerSettingAcExplicit([string]$SchemeGuid, [string]$Sub, [string]$Setting) {
+  $v = Get-RegValue "$script:PuRoot\$SchemeGuid\$Sub\$Setting" 'ACSettingIndex'
+  if ($null -ne $v) { return [int]$v }
+  $null
+}
+
+# 还原「原本无显式值」的电源项：删除方案下的设置子键，回到继承默认态。
+# 写一个猜出来的数字会把继承关系永久改成显式覆盖，所以必须删键而不是写值。
+function Remove-PowerSettingAcOverride([string]$SchemeGuid, [string]$Sub, [string]$Setting) {
+  if (-not $SchemeGuid) {
+    $act = Get-ActiveScheme
+    if (-not $act) { throw '无法确定要还原的电源方案' }
+    $SchemeGuid = $act.Guid
+  }
+  $base, $parent = Split-RegPath "$script:PuRoot\$SchemeGuid\$Sub"
+  $k = $base.OpenSubKey($parent, $true)
+  if ($k) { try { $k.DeleteSubKeyTree($Setting, $false) } finally { $k.Close() } }
+  # 改的是活动方案时要重新 setactive 才即时生效；非活动方案执行这句无害
+  $ErrorActionPreference = 'SilentlyContinue'
+  & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
 
 # 解除隐藏，返回原 Attributes 值供还原用；已可见则返回 $null
@@ -248,11 +284,14 @@ function Show-PowerSetting([string]$Sub, [string]$Setting) {
   $old
 }
 
-function Set-PowerSettingAc([string]$Sub, [string]$Setting, [int]$Value) {
+# $SchemeGuid 可选：还原时按备份里记录的方案精确写回（用户可能已手动切走活动方案），
+# 不传则写当前活动方案（Apply 路径的既有行为）
+function Set-PowerSettingAc([string]$Sub, [string]$Setting, [int]$Value, [string]$SchemeGuid) {
+  $target = $(if ($SchemeGuid) { $SchemeGuid } else { 'SCHEME_CURRENT' })
   $ErrorActionPreference = 'SilentlyContinue'
   # 把 powercfg 的原话带进异常：曾有 12 代机器报「尝试写入不受支持的设置」，
   # 只抛笼统的「写入失败」会让用户完全没法定位
-  $out = & powercfg /setacvalueindex SCHEME_CURRENT $Sub $Setting $Value 2>&1
+  $out = & powercfg /setacvalueindex $target $Sub $Setting $Value 2>&1
   if ($LASTEXITCODE -ne 0) { throw "写入电源项失败$(if ("$out") { "（powercfg 原话：$(("$out").Trim())）" } else { '' })" }
   & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
@@ -544,9 +583,32 @@ function Get-HardwareInfo {
 }
 
 function Find-GamePath {
-  # 三角洲行动国服走 WeGame，国际服(Delta Force)走 Steam；两边都找，找不到就让用户手动指
+  # 三角洲行动国服走 WeGame，国际服(Delta Force)走 Steam。但玩家常把游戏装到
+  # 平台目录之外（实测有人装在 E:\Delta Force\Delta Force），所以按可靠性排序多路查找：
+  # ①运行中的进程 ②卸载注册表 ③平台安装目录 ④盘符猜测兜底。
   $exeNames = 'DeltaForceClient-Win64-Shipping.exe', 'DeltaForce.exe'
   $roots = New-Object System.Collections.Generic.List[string]
+
+  # ① 游戏正开着时最省事：直接拿进程的可执行文件路径，零搜索、零歧义
+  foreach ($pn in 'DeltaForceClient-Win64-Shipping', 'DeltaForceClient', 'DeltaForce') {
+    foreach ($proc in @(Get-Process -Name $pn -ErrorAction SilentlyContinue)) {
+      try { if ($proc.Path -and $proc.Path -match 'Shipping') { return $proc.Path } } catch {}
+    }
+  }
+
+  # ② 卸载注册表：不管装在哪个盘、哪个目录都登记在册，比猜路径可靠得多
+  $unKeys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  foreach ($e in @(Get-ItemProperty $unKeys -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DisplayName -match '三角洲|Delta\s*Force|DeltaForce' })) {
+    # InstallLocation 常为空，此时从卸载程序/图标路径倒推安装目录
+    foreach ($cand in @($e.InstallLocation,
+                        $(if ($e.UninstallString) { Split-Path -Parent ($e.UninstallString -replace '^"|"$') }),
+                        $(if ($e.DisplayIcon)     { Split-Path -Parent ($e.DisplayIcon -replace '^"|"$' -replace ',\d+$') }))) {
+      if ($cand -and (Test-Path -LiteralPath $cand -ErrorAction SilentlyContinue)) { $roots.Add($cand) }
+    }
+  }
 
   foreach ($rk in 'HKLM:\SOFTWARE\WOW6432Node\Tencent\WeGame', 'HKCU:\Software\Tencent\WeGame') {
     $ip = Get-RegValue $rk 'InstallPath'
@@ -565,19 +627,34 @@ function Find-GamePath {
     }
   }
 
+  $uniq = @($roots | Where-Object { $_ } | Select-Object -Unique)
+
+  # 先按虚幻引擎的固定布局直接命中，省掉递归扫描；同时兼容"根目录已经是游戏子目录"的情形
+  foreach ($r in $uniq) {
+    foreach ($rel in 'DeltaForce\Binaries\Win64\DeltaForceClient-Win64-Shipping.exe',
+                     'Delta Force\DeltaForce\Binaries\Win64\DeltaForceClient-Win64-Shipping.exe',
+                     'Binaries\Win64\DeltaForceClient-Win64-Shipping.exe') {
+      $p = Join-Path $r $rel
+      if (Test-Path -LiteralPath $p) { return $p }
+    }
+  }
+
+  # 兜底：平台目录下按盘符猜测（放最后，因为这里最可能扫到无关的大目录）
   foreach ($d in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' })) {
-    foreach ($guess in 'WeGame', 'WeGameApps', 'Program Files\WeGame') {
+    foreach ($guess in 'Delta Force', 'WeGame', 'WeGameApps', 'Program Files\WeGame') {
       $p = Join-Path $d.Root $guess
-      if (Test-Path -LiteralPath $p) { $roots.Add($p) }
+      if (Test-Path -LiteralPath $p) { $uniq += $p }
     }
   }
 
   $found = @()
-  foreach ($r in ($roots | Select-Object -Unique)) {
+  foreach ($r in ($uniq | Select-Object -Unique)) {
     foreach ($n in $exeNames) {
       $found += @(Get-ChildItem -Path $r -Recurse -Depth 6 -Filter $n -File -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty FullName)
     }
+    # 找到就停，别为了凑齐所有结果把每个候选目录都递归扫一遍
+    if ($found.Count -gt 0) { break }
   }
   # 全屏优化/GPU 首选项要落在真正渲染的进程上，优先 Shipping 主程序
   $ship = $found | Where-Object { $_ -match 'Shipping' } | Select-Object -First 1
@@ -705,6 +782,18 @@ function Get-OptItems([string]$GamePath) {
                Ops  = $(if ($gpuClass) { @(@{ Kind = 'reg'; Path = $gpuClass; Name = 'DisableDynamicPstate'; Value = 1; Kind2 = 'DWord' }) })
                Note = '阻止驱动随负载波动来回降频，减少频率抖动带来的帧率毛刺。副作用：待机功耗和发热明显上升、笔记本续航变差，默认不勾选。重启生效。' }
 
+  # NVIDIA App 的「自动优化」开关落在 NvBackend\config.xml 的 EnableAutomaticApplyOPS
+  # （OPS=Optimal Playable Settings，本机 A/B 实测坐实：界面开关与该值即时联动、App 常驻
+  # 时也直接写盘）。没装 NVIDIA App（A 卡/核显）时文件不存在，Ops 置空走「本机不适用」降级
+  $nvAppCfg = Join-Path $env:LOCALAPPDATA 'NVIDIA Corporation\NVIDIA app\NvBackend\config.xml'
+  $items += @{ Id = 'nv-autoopt-off'; Tier = 'safe'; Name = '关闭 NVIDIA App 自动优化游戏设置'; Admin = $false; Default = $true; Kind = 'multi'
+               Ops  = $(if (Test-Path -LiteralPath $nvAppCfg) { @(@{ Kind = 'file'; Path = $nvAppCfg
+                          Match   = '(<Setting name=[''"]EnableAutomaticApplyOPS[''"] value=[''"])1([''"][^>]*/>)'
+                          Replace = '${1}0$2'
+                          Verify  = '<Setting name=[''"]EnableAutomaticApplyOPS[''"] value=[''"]0[''"]'
+                          Label   = 'NVIDIA 自动优化(OPS)' }) })
+               Note = '这个开关开着时，NVIDIA 会自动把它认为「最佳」的画质设置写进游戏、覆盖你自己调好的参数（俗称"白调"）。关掉只是不再自动改游戏设置，不影响驱动本身。与「锁定电源计划」同源：都是防外部程序偷改你的配置。' }
+
   $items += @{ Id = 'gpu-irq-affinity'; Tier = 'safe'; Name = '显卡中断绑核（费利克斯手法）'; Admin = $true; Default = $false; Kind = 'multi'
                Ops  = (Get-GpuIrqOps $hw)
                Note = '把独显中断固定到编号最大的物理核（大小核机型按 EfficiencyClass 选最后一个 P 核），避开挤满系统中断的 CPU0，压低 DPC 延迟。读不到核拓扑时本项自动不可用（宁可不做不能做错）。重启生效，还原即删除策略。' }
@@ -801,7 +890,7 @@ function Get-BuiltinPresets {
                 'gpu-irq-affinity',
                 'dvr-off','wer-off','sysmain-off','wsearch-off','hibernate-off','mem-compress-off',
                 'paging-exec','transparency-off','mpo-off','dyntick-off','mouse-accel-off',
-                'hags','fso-off','gpu-pref','gpu-pstate-lock','nvidia-profile',
+                'hags','fso-off','gpu-pref','gpu-pstate-lock','nv-autoopt-off','nvidia-profile',
                 'pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
@@ -810,7 +899,7 @@ function Get-BuiltinPresets {
       Items = @('power-ultimate','power-tuning','hags','game-mode','dvr-off','prio-separation',
                 'paging-exec','wer-off','transparency-off','mpo-off','net-throttling-off',
                 'sys-responsiveness','mmcss-games','fso-off','gpu-pref','game-priority',
-                'pcie-check','vcredist-check','xmp-check')
+                'nv-autoopt-off','pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
       Id = 'safe-only'; Name = '保守（只改当前用户）'; Builtin = $true
@@ -907,7 +996,9 @@ function Get-OpState($Op, $ItemId) {
         return @{ Ok = [bool]$Op.Optional; Text = "$($Op.Label)=本机不支持此项" }
       }
       $v = Get-PowerSettingAc $Op.Sub $Op.Setting
-      if ($null -eq $v) { return @{ Ok = $false; Text = "$($Op.Label)=读取失败" } }
+      # 读不到值 ≠ 读取失败：方案没写显式值、默认表里又没有该方案 GUID 时就是这样，
+      # 语义上是「继承默认」，照实说，别吓唬用户
+      if ($null -eq $v) { return @{ Ok = $false; Text = "$($Op.Label)=未显式设置（继承系统默认）" } }
       return @{ Ok = ($v -eq $Op.Value); Text = "$($Op.Label)（当前 $v）" }
     }
     'mmagent' {
@@ -919,6 +1010,15 @@ function Get-OpState($Op, $ItemId) {
       $cur = Get-KvStringItem (Get-RegValue $Op.Path $Op.Name) $Op.Key
       $shown = $(if ($null -eq $cur) { '(未设置)' } else { $cur })
       return @{ Ok = ("$cur" -eq "$($Op.Value)"); Text = "$($Op.Label)=$shown" }
+    }
+    'file' {
+      # 外部程序的配置文件（如 NVIDIA App）：Verify 命中即已优化，Match 命中即待优化，
+      # 两者都不命中说明文件结构变了——如实报「未找到」，绝不瞎猜默认值
+      if (-not (Test-Path -LiteralPath $Op.Path)) { return @{ Ok = $false; Text = "$($Op.Label)=文件不存在" } }
+      $txt = [IO.File]::ReadAllText($Op.Path)
+      if ($txt -match $Op.Verify) { return @{ Ok = $true; Text = "$($Op.Label)=已关闭" } }
+      if ($txt -match $Op.Match)  { return @{ Ok = $false; Text = "$($Op.Label)=开启中" } }
+      return @{ Ok = $false; Text = "$($Op.Label)=未找到该设置（配置结构可能已变化）" }
     }
     default { return @{ Ok = $false; Text = '未知操作' } }
   }
@@ -971,8 +1071,8 @@ function Get-GpuGuideText([string]$Vendor) {
       '  4. 着色器缓存大小 = 无限制'
       '  5. 线程优化 = 开'
       '  6. 最大预渲染帧数 = 1'
-      '【重要】NVIDIA App → 设置 → 关闭「自动优化新添加的游戏及应用程序」'
-      '        它开着会自动覆写你游戏内的画质设置，等于白调。此开关无法脚本化，只能手动关。'
+      '【提示】「NVIDIA App 自动优化」已可由本工具的「关闭 NVIDIA App 自动优化游戏设置」项'
+      '        一键关闭（它开着会自动覆写你游戏内调好的画质，等于白调），无需再手动进 App 关。'
       '游戏内：开启 NVIDIA Reflex（开+加速）；帧数不够时开 DLSS（画质/平衡档）。'
       '进阶：NVIDIA App → 图形 → 三角洲行动 → DLSS 模型预设 → 选 Preset K；'
       '      或下载 NVIDIA Profile Inspector 放入本工具 tools\ 目录后一键导入。'
@@ -1037,8 +1137,12 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
         if ($Op.Optional) { return "跳过（本机 CPU 无此电源项）：$($Op.Label)" }
         throw "本机不支持该电源项：$($Op.Label)"
       }
-      $old = Get-PowerSettingAc $Op.Sub $Op.Setting
-      if ($null -eq $old) { throw "无法读取当前值：$($Op.Label)" }
+      $act = Get-ActiveScheme
+      if (-not $act) { throw "无法确定当前活动电源方案：$($Op.Label)" }
+      # 只看方案下的显式值：读不到不是错误，就是「继承默认」（duplicatescheme 出来的
+      # 方案不在 DefaultPowerSchemeValues 表里，连回落值都没有）。当前值只服务于备份，
+      # 备份记 Existed=$false 即可，绝不能因为读不到就拒绝写入
+      $old = Get-PowerSettingAcExplicit $act.Guid $Op.Sub $Op.Setting
       # 隐藏项必须先解除隐藏才能写入；原 Attributes 按普通注册表值备份，还原时自动改回
       $oldAttr = Show-PowerSetting $Op.Sub $Op.Setting
       if ($null -ne $oldAttr) {
@@ -1046,7 +1150,8 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
                                Existed = $true; OldValue = $oldAttr; OldKind = 'DWord' }
       }
       Set-PowerSettingAc $Op.Sub $Op.Setting $Op.Value
-      $BackupOps.Value += @{ Kind = 'pcfg'; Sub = $Op.Sub; Setting = $Op.Setting; OldValue = $old }
+      $BackupOps.Value += @{ Kind = 'pcfg'; Sub = $Op.Sub; Setting = $Op.Setting
+                             Existed = ($null -ne $old); OldValue = $old; SchemeGuid = $act.Guid }
     }
     'mmagent' {
       $old = Get-MMAgentState $Op.Feature
@@ -1073,6 +1178,27 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       Set-BcdEntryValue $Op.Name $Op.Value
       # OldValue='absent' 表示原本未设置，还原时删除该值而不是写回字符串
       $BackupOps.Value += @{ Kind = 'bcd'; Name = $Op.Name; OldValue = $old }
+    }
+    'file' {
+      # 外部程序的配置文件是别人家的私产：用正则只替换目标那一小段而不是 XML DOM 重排
+      # （.Save() 会把单引号改双引号、动缩进，没必要冒对方解析异常的风险）；
+      # 备份直接存整文件原始字节，还原时逐字节写回，比值级还原可靠
+      if (-not (Test-Path -LiteralPath $Op.Path)) { throw "文件不存在：$($Op.Path)" }
+      $rawBytes = [IO.File]::ReadAllBytes($Op.Path)
+      $txt = [IO.File]::ReadAllText($Op.Path)
+      if ($txt -match $Op.Verify) { return "无需修改：$($Op.Label) 已是目标状态" }
+      if ($txt -notmatch $Op.Match) { throw "未在 $(Split-Path -Leaf $Op.Path) 中找到目标设置（配置结构可能已变化），请手动处理：$($Op.Label)" }
+      $new = [regex]::Replace($txt, $Op.Match, $Op.Replace)
+      # 写回保持原文件的编码与 BOM 状态，除目标片段外逐字节不变
+      $enc = if ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF) { New-Object Text.UTF8Encoding($true) }
+             elseif ($rawBytes.Length -ge 2 -and $rawBytes[0] -eq 0xFF -and $rawBytes[1] -eq 0xFE) { [Text.Encoding]::Unicode }
+             elseif ($rawBytes.Length -ge 2 -and $rawBytes[0] -eq 0xFE -and $rawBytes[1] -eq 0xFF) { [Text.Encoding]::BigEndianUnicode }
+             else { New-Object Text.UTF8Encoding($false) }
+      [IO.File]::WriteAllText($Op.Path, $new, $enc)
+      # 回读校验：拥有该文件的程序（NVIDIA App 常驻进程）可能随时把配置写回去，
+      # 写完必须确认真的落住了，落不住就如实报失败引导手动关
+      if ([IO.File]::ReadAllText($Op.Path) -notmatch $Op.Verify) { throw "写入后回读校验未通过（文件可能被其所属程序改回），请在对应程序里手动设置：$($Op.Label)" }
+      $BackupOps.Value += @{ Kind = 'file'; Path = $Op.Path; OrigB64 = [Convert]::ToBase64String($rawBytes) }
     }
     default { throw "未知操作类型：$($Op.Kind)" }
   }
@@ -1132,9 +1258,12 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
         $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已导入驱动配置档（此项不在自动备份内）' }
       }
       elseif ($it.Kind -eq 'check') {
-        # 纯检测项：把检测结论当作执行结果输出，绝不写任何东西
+        # 纯检测项：把检测结论当作执行结果输出，绝不写任何东西。
+        # 发现问题恰恰说明检测「运行成功」，绝不能计成失败——用独立的 Attention 状态
+        # 承载「体检发现问题/无法判定」，汇总时单列，避免用户误以为工具坏了
         $st = & $it.Check
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($st.Ok -ne $false); Skipped = $false; Msg = "纯检测：$($st.Text)" }
+        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($st.Ok -eq $true)
+                                       Skipped = $false; Attention = ($st.Ok -ne $true); Msg = "纯检测：$($st.Text)" }
       }
       else {
         if (-not $it.Ops) {
@@ -1181,7 +1310,24 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   [pscustomobject]@{ Results = $results; Backup = $bf }
 }
 
-function Invoke-Restore([string]$File) {
+# $Progress 为可选进度回调（与 Invoke-Apply 同一约定：不传时行为与旧版完全一致，
+# CLI 与 SKILL.md 契约不受影响）。备份操作是「值」粒度没有人话名字，这里按 Kind
+# 拼出用户看得懂的描述，界面还原进度不至于满屏 GUID
+function Get-RestoreOpLabel($op) {
+  switch ($op.Kind) {
+    'power'   { '电源计划（切回原方案）' }
+    'pcfg'    { '电源计划隐藏项' }
+    'mmagent' { "内存管理（$(if ($op.Feature -eq 'mc') { '内存压缩' } else { '页面合并' })）" }
+    'sched'   { "计划任务 $($op.TaskName)" }
+    'hib'     { '休眠状态' }
+    'bcd'     { "启动配置 $($op.Name)" }
+    'reg'     { "注册表 $($op.Name)" }
+    'file'    { "文件 $(Split-Path -Leaf $op.Path)" }
+    default   { "$($op.Kind)" }
+  }
+}
+
+function Invoke-Restore([string]$File, [scriptblock]$Progress) {
   if (-not $File) {
     $File = Get-ChildItem $script:BackupDir -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue |
       Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
@@ -1189,8 +1335,11 @@ function Invoke-Restore([string]$File) {
   if (-not $File) { throw '未找到任何备份文件，无法还原' }
   $b = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json
   $ops = @($b.Ops); [array]::Reverse($ops)
-  $restored = 0; $failed = @(); $restoreNotes = @()
+  $restored = 0; $failed = @(); $restoreNotes = @(); $seq = 0; $total = $ops.Count
   foreach ($op in $ops) {
+    $seq++
+    if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $null }) }
+    $opOk = $true
     try {
       switch ($op.Kind) {
         'power'   {
@@ -1200,7 +1349,17 @@ function Invoke-Restore([string]$File) {
             $restoreNotes += "工具创建的电源计划「$script:ToolSchemeName」已保留，如不需要可在控制面板→电源选项里手动删除"
           }
         }
-        'pcfg'    { Set-PowerSettingAc $op.Sub $op.Setting ([int]$op.OldValue); $restored++ }
+        'pcfg'    {
+          # Existed=$false：写入前方案里没有显式值（继承默认），删设置子键回到继承态。
+          # 旧版备份没有 Existed 字段（当年读不到值就不会写入），一律按显式值写回
+          $hasExisted = [bool]$op.PSObject.Properties['Existed']
+          if ($hasExisted -and -not $op.Existed) {
+            Remove-PowerSettingAcOverride "$($op.SchemeGuid)" $op.Sub $op.Setting
+          } else {
+            Set-PowerSettingAc $op.Sub $op.Setting ([int]$op.OldValue) "$($op.SchemeGuid)"
+          }
+          $restored++
+        }
         'mmagent' { Set-MMAgentState $op.Feature ([bool]$op.OldEnabled); $restored++ }
         'sched'   { & schtasks /Delete /TN $op.TaskName /F 2>&1 | Out-Null; $restored++ }
         'hib'     { Set-HibernateEnabled ([bool]$op.OldEnabled); $restored++ }
@@ -1208,6 +1367,8 @@ function Invoke-Restore([string]$File) {
           if ($op.OldValue -eq 'absent') { Remove-BcdEntryValue $op.Name } else { Set-BcdEntryValue $op.Name $op.OldValue }
           $restored++
         }
+        # 备份里存的是应用前的整文件原始字节，逐字节写回即完全复原（含编码/BOM/格式）
+        'file'    { [IO.File]::WriteAllBytes($op.Path, [Convert]::FromBase64String($op.OrigB64)); $restored++ }
         'reg'     {
           if ($op.Path -like 'HKLM:*' -and -not (Test-Admin)) { throw '需要管理员权限' }
           if ($op.Existed) {
@@ -1221,7 +1382,8 @@ function Invoke-Restore([string]$File) {
         }
         default   { throw "未知备份类型：$($op.Kind)" }
       }
-    } catch { $failed += "$($op.Kind) $($op.Name)$($op.Label)：$($_.Exception.Message)" }
+    } catch { $opOk = $false; $failed += "$($op.Kind) $($op.Name)$($op.Label)：$($_.Exception.Message)" }
+    if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $opOk }) }
   }
   [pscustomobject]@{ File = $File; RestoredOps = $restored; Failed = $failed; Notes = $restoreNotes }
 }
@@ -1310,11 +1472,12 @@ elseif ($Apply) {
   $r = Invoke-Apply $Items $GamePath ([bool]$Risky)
   if ($Json) { $r | ConvertTo-Json -Depth 5 }
   else {
-    foreach ($x in $r.Results) { Write-Output "  $(if ($x.Ok) { '[成功]' } elseif ($x.Skipped) { '[跳过]' } else { '[失败]' }) $($x.Name) — $($x.Msg)" }
+    foreach ($x in $r.Results) { Write-Output "  $(if ($x.Attention) { '[提示]' } elseif ($x.Ok) { '[成功]' } elseif ($x.Skipped) { '[跳过]' } else { '[失败]' }) $($x.Name) — $($x.Msg)" }
     $okN = @($r.Results | Where-Object Ok).Count
+    $attN = @($r.Results | Where-Object Attention).Count
     $skipN = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped }).Count
-    $failN = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped }).Count
-    Write-Output "执行完成：共 $(@($r.Results).Count) 项 — $okN 成功、$failN 失败、$skipN 跳过。"
+    $failN = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention }).Count
+    Write-Output "执行完成：共 $(@($r.Results).Count) 项 — $okN 成功、$failN 失败、$skipN 跳过$(if ($attN -gt 0) { "、$attN 项体检发现问题" })。"
     if ($r.Backup) { Write-Output "备份已保存：$($r.Backup)（用 -Restore 可一键还原）" }
     Write-Output "提示：HAGS、电源计划等项重启后完全生效。"
   }

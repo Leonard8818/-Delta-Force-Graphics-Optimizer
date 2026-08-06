@@ -1,5 +1,5 @@
 ﻿<#
-  DeltaForceBooster 诊断脚本 — v0.2
+  DeltaForceBooster 诊断脚本 — v0.3
   用途：优化后有项目没变成「已就绪」时，跑这个把真实原因打出来。
   除「电源项写入自检」（写回原值、不留改动）外全部只读。请用管理员身份运行
   （很多项非管理员读不到）。
@@ -9,6 +9,8 @@
   （-ExecutionPolicy Bypass 不能省：下载解压的脚本带网络标记，默认策略会拒绝运行）
   把完整输出复制回来即可。
 
+  v0.3：跟进引擎 v0.7——「读不到当前值」不再是异常（方案无显式值即继承默认），
+        该情形下改用「写目标值 → 删设置子键回继承」做真实写入自检，同样不留改动。
   v0.2：当前值读不到时跳过目标值试写（避免试写成功后无值可还原，在用户机上留下改动）；
         新增激活方案交叉核对（注册表 vs powercfg）、模板激活自检、显示名解析自检。
 #>
@@ -84,8 +86,18 @@ foreach ($p in $probe) {
   "    本机是否存在: $exists    当前隐藏: $hidden    当前值: $cur    目标值: $($p.V)"
   if ($exists) {
     if ($null -eq $cur) {
-      # 当前值读不到时绝不试写目标值：写成功了却没有原值可还原，会在用户机上留下改动
-      "    当前值读取失败，跳过写入自检（避免留下无法还原的改动）；请确认以管理员运行"
+      # 读不到值 = 方案无显式值且默认表没有该方案（duplicatescheme 出来的方案都这样），
+      # 引擎 v0.7 起这是合法的「继承默认」态：写目标值试一次，再删设置子键回到继承，不留改动
+      "    未显式设置（继承系统默认）——按引擎 v0.7 语义做写入+删键自检"
+      $out2 = & powercfg /setacvalueindex SCHEME_CURRENT $p.S $p.G $p.V 2>&1
+      "    写入目标值    : exit=$LASTEXITCODE $(if ($out2) { "输出=$($out2 -join ' ')" } else { '无输出（成功）' })"
+      if ($LASTEXITCODE -eq 0) {
+        $g1 = Get-RegValue $root 'ActivePowerScheme'
+        if ((Get-Command Remove-PowerSettingAcOverride -EA SilentlyContinue) -and $g1) {
+          Remove-PowerSettingAcOverride "$g1" $p.S $p.G
+          "    已删除显式值子键，回到继承默认态（回读: $(Get-PowerSettingAc $p.S $p.G)，null 即已继承）"
+        } else { "    警告：引擎过旧，无法删键还原，方案里留下了显式值 $($p.V)" }
+      }
     } else {
       # 直接试一次真实写入，把 powercfg 的原话打出来（写的是当前值本身，等于不改动）
       $out = & powercfg /setacvalueindex SCHEME_CURRENT $p.S $p.G $cur 2>&1
