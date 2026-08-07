@@ -1,9 +1,21 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.12
+  DeltaForceBooster 图形界面 — v0.13
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
     近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
     等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
     + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
+  v0.13：实机反馈第五轮——①「主播设置参考」页更名「游戏内设置参考」，画质路径按实机
+        录像逐帧核对修正为「设置 → 视频」（此前写「画面」是错的），分组与设置项全量
+        对齐游戏内实际菜单（数据文件 schema 同步扩充，无数据的新项显示「—」不编造）；
+        ②felix 预设显示名改「主推全套」并加星标（Id 不变），启动即默认选中该方案，
+        套方案与启动默认勾选都跳过已就绪项；③新增「检查更新」按钮：手动立即查一次，
+        三种反馈（已最新/弹更新框/网络失败），手动检查无视「不再提醒此版本」；
+        ④全局深色 Chrome 资源字典：对话框是独立 Window 不继承主窗口资源，此前确认
+        执行框等对话框里的滚动条全是系统白色（实机反馈）——现在主窗口与五个对话框
+        共用同一份深色 ScrollBar（纵横双向）/ToolTip/右键菜单/文本选中色资源，
+        并去掉键盘焦点虚线框；⑤内置更新启动安装器后 [Environment]::Exit 兜底强制
+        退出——WPF 宿主里残留 runspace/嵌套模态帧时 Close 后进程未必真退，旧窗口
+        会与安装后新实例并存（实机反馈）。
   v0.12：真机反馈四连修——①体检查出问题（VC++ 错乱/XMP 未开）不再只落纯文本日志：
         执行后弹「体检发现问题」对话框，带逐步教程与可点击的官方下载按钮（链接是代码
         硬编码常量、只放行 https，绝不下载执行），优化项行内也有「解决办法」直达入口；
@@ -52,7 +64,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.12'
+$script:GuiVersion = '0.13'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -115,6 +127,7 @@ $xaml = @'
     </DrawingBrush>
 
     <Style x:Key="TacCheck" TargetType="CheckBox">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
@@ -156,6 +169,7 @@ $xaml = @'
 
     <!-- 官网次级动作样式：绿色细描边 + 绿色文字 + 内容居中 -->
     <Style x:Key="Ghost" TargetType="Button">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Foreground" Value="#FF00E884"/>
       <Setter Property="Height" Value="34"/>
       <Setter Property="Template">
@@ -178,6 +192,7 @@ $xaml = @'
     <!-- 官网主 CTA：斜切角 + 等高线纹理 + 深色字；hover 用白色薄罩提亮而不是换色，
          保住纹理层不被覆盖 -->
     <Style x:Key="Primary" TargetType="Button">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Foreground" Value="#FF04241B"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="FontWeight" Value="Bold"/>
@@ -204,6 +219,7 @@ $xaml = @'
     </Style>
 
     <Style x:Key="WinBtn" TargetType="Button">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Foreground" Value="#FF9AA5A0"/>
       <Setter Property="Width" Value="34"/>
       <Setter Property="FontSize" Value="14"/>
@@ -266,6 +282,7 @@ $xaml = @'
     <!-- 标签页按钮：官网标签页手法——选中项绿色文字 + 底部绿色下划线，未选中灰色。
          不用 WPF TabControl：其默认模板白底黑字，整套重模板不如自绘两个按钮可控 -->
     <Style x:Key="TabBtn" TargetType="Button">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Foreground" Value="{StaticResource TextSec}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Template">
@@ -321,36 +338,9 @@ $xaml = @'
       <Setter Property="Margin" Value="4,0"/>
     </Style>
 
-    <!-- 深色滚动条：默认白色滚动条在本主题下非常突兀 -->
-    <Style TargetType="ScrollBar">
-      <Setter Property="Width" Value="6"/>
-      <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ScrollBar">
-            <Grid Background="Transparent">
-              <Track x:Name="PART_Track" IsDirectionReversed="True">
-                <Track.DecreaseRepeatButton>
-                  <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/>
-                </Track.DecreaseRepeatButton>
-                <Track.IncreaseRepeatButton>
-                  <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/>
-                </Track.IncreaseRepeatButton>
-                <Track.Thumb>
-                  <Thumb>
-                    <Thumb.Template>
-                      <ControlTemplate TargetType="Thumb">
-                        <Border Background="#FF2C443B" CornerRadius="3"/>
-                      </ControlTemplate>
-                    </Thumb.Template>
-                  </Thumb>
-                </Track.Thumb>
-              </Track>
-            </Grid>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
+    <!-- 深色滚动条样式已移入 $script:ThemeResXaml 共享资源字典（v0.13）：
+         对话框是独立 Window 不继承这里的资源，样式只放主窗口时对话框滚动条仍是
+         系统白色（实机反馈）。主窗口在 Parse 后 MergedDictionaries 引同一份实例 -->
 
     <!-- 深色主题 ComboBox：默认白底模板在本主题下刺眼，整体重做。
          选中项文字用品牌绿——官网列表强调项就是整行绿色 -->
@@ -443,7 +433,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.12 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.13 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
         <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
@@ -477,12 +467,12 @@ $xaml = @'
       </Grid>
     </Border>
 
-    <!-- 标签页导航：优化 / 主播设置参考 -->
+    <!-- 标签页导航：优化 / 游戏内设置参考 -->
     <Border Grid.Row="1" Background="{StaticResource TopBar}" BorderBrush="{StaticResource Line}"
             BorderThickness="0,0,0,1">
       <StackPanel Orientation="Horizontal" Margin="15,0,0,0">
         <Button x:Name="TabOptBtn" Content="优化" Style="{StaticResource TabBtn}" Tag="on"/>
-        <Button x:Name="TabRefBtn" Content="主播设置参考" Style="{StaticResource TabBtn}" Tag=""/>
+        <Button x:Name="TabRefBtn" Content="游戏内设置参考" Style="{StaticResource TabBtn}" Tag=""/>
       </StackPanel>
     </Border>
 
@@ -664,7 +654,7 @@ $xaml = @'
       </ScrollViewer>
     </Grid>
 
-    <!-- 主播设置参考页：纯展示（内容由代码按 data\streamer-settings.json 构建） -->
+    <!-- 游戏内设置参考页：纯展示（内容由代码按 data\streamer-settings.json 构建） -->
     <Grid Grid.Row="2" x:Name="RefPage" Visibility="Collapsed">
       <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="21,10">
         <StackPanel x:Name="RefPanel"/>
@@ -681,9 +671,11 @@ $xaml = @'
             <TextBlock Text="执行优化" VerticalAlignment="Center"/>
           </StackPanel>
         </Button>
-        <Button x:Name="RestoreBtn" Content="还原设置" Style="{StaticResource Ghost}" Width="130" Margin="9,0,0,0"/>
-        <Button x:Name="RefreshBtn" Content="重新检测" Style="{StaticResource Ghost}" Width="115" Margin="9,0,0,0"/>
-        <Button x:Name="GuideBtn" Content="显卡指引" Style="{StaticResource Ghost}" Width="115" Margin="9,0,0,0"/>
+        <Button x:Name="RestoreBtn" Content="还原设置" Style="{StaticResource Ghost}" Width="118" Margin="9,0,0,0"/>
+        <Button x:Name="RefreshBtn" Content="重新检测" Style="{StaticResource Ghost}" Width="104" Margin="9,0,0,0"/>
+        <Button x:Name="GuideBtn" Content="显卡指引" Style="{StaticResource Ghost}" Width="104" Margin="9,0,0,0"/>
+        <!-- 手动检查更新（实机诉求）：不再只等 30 分钟定时或下次启动，点击立刻查一次 -->
+        <Button x:Name="CheckUpdBtn" Content="检查更新" Style="{StaticResource Ghost}" Width="104" Margin="9,0,0,0"/>
       </StackPanel>
       <!-- 执行进度：进度条 + 当前项 + n/m 计数；只在执行期间和结束后可见 -->
       <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Margin="0,9,0,0">
@@ -745,7 +737,7 @@ $xaml = @'
       <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
-      <TextBlock Grid.Column="4" Text="[ V0.12 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+      <TextBlock Grid.Column="4" Text="[ V0.13 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
     </Grid>
   </Grid>
 </Window>
@@ -761,10 +753,165 @@ try {
     $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $icoPath))
   }
 } catch {}
+# ---------- 全局深色 Chrome 资源字典（v0.13） ----------
+# 为什么要独立一份共享字典：确认执行等对话框是 XamlReader 另行 Parse 的独立 Window，
+# 不继承主窗口 Window.Resources——深色滚动条样式只挂主窗口时，对话框里的 ScrollViewer
+# 仍是系统白色滚动条（实机反馈）。这里把 WPF 默认浅色的零件（ScrollBar 纵横双向、
+# ToolTip、TextBox 右键菜单、文本选中色、键盘焦点虚线框）一次做成深色，主窗口与
+# 全部对话框 MergedDictionaries 引用同一份实例，谁也不会再漏。
+$script:ThemeResXaml = @'
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Style TargetType="ScrollBar">
+    <Setter Property="Width" Value="6"/>
+    <!-- Min/Max 必须一起钉死：主题默认样式仍会给 ScrollBar 兜一个 MinWidth≈17，
+         而 WPF 布局钳制里 Min 压过 Max 和 Width，不清零就永远是系统宽度（实测 17px） -->
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="MaxWidth" Value="6"/>
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ScrollBar">
+          <Grid Background="Transparent">
+            <Track x:Name="PART_Track" IsDirectionReversed="True">
+              <Track.DecreaseRepeatButton>
+                <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/>
+              </Track.DecreaseRepeatButton>
+              <Track.IncreaseRepeatButton>
+                <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/>
+              </Track.IncreaseRepeatButton>
+              <Track.Thumb>
+                <Thumb>
+                  <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                      <Border Background="#FF2C443B" CornerRadius="3"/>
+                    </ControlTemplate>
+                  </Thumb.Template>
+                </Thumb>
+              </Track.Thumb>
+            </Track>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+    <Style.Triggers>
+      <!-- 横向滚动条（游戏内设置参考页的对照表会用到）：老样式只做了纵向模板，
+           横向一旦出现会被 Width=6 挤成一条竖线 -->
+      <Trigger Property="Orientation" Value="Horizontal">
+        <Setter Property="Width" Value="Auto"/>
+        <Setter Property="MaxWidth" Value="1000000"/>
+        <Setter Property="Height" Value="6"/>
+        <Setter Property="MinHeight" Value="0"/>
+        <Setter Property="MaxHeight" Value="6"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ScrollBar">
+              <Grid Background="Transparent">
+                <Track x:Name="PART_Track">
+                  <Track.DecreaseRepeatButton>
+                    <RepeatButton Command="ScrollBar.PageLeftCommand" Opacity="0" Focusable="False"/>
+                  </Track.DecreaseRepeatButton>
+                  <Track.IncreaseRepeatButton>
+                    <RepeatButton Command="ScrollBar.PageRightCommand" Opacity="0" Focusable="False"/>
+                  </Track.IncreaseRepeatButton>
+                  <Track.Thumb>
+                    <Thumb>
+                      <Thumb.Template>
+                        <ControlTemplate TargetType="Thumb">
+                          <Border Background="#FF2C443B" CornerRadius="3"/>
+                        </ControlTemplate>
+                      </Thumb.Template>
+                    </Thumb>
+                  </Track.Thumb>
+                </Track>
+              </Grid>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+  <!-- ToolTip：默认是白底系统气泡 -->
+  <Style TargetType="ToolTip">
+    <Setter Property="Background" Value="#FF0E1B17"/>
+    <Setter Property="BorderBrush" Value="#FF2C443B"/>
+    <Setter Property="Foreground" Value="#FF9AA5A0"/>
+    <Setter Property="Padding" Value="9,5"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ToolTip">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="1" Padding="{TemplateBinding Padding}">
+            <ContentPresenter/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- TextBox 右键菜单（复制/粘贴）：默认白底。项目里没有子菜单，简化模板即可 -->
+  <Style TargetType="ContextMenu">
+    <Setter Property="Background" Value="#FF0E1B17"/>
+    <Setter Property="BorderBrush" Value="#FF2C443B"/>
+    <Setter Property="Foreground" Value="#FF9AA5A0"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ContextMenu">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="1" Padding="2">
+            <ItemsPresenter/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style TargetType="MenuItem">
+    <Setter Property="Foreground" Value="#FF9AA5A0"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="MenuItem">
+          <Border x:Name="BD" Background="Transparent" Padding="12,5">
+            <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="BD" Property="Background" Value="#FF12291F"/>
+              <Setter Property="Foreground" Value="#FF00E884"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Foreground" Value="#FF4A554F"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style TargetType="Separator">
+    <Setter Property="Background" Value="#FF1B2E28"/>
+    <Setter Property="Height" Value="1"/>
+    <Setter Property="Margin" Value="4,2"/>
+  </Style>
+  <!-- 文本选中色：默认的系统蓝在青绿主题里最扎眼；焦点虚线框一并去掉 -->
+  <Style TargetType="TextBox">
+    <Setter Property="SelectionBrush" Value="#8000E884"/>
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  </Style>
+  <!-- 对话框里的按钮/勾选框都是行内模板、没挂命名样式，隐式样式只补焦点虚线框，
+       不设 Template 不会覆盖行内模板 -->
+  <Style TargetType="Button">
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  </Style>
+  <Style TargetType="CheckBox">
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  </Style>
+</ResourceDictionary>
+'@
+$script:ThemeRes = [Windows.Markup.XamlReader]::Parse($script:ThemeResXaml)
+$window.Resources.MergedDictionaries.Add($script:ThemeRes)
+
 $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
                'SelAllChk',
-               'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','LogBox',
+               'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
                'TabOptBtn','TabRefBtn','OptPage','RefPage','RefPanel','ActionRow','LogRow',
                'ProgressPanel','ProgTrack','ProgFill','ProgText','ProgCount','CopyLogBtn','CopyLogTxt') {
@@ -943,7 +1090,10 @@ function Update-PresetList {
   $script:PresetList = @(Get-Presets)
   $ui.PresetBox.Items.Clear()
   foreach ($p in $script:PresetList) {
-    $ui.PresetBox.Items.Add("$($p.Name)$(if (-not $p.Builtin) { '（自存）' })") | Out-Null
+    # 主推方案加星标突出（实机诉求）；只改显示，Id 仍是 felix——改 Id 会让
+    # 用户已存方案与文档里的 -Preset felix 命令失效
+    $star = $(if ($p.Id -eq 'felix') { '★ ' } else { '' })
+    $ui.PresetBox.Items.Add("$star$($p.Name)$(if (-not $p.Builtin) { '（自存）' })") | Out-Null
   }
 }
 
@@ -967,8 +1117,9 @@ $script:CheckHelp = @{
       '修复步骤：'
       '1. 点下方按钮下载 x64 与 x86 两个安装包（微软官方永久链接，浏览器打开）；'
       '2. 依次双击安装——直接覆盖安装即可，不需要先卸载旧版本；'
-      '3. 装完重启电脑；'
-      '4. 回到本工具点「重新检测」，确认此项变成「正常」。'
+      '3. 若双击后看到的是「修复 / 卸载」而不是「安装」，说明系统里已有同版本或更高版本——这不是装不上，选「修复」即可；'
+      '4. 装完/修完重启电脑，回到本工具点「重新检测」，确认此项变成「正常」；'
+      '5. 修复后仍报版本不一致，再到「设置 → 应用 → 安装的应用」里只卸载对应架构的「Microsoft Visual C++ 2015-2022 Redistributable」然后重装。切勿把列表里其他年份的 VC++ 一并卸掉——很多软件还依赖它们。'
     ) -join "`n"
     Links = @(
       @{ Text = '下载 x64 运行库'; Url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe' }
@@ -1044,6 +1195,8 @@ function Build-HealthDialog($AttResults) {
 </Window>
 '@
   $dlg = [Windows.Markup.XamlReader]::Parse($hxaml)
+  # 独立 Window 不继承主窗口资源：不挂共享字典，对话框滚动条就是系统白色（实机反馈）
+  $dlg.Resources.MergedDictionaries.Add($script:ThemeRes)
   $panel = $dlg.FindName('ListPanel')
   foreach ($r in @($AttResults)) {
     $help = $script:CheckHelp["$($r.Id)"]
@@ -1098,7 +1251,7 @@ function Show-HealthDialog($AttResults) {
   [void]$script:HcDlg.ShowDialog()
 }
 
-# ---------- 主播设置参考页（纯展示，数据来自 data\streamer-settings.json） ----------
+# ---------- 游戏内设置参考页（纯展示，数据来自 data\streamer-settings.json） ----------
 
 $script:DataFile = Join-Path $script:RootDir 'data\streamer-settings.json'
 
@@ -1152,14 +1305,14 @@ function Update-StreamerPage {
   $wt = New-Text '仅供参考 · 本工具不会也无法修改游戏内设置' $script:C.Gold 12
   $wt.FontWeight = 'Bold'
   $wsp.Children.Add($wt) | Out-Null
-  $wd = New-WrapText '下表是头部主播公开的游戏内画质设置记录，请进入游戏后在「设置 → 画面」里手动对照调整。主播设置随游戏版本和硬件不同而变化，不保证适合你的机器。' $script:C.TextSec 11
+  $wd = New-WrapText '下表是头部主播公开的游戏内画质设置记录，请进入游戏后在「设置 → 视频」页签里手动对照调整。主播设置随游戏版本和硬件不同而变化，不保证适合你的机器。' $script:C.TextSec 11
   $wd.Margin = New-Object Windows.Thickness 0, 4, 0, 0
   $wsp.Children.Add($wd) | Out-Null
   $warn.Child = $wsp
   $ui.RefPanel.Children.Add($warn) | Out-Null
 
   if (-not (Test-Path -LiteralPath $script:DataFile)) {
-    Add-RefNotice '数据尚未就绪' '主播画面设置数据（data\streamer-settings.json）还没有生成。数据到位后切回本页会自动加载。'
+    Add-RefNotice '数据尚未就绪' '游戏内设置参考数据（data\streamer-settings.json）还没有生成。数据到位后切回本页会自动加载。'
     return
   }
   $data = $null
@@ -1170,7 +1323,8 @@ function Update-StreamerPage {
   if ($streamers.Count -eq 0) { Add-RefNotice '数据尚未就绪' '数据文件里还没有主播条目。'; return }
 
   # 行头顺序优先用数据声明的 settings_schema。v0.12 起 schema 项支持 { name, group }
-  # 对象——group 即游戏内「设置 → 画面」的菜单分组；老格式的纯字符串仍能读，
+  # 对象——group 即游戏内「设置 → 视频」页签下的菜单分组（v0.13 按实机录像核对，
+  # 一级页签是「视频」不是「画面」）；老格式的纯字符串仍能读，
   # 缺 group 的一律归入「其他」，数据文件与界面可以各自先后升级互不拖累
   $schema = @()
   foreach ($it in @($data.settings_schema | Where-Object { $_ })) {
@@ -1206,8 +1360,8 @@ function Update-StreamerPage {
   $meta.TextWrapping = 'Wrap'
   $ui.RefPanel.Children.Add($meta) | Out-Null
 
-  # 分组依据要如实交代（含「位置可能随版本变化」）：优先用数据文件里的 schema_note，
-  # 老数据没有分组信息时提示这是兜底展示
+  # 分组依据要如实交代：优先用数据文件里的 schema_note（v0.13 起写明依据实机录像
+  # 逐帧核对 + 随版本可能变动），老数据没有分组信息时提示这是兜底展示
   $srcNote = $(if ($data.schema_note) { "$($data.schema_note)" }
                elseif (@($schema | Where-Object { "$($_.Group)" -ne '' }).Count -eq 0) {
                  '当前数据文件未带菜单分组信息，设置项暂归入「其他」统一展示。' })
@@ -1259,7 +1413,11 @@ function Update-StreamerPage {
       $gsp = New-Object Windows.Controls.StackPanel
       $gsp.Orientation = 'Horizontal'
       $gsp.Children.Add((New-Pill $gName $script:C.GoldDark $script:C.Gold $script:C.Gold)) | Out-Null
-      $gh = New-Text $(if ($gName -eq '其他') { '未归入游戏菜单的项' } else { "游戏内「设置 → 画面 → $gName」" }) $script:C.TextMut 10 -Mono
+      # 路径按实机菜单给（v0.13）：一级页签是「视频」；「显示设置」是本表的归类名，
+      # 游戏里顶部这组没有组名，路径只写到「设置 → 视频」为止，别让用户找一个不存在的三级菜单
+      $gh = New-Text $(if ($gName -eq '其他') { '未归入游戏菜单的项' }
+                       elseif ($gName -eq '显示设置') { '游戏内「设置 → 视频」顶部（游戏内未标组名）' }
+                       else { "游戏内「设置 → 视频 → $gName」" }) $script:C.TextMut 10 -Mono
       $gh.Margin = New-Object Windows.Thickness 9, 0, 0, 0
       $gsp.Children.Add($gh) | Out-Null
       $gb.Child = $gsp
@@ -1378,7 +1536,7 @@ function Select-Tab([string]$Which) {
 function Set-BusyState([bool]$On) {
   # 执行期间禁用一切入口防重复点击；窗口关闭在 CloseBtn 处单独拦截
   $script:Busy = $On
-  foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','BrowseBtn',
+  foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','BrowseBtn',
                  'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn','UpdateBtn') {
     if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
   }
@@ -1490,6 +1648,8 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
 '@
   # 事件处理器在模态期间回调，与 Show-UpdateDialog 同理：要用的对象放 script 作用域最稳
   $script:CfmDlg = [Windows.Markup.XamlReader]::Parse($cxaml)
+  # 深色滚动条等共享 Chrome：独立 Window 不继承主窗口资源，必须逐个挂（实机反馈）
+  $script:CfmDlg.Resources.MergedDictionaries.Add($script:ThemeRes)
   $script:CfmDlg.Owner = $window
   $script:CfmDlg.FindName('ChipTxt').Text = $ChipText
   $script:CfmDlg.FindName('EnTxt').Text = $EnText
@@ -1594,6 +1754,7 @@ function Show-RebootDialog([string[]]$ItemNames) {
 '@
   # 事件处理器在模态期间回调，与其他对话框同理：要用的对象放 script 作用域最稳
   $script:RbDlg = [Windows.Markup.XamlReader]::Parse($rxaml)
+  $script:RbDlg.Resources.MergedDictionaries.Add($script:ThemeRes)
   $script:RbDlg.Owner = $window
   $script:RbDlg.FindName('ItemsTxt').Text = (@($ItemNames | ForEach-Object { "· $_" }) -join "`n")
   $script:RbDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:RbDlg.DragMove() })
@@ -1666,6 +1827,7 @@ function Show-NameDialog {
 </Window>
 '@
   $dlg = [Windows.Markup.XamlReader]::Parse($dxaml)
+  $dlg.Resources.MergedDictionaries.Add($script:ThemeRes)
   $dlg.Owner = $window
   $nameBox = $dlg.FindName('NameBox')
   $dlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $dlg.DragMove() })
@@ -1862,6 +2024,7 @@ function Show-UpdateDialog($UpdInfo) {
 
   # 事件处理器在模态期间回调，跟 Show-NameDialog 一样把要用的对象放 script 作用域最稳
   $script:UpdDlg = [Windows.Markup.XamlReader]::Parse($uxaml)
+  $script:UpdDlg.Resources.MergedDictionaries.Add($script:ThemeRes)
   $script:UpdDlgInfo = $UpdInfo
   $script:UpdDlg.Owner = $window
   $script:UpdUi = @{}
@@ -1918,6 +2081,10 @@ function Show-UpdateDialog($UpdInfo) {
         Start-Process -FilePath $st.File
         $script:UpdDlg.DialogResult = $false
         $window.Close()
+        # Close 之后进程未必真退（实机反馈旧窗口残留、与安装后的新实例并存）：
+        # WPF 宿主里还挂着更新检查的后台 runspace 和嵌套的模态/调度帧，powershell
+        # 不会因为窗口关了就结束。安装器已经拉起，这里强制退出兜底
+        [Environment]::Exit(0)
       } catch {
         $script:UpdUi.ErrText.Text = "启动安装程序失败：$($_.Exception.Message)"
         $script:UpdUi.ErrPanel.Visibility = 'Visible'
@@ -2061,6 +2228,66 @@ function Start-UpdateCheck {
   } catch { $script:UpdateCheckBusy = $false }
 }
 
+# 手动检查更新（v0.13，实机诉求）：定时检查是静默的，手动点击必须给出明确结果——
+# 已最新 / 发现新版弹详情 / 网络失败提示。只看 Test-BoosterUpdate 的 $null 分不出
+# 「已最新」和「拿不到清单」，所以先取清单分辨状态；手动检查带 -IncludeSkipped：
+# 用户主动点按钮就是想看结果，「不再提醒此版本」的记录不该拦住他
+function Start-ManualUpdateCheck {
+  if ($script:ManualCheckBusy) { return }
+  if (-not (Get-Command Test-BoosterUpdate -ErrorAction SilentlyContinue)) {
+    Show-ConfirmDialog '检查更新' 'CHECK UPDATE' '更新模块（scripts\updater.ps1）缺失，无法检查更新。请重新安装完整版本。' '知道了' -InfoOnly | Out-Null
+    return
+  }
+  $script:ManualCheckBusy = $true
+  $ui.CheckUpdBtn.IsEnabled = $false
+  $ui.CheckUpdBtn.Content = '检查中…'
+  Write-Log '正在检查更新…'
+  $ps = [PowerShell]::Create()
+  [void]$ps.AddScript({
+    param($ModulePath, $Cur, $ManifestUrl)
+    try {
+      . $ModulePath
+      $m = Get-BoosterManifest $ManifestUrl
+      if (-not $m) { return [pscustomobject]@{ Status = 'error' } }
+      if ((Compare-BoosterVersion "$($m.version)" $Cur) -le 0) { return [pscustomobject]@{ Status = 'latest' } }
+      $found = Test-BoosterUpdate -CurrentVersion $Cur -ManifestUrl $ManifestUrl -IncludeSkipped
+      if ($found) { return [pscustomobject]@{ Status = 'found'; Info = $found } }
+      [pscustomobject]@{ Status = 'latest' }
+    } catch { [pscustomobject]@{ Status = 'error' } }
+  })
+  foreach ($arg in @($script:UpdaterPath, $script:GuiVersion, $script:BoosterManifestUrl)) { [void]$ps.AddArgument($arg) }
+  $script:ManualCheckJob = $ps
+  $script:ManualCheckAsync = $ps.BeginInvoke()
+  $script:ManualCheckTimer = New-Object Windows.Threading.DispatcherTimer
+  $script:ManualCheckTimer.Interval = [TimeSpan]::FromMilliseconds(300)
+  $script:ManualCheckTimer.Add_Tick({
+    if (-not $script:ManualCheckAsync.IsCompleted) { return }
+    $script:ManualCheckTimer.Stop()
+    $r = $null
+    try { $r = @($script:ManualCheckJob.EndInvoke($script:ManualCheckAsync)) | Where-Object { $_ } | Select-Object -First 1 } catch {}
+    try { $script:ManualCheckJob.Dispose() } catch {}
+    $script:ManualCheckBusy = $false
+    $ui.CheckUpdBtn.Content = '检查更新'
+    # 恢复可用要看全局忙碌态：万一结果回来时正在执行优化，不能把按钮提前放开
+    if (-not $script:Busy) { $ui.CheckUpdBtn.IsEnabled = $true }
+    if (-not $r -or $r.Status -eq 'error') {
+      Write-Log '检查更新失败：网络不可达或服务器暂时无响应。'
+      Show-ConfirmDialog '检查更新' 'CHECK UPDATE' '检查更新失败：网络不可达或服务器暂时无响应，请稍后再试。' '知道了' -InfoOnly | Out-Null
+    } elseif ($r.Status -eq 'latest') {
+      Write-Log "已是最新版本 v$($script:GuiVersion)。"
+      Show-ConfirmDialog '检查更新' 'CHECK UPDATE' "已是最新版本 v$($script:GuiVersion)，无需更新。" '知道了' -InfoOnly | Out-Null
+    } else {
+      # 发现新版：与定时检查同一收口——点亮标题栏入口，并直接弹更新详情
+      $script:UpdateInfo = $r.Info
+      $ui.UpdateBtn.ToolTip = "新版本 v$($r.Info.Version) 可用（当前 v$($r.Info.Current)），点击查看详情"
+      $ui.UpdateBtn.Visibility = 'Visible'
+      Write-Log "检测到新版本 v$($r.Info.Version)（当前 v$($r.Info.Current)）。"
+      if (Show-UpdateDialog $script:UpdateInfo) { $ui.UpdateBtn.Visibility = 'Collapsed' }
+    }
+  })
+  $script:ManualCheckTimer.Start()
+}
+
 $script:TargetExe = $null
 $script:PresetList = @()
 $script:ApplyingPreset = $false
@@ -2088,8 +2315,13 @@ $window.Add_ContentRendered({
     }
     Update-ItemList
     Update-PresetList
+    # 启动即默认选中主推方案（实机诉求「进去之后默认直接选择主推全套」）：
+    # SelectionChanged 处理器会完成勾选，其中已就绪的项自动跳过不重复勾
+    for ($fi = 0; $fi -lt $script:PresetList.Count; $fi++) {
+      if ($script:PresetList[$fi].Id -eq 'felix') { $ui.PresetBox.SelectedIndex = $fi; break }
+    }
     $ui.ScanState.Text = '检测完成'
-    Write-Log '检测完成。选预设方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
+    Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
     Start-UpdateCheck
     # 运行期间定时复查：DispatcherTimer 在 UI 线程触发，真正的网络请求仍在后台 runspace，
     # 静默失败的约定不变——断网/超时都不会打扰主界面
@@ -2132,6 +2364,8 @@ $ui.BrowseBtn.Add_Click({
 })
 
 $ui.RefreshBtn.Add_Click({ Update-ItemList; Write-Log '状态已刷新。' })
+
+$ui.CheckUpdBtn.Add_Click({ Start-ManualUpdateCheck })
 
 # 全选/全不选（实机诉求）：勾选态只圈「可执行」的项——已就绪项重复执行只会撑大备份；
 # 全不选则一视同仁清空。这等同手动改勾选，方案选中态一并清掉（勾选已不再等于该方案）
@@ -2197,12 +2431,16 @@ $ui.PresetBox.Add_SelectionChanged({
     try {
       foreach ($row in (@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children))) {
         $cb = $row.Child.Children[0]
-        $cb.IsChecked = ($ids -contains $cb.Tag)
+        # 已就绪的项不勾（与全选框同一语义，v0.13）：方案表达的是「要达到的状态」，
+        # 已达标的再执行一遍只会撑大备份
+        $cb.IsChecked = (($ids -contains $cb.Tag) -and ($row.Tag -ne $true))
       }
     } finally { $script:ApplyingPreset = $false }
     $ui.PresetNote.Text = $p.Note
     Update-Count
-    Write-Log "已套用方案「$($p.Name)」（$($ids.Count) 项）"
+    $selN = @((@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children)) |
+              Where-Object { $_.Child.Children[0].IsChecked }).Count
+    Write-Log "已套用方案「$($p.Name)」（勾选 $selN / $($ids.Count) 项，已就绪的不重复执行）"
   } catch { Write-Log "套用方案失败：$($_.Exception.Message)" }
 })
 

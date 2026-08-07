@@ -15,7 +15,10 @@
 // 导致快捷方式保存失败，必须用原生 Unicode 接口。
 // 快捷方式落点（真机踩过「装完找不到入口」）：提权态一律写公共开始菜单/公共桌面——
 // 提权后 %APPDATA% 指向提权账号，多账户机器上会把快捷方式建进管理员的开始菜单；
-// 完成页默认勾选「创建桌面快捷方式」，静默模式同样创建。
+// 完成页默认勾选「创建桌面快捷方式」与「创建开始菜单快捷方式」（后者原先无条件创建，
+// 现同样交给勾选项控制），静默模式两者都创建。
+// 更新场景防双开（实机反馈）：旧版主程序可能没退干净，完成页勾了「立即运行」时先按
+// 主窗口标题精确匹配关掉旧实例再启动新的——绝不按进程名无差别杀 powershell。
 //
 // 命令行（全部供自动化验证，普通用户双击即图形向导）：
 //   /dir=<路径>        预填安装位置（提权重启时回传用）
@@ -86,8 +89,8 @@ static class Program {
             Installer.Install(dest, delegate(int i, int n, string name) {
                 if (i == 1 || i == n || i % 20 == 0) Log(logFile, string.Format("  {0}/{1} {2}", i, n, name));
             });
-            Log(logFile, "开始菜单快捷方式: " + Installer.LastMenuDir);
-            // 静默模式与向导完成页的默认勾选保持一致：都建桌面快捷方式
+            // 静默模式与向导完成页的默认勾选保持一致：开始菜单与桌面快捷方式都建
+            Log(logFile, "开始菜单快捷方式: " + Installer.CreateShortcuts(dest));
             Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(dest));
             Log(logFile, "安装完成: " + dest);
             return 0;
@@ -263,10 +266,30 @@ static class Installer {
                 if (onProgress != null) onProgress(i, total, rel);
             }
         }
-        CreateShortcuts(full);
+        // 开始菜单快捷方式不再在这里无条件创建：完成页勾选项控制（默认勾选），
+        // 静默模式由 RunSilent 显式创建，行为与默认勾选一致
     }
 
     public static string LastMenuDir;
+
+    // 更新场景防双开（实机反馈「更新后新旧两个窗口并存」）：主程序在启动安装器后
+    // 理应自退，但退不干净时这里兜底。只按主窗口标题精确匹配本程序的宿主进程——
+    // 绝不按进程名杀 powershell（会误伤用户自己跑的其他脚本）。
+    public static void CloseRunningBooster() {
+        int self = Process.GetCurrentProcess().Id;
+        try {
+            foreach (var p in Process.GetProcesses()) {
+                try {
+                    if (p.Id == self) continue;
+                    string t = p.MainWindowTitle;
+                    if (string.IsNullOrEmpty(t) || t != "三角洲行动 · 画面优化助手") continue;
+                    // 先礼后兵：WM_CLOSE 给它机会正常收尾，1.5 秒不退再强杀
+                    p.CloseMainWindow();
+                    if (!p.WaitForExit(1500)) p.Kill();
+                } catch (Exception) { }
+            }
+        } catch (Exception) { }
+    }
 
     // 开始菜单 Programs 目录的解析。教训（真机「装完找不到入口」）：安装器虽是 asInvoker，
     // 但用户会右键「以管理员身份运行」，或选 Program Files 触发提权重启——提权后
@@ -404,9 +427,10 @@ class SetupWindow : Window {
     TextBlock _spaceText, _warnText, _dlWarnText, _pctText, _cntText, _fileText, _destText, _hintText;
     Border _barFill, _closeBtn;
     Grid _btnNext, _btnBack, _btnInstall, _btnFinish, _btnCancel;
-    TextBlock _checkMark, _deskMark;
+    TextBlock _checkMark, _deskMark, _menuMark;
     bool _runChecked = true;
     bool _deskChecked = true;   // 桌面快捷方式默认勾选：真机反馈「装完找不到入口」的直接解药
+    bool _menuChecked = true;   // 开始菜单快捷方式默认勾选（原先无条件创建，现交给用户）
     bool _installing;
     string _installedDir;
     int _curStep;
@@ -751,7 +775,7 @@ class SetupWindow : Window {
         };
         sp.Children.Add(_fileText);
         sp.Children.Add(new TextBlock {
-            Text = "正在解包程序文件并创建开始菜单快捷方式，请勿关闭窗口。",
+            Text = "正在解包程序文件，请勿关闭窗口。",
             Foreground = Theme.TextFaint, FontSize = 11, Margin = new Thickness(0, 16, 0, 0)
         });
         page.Children.Add(sp);
@@ -778,10 +802,6 @@ class SetupWindow : Window {
             TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 0)
         };
         sp.Children.Add(_destText);
-        sp.Children.Add(new TextBlock {
-            Text = "开始菜单已创建「三角洲行动优化助手」与「卸载优化助手」快捷方式。",
-            Foreground = Theme.TextSub, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0)
-        });
 
         var box = new Border {
             Width = 16, Height = 16, Background = Theme.InputBg,
@@ -794,9 +814,16 @@ class SetupWindow : Window {
             Margin = new Thickness(0, -2, 0, 0)
         };
         box.Child = _checkMark;
-        // 桌面快捷方式勾选行在前（「装完找不到入口」的直接解药），立即运行在后
+        // 勾选行顺序：开始菜单（含卸载入口）→ 桌面（「装完找不到入口」的直接解药）→ 立即运行
+        _menuMark = MakeCheckMark();
+        var menuRow = MakeCheckRow(_menuMark, "创建开始菜单快捷方式（含「卸载优化助手」入口）", new Thickness(0, 20, 0, 0));
+        menuRow.MouseLeftButtonUp += delegate {
+            _menuChecked = !_menuChecked;
+            _menuMark.Visibility = _menuChecked ? Visibility.Visible : Visibility.Collapsed;
+        };
+        sp.Children.Add(menuRow);
         _deskMark = MakeCheckMark();
-        var deskRow = MakeCheckRow(_deskMark, "创建桌面快捷方式（三角洲行动优化助手）", new Thickness(0, 20, 0, 0));
+        var deskRow = MakeCheckRow(_deskMark, "创建桌面快捷方式（三角洲行动优化助手）", new Thickness(0, 10, 0, 0));
         deskRow.MouseLeftButtonUp += delegate {
             _deskChecked = !_deskChecked;
             _deskMark.Visibility = _deskChecked ? Visibility.Visible : Visibility.Collapsed;
@@ -866,7 +893,7 @@ class SetupWindow : Window {
             case 0: _hintText.Text = "安装过程只复制文件，不修改任何系统设置"; break;
             case 1: _hintText.Text = "默认安装位置无需管理员权限"; break;
             case 2: _hintText.Text = "正在安装，请稍候…"; break;
-            default: _hintText.Text = "遇到问题可随时通过开始菜单卸载"; break;
+            default: _hintText.Text = "遇到问题可通过开始菜单或安装目录里的「卸载.bat」卸载"; break;
         }
     }
 
@@ -981,12 +1008,17 @@ class SetupWindow : Window {
     }
 
     void OnFinishClick() {
+        if (_menuChecked && _installedDir != null) {
+            // 快捷方式建不上不该拦着完成流程：极端失败静默放过，安装本身已完成
+            try { Installer.CreateShortcuts(_installedDir); } catch (Exception) { }
+        }
         if (_deskChecked && _installedDir != null) {
-            // 快捷方式建不上不该拦着完成流程：极端失败（桌面目录只读等）静默放过，
-            // 用户仍有开始菜单入口
             try { Installer.CreateDesktopShortcut(_installedDir); } catch (Exception) { }
         }
         if (_runChecked && _installedDir != null) {
+            // 覆盖更新时旧版主程序可能还开着：先关掉旧实例再启动，避免新旧两个窗口并存
+            // （只按主窗口标题精确匹配，不动用户其他 powershell 进程）
+            Installer.CloseRunningBooster();
             string exe = Path.Combine(_installedDir, "启动优化工具.exe");
             try {
                 Process.Start(new ProcessStartInfo {
@@ -1031,7 +1063,7 @@ class SetupWindow : Window {
         sb.AppendLine("步骤=" + string.Join("/", StepNames));
         sb.AppendLine("欢迎标题=欢迎安装 三角洲行动优化助手");
         sb.AppendLine("按钮=上一步/取消/下一步/开始安装/完成/浏览…");
-        sb.AppendLine("完成页勾选=创建桌面快捷方式（三角洲行动优化助手）/立即运行 三角洲行动优化助手");
+        sb.AppendLine("完成页勾选=创建开始菜单快捷方式（含「卸载优化助手」入口）/创建桌面快捷方式（三角洲行动优化助手）/立即运行 三角洲行动优化助手");
         sb.AppendLine("默认路径=" + Installer.DefaultDir());
         sb.AppendLine("所需空间行=" + _spaceText.Text);
         sb.AppendLine("权限警告=" + _warnText.Text);

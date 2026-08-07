@@ -1,6 +1,8 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.10
+  DeltaForceBooster 核心脚本 — v0.11
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
+  v0.11：felix 预设显示名改为「主推全套」——Id 仍是 felix（改 Id 会让用户已存方案与
+        文档里的 -Preset felix 命令失效），费利克斯Fx 调试链路的来历保留在 Note 里。
   v0.10：显卡指引按显卡型号标注功能适用范围（实机反馈用户感知不到指引是给自己显卡的）：
         DLSS 仅 RTX 系可用、Preset K 还需 40/50 系、GTX/A 卡/Intel 用通用的 FSR、
         低延迟 N 卡走 Reflex / A 卡走 Anti-Lag、XeSS 是 Intel 自家算法收益最大。
@@ -891,14 +893,14 @@ function Get-OptItems([string]$GamePath) {
 # ---------- 优化方案（内置推荐 + 用户自存） ----------
 
 # 内置方案只列"要勾选的项"，不存在的项（如本机没装 Profile Inspector）自动忽略。
-# 列表顺序即界面下拉顺序：费利克斯路线排第一位作为主推方案。
+# 列表顺序即界面下拉顺序：「主推全套」（按费利克斯Fx 调试链路组织）排第一位。
 function Get-BuiltinPresets {
   @(
     [pscustomobject]@{
       # Items 顺序刻意按费利克斯的调试链路排列：
       # ①电源深度定制（一切的前置）→ ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层
-      Id = 'felix'; Name = '费利克斯路线（主推全套）'; Builtin = $true
-      Note = '按费利克斯Fx 的调试顺序全套执行：电源→优先级→中断绑核→系统精简→显卡层。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
+      Id = 'felix'; Name = '主推全套'; Builtin = $true
+      Note = '按费利克斯Fx 的调试链路全套执行：电源→优先级→中断绑核→系统精简→显卡层。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
       Items = @('power-ultimate','power-tuning','powerplan-lock',
                 'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',

@@ -1,6 +1,9 @@
 ﻿<#
-  DeltaForceBooster 更新检查模块 — v0.2
+  DeltaForceBooster 更新检查模块 — v0.3
   独立于优化引擎：负责「取清单 → 比版本 → 报告结果」，v0.2 起新增「带校验的内置下载」。
+  v0.3：Test-BoosterUpdate 新增 -IncludeSkipped 开关（供界面「检查更新」按钮用）：
+        用户手动点检查表示明确想看结果，此时无视「不再提醒此版本」的记录；
+        自动定时检查不带该开关，跳过语义不变。安全约定与校验逻辑一字未动。
   清单格式：{ "version", "notes", "url"(下载页), "setupUrl"(安装包), "sha256", "size" }
 
   安全约定（v0.2 起从「绝不下载」放宽为「带校验的内置更新」，以下每条都是硬红线）：
@@ -222,15 +225,19 @@ function Test-BoosterUpdate {
   param(
     [Parameter(Mandatory)][string]$CurrentVersion,
     [string]$ManifestUrl = $script:BoosterManifestUrl,
-    [int]$TimeoutMs = 5000
+    [int]$TimeoutMs = 5000,
+    [switch]$IncludeSkipped
   )
   try {
     $m = Get-BoosterManifest $ManifestUrl $TimeoutMs
     if (-not $m) { return $null }
     if ((Compare-BoosterVersion "$($m.version)" $CurrentVersion) -le 0) { return $null }
-    # 用户点过「不再提醒此版本」的就不再弹；出了更新的版本会重新提醒
-    $cfg = Get-BoosterUpdateConfig
-    if ("$($cfg.SkippedVersion)" -eq "$($m.version)") { return $null }
+    # 用户点过「不再提醒此版本」的就不再弹；出了更新的版本会重新提醒。
+    # 手动检查（-IncludeSkipped）例外：用户主动点按钮就是想看结果，不该被跳过记录挡住
+    if (-not $IncludeSkipped) {
+      $cfg = Get-BoosterUpdateConfig
+      if ("$($cfg.SkippedVersion)" -eq "$($m.version)") { return $null }
+    }
     $setupUrl = "$($m.setupUrl)"
     $sha = "$($m.sha256)"
     $size = 0L
