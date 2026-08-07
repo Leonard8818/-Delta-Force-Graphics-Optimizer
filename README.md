@@ -1,163 +1,166 @@
-<p align="center">
-  <img alt="Delta Force Graphics Optimizer" src="gui/app.ico" width="72">
-</p>
+# 三角洲行动画面优化助手
 
-<h3 align="center">三角洲行动 · 画面优化助手</h3>
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0A1512)](#环境要求)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1-0A1512)](#环境要求)
+[![License](https://img.shields.io/badge/license-MIT-00E884)](LICENSE)
+[![Unofficial](https://img.shields.io/badge/%E9%9D%9E%E5%AE%98%E6%96%B9%E4%B8%AA%E4%BA%BA%E9%A1%B9%E7%9B%AE-E5C46A)](NOTICE.md)
 
-<p align="center">
-  把网上那些一步步改设置的帧率教程，做成一次点完、随时能还原
-</p>
+面向《三角洲行动》玩家的 Windows 画面与帧率优化工具，支持 AI Agent 调用 Skill，完成系统检测、优化执行与一键还原。
 
-<p align="center">
-  <a href="https://df.ltz88.cn/">下载</a> &bull;
-  <a href="DISCLAIMER.md">免责声明</a> &bull;
-  <a href="SKILL.md">给 AI 助手用</a> &bull;
-  <a href="CONTRIBUTING.md">参与贡献</a> &bull;
-  <a href="SECURITY.md">安全</a>
-</p>
+工具覆盖电源计划、进程与 IO 优先级、HAGS、后台录制、系统服务和显卡层设置。所有写入操作都会先保存原值，支持一键还原；不修改游戏目录内的文件，不注入游戏进程，也不与反作弊交互。
 
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0A1512" alt="platform">
-  <img src="https://img.shields.io/badge/PowerShell-5.1-0A1512" alt="powershell">
-  <img src="https://img.shields.io/badge/license-MIT-00E884" alt="license">
-  <img src="https://img.shields.io/badge/%E9%9D%9E%E5%AE%98%E6%96%B9%E4%B8%AA%E4%BA%BA%E9%A1%B9%E7%9B%AE-E5C46A" alt="unofficial">
-</p>
+[下载](https://df.ltz88.cn/) · [快速开始](#安装与快速开始) · [Agent Skill](#agent-skill) · [命令行](#命令行) · [安全](#安全与风险提示) · [贡献](#贡献)
 
----
+## 为什么选择这个工具？
 
-网上那些"手动改 Windows 设置提帧率"的教程，几十个步骤散在各处，改错了还不知道怎么改回去。这个工具把它们整理成可批量执行、**改动前自动备份、随时一键还原**的形式。
+- **集中管理** — 把散落在不同教程里的 Windows 优化项整理到同一个界面
+- **自动检测** — 识别硬件、游戏路径和当前设置，只展示适用于当前电脑的内容
+- **可控执行** — 提供主推全套、均衡推荐、保守模式，也支持逐项选择和自定义方案
+- **完整回滚** — 每次修改前记录原值，包括原本不存在的注册表值
+- **结果透明** — 分别报告成功、失败、跳过、体检异常和需要重启的项目
+- **Agent 友好** — 内置通用 [SKILL.md](SKILL.md)，可由能执行 PowerShell 的 AI Agent 调用
+- **边界明确** — 只调整 Windows 系统层设置，不修改游戏文件
 
-工具围绕三件事设计：
+## 功能
 
-- **改得了，也退得回。** 每一项在写入前把原值完整记录下来，包括"这个值原本不存在"这种状态——还原时会删除它而不是写个默认值。哪项没成功会明确报错并带上系统原始错误，不会假装成功。
-- **只碰 Windows，不碰游戏。** 改的全是系统层设置（注册表、电源计划、系统服务、启动配置），不进游戏目录、不注入进程、不与反作弊交互。
-- **该说的话不藏着。** 每一项都标注了它实际改什么、有什么副作用；效果有争议的项默认不勾选；查出来的硬件问题只提示不代劳。
+| 类别 | 能力 |
+|---|---|
+| ⚡ 电源与调度 | 卓越性能电源计划、隐藏电源项调优、前台调度、MMCSS 游戏任务 |
+| 🎮 游戏优化 | Windows 游戏模式、关闭后台录制、禁用全屏优化、指定高性能 GPU |
+| 🖥️ 显卡设置 | HAGS、MPO、NVIDIA App 自动优化开关、显卡驱动设置指引 |
+| 🧠 内存与系统 | 内存压缩、页面文件、休眠、系统服务及视觉效果设置 |
+| 🔍 硬件体检 | 只读检查 PCIe 链路、VC++ v14 运行库、内存 XMP / EXPO |
+| 🗂️ 方案管理 | 三套内置预设，自定义保存、载入和删除方案 |
+| ↩️ 备份还原 | 写入前自动备份，按最近一次或指定备份逆序恢复 |
+| 📋 游戏内参考 | 按游戏菜单结构整理画质设置，供玩家手动调整 |
+| 🔄 更新 | 检查新版本、下载进度、SHA256 与文件大小强制校验 |
 
-## 快速开始
+不同 CPU、显卡、内存和系统状态的实际收益会有差异，本项目不承诺固定帧数提升。
 
-到 [下载页](https://df.ltz88.cn/) 拿安装包，双击装好后打开：
+## 安装与快速开始
 
-1. 工具自动检测硬件、定位游戏、列出每一项的当前状态
-2. 默认选中「★ 主推全套」方案，也可以换方案或自己逐项勾
-3. 点「执行优化」，改动前自动备份
-4. 后悔了点「还原设置」
+### 环境要求
 
-需要管理员权限——电源计划、HAGS 这些是系统级设置。
+- Windows 10 或 Windows 11
+- Windows PowerShell 5.1
+- 部分系统级设置需要管理员权限
 
-## 它做什么
+### 快速开始（图形界面）
 
-**30 多项系统优化**，按调试链路组织：电源计划深度定制（含 Windows 隐藏项）、进程与 IO 优先级、显卡中断绑核、系统精简、显卡层设置。三套预设方案，也可以存成自己的方案。
+1. 从 [下载页](https://df.ltz88.cn/) 获取 `DeltaForceBooster-Setup-vX.Y.exe`
+2. 运行安装向导并选择安装位置
+3. 打开工具，等待硬件、游戏路径和系统设置检测完成
+4. 选择预设方案或逐项勾选，点击「执行优化」
+5. 需要恢复时点击「还原设置」
 
-**三项硬件体检**，只读不写：PCIe 链路带宽是否跑满、VC++ 运行库版本是否错乱、内存 XMP/EXPO 有没有开。这三样都实打实丢帧，而且软件改不了，只能告诉你去哪儿修。
+> 建议不要长期安装在「下载」文件夹。Windows「存储感知」可能清理该目录，并删除 `backup\` 中的还原备份。
 
-**游戏内设置参考**：头部主播的画质设置，按游戏里的菜单结构分组，照着能逐项找到。这一页纯参考——工具不会也无法修改游戏内设置。
+### 预设方案
 
-**驱动层指引**：认出你的显卡型号，只给这张卡用得上的设置，可以直接打开 NVIDIA 控制面板 / NVIDIA App。
+| 方案 | 说明 |
+|---|---|
+| `main` | 主推全套，覆盖主要系统、调度与显卡层设置 |
+| `balanced` | 均衡推荐，保留桌面效果、鼠标手感、系统服务和休眠 |
+| `safe-only` | 保守模式，仅修改当前用户设置，不需要重启 |
 
-## 给 AI 助手用
+## Agent Skill
 
-不想自己点界面，可以让 AI 助手代劳。**把下面这句直接发给你的 agent**：
+`delta-force-boost` 是一套面向 AI Agent 的《三角洲行动》画面优化 Skill，核心流程与操作边界定义在 [SKILL.md](SKILL.md) 中。
 
-```
+Agent 不会直接开始修改系统。它会先检测硬件和当前设置，解释准备执行的项目与副作用，获得用户明确同意后再调用脚本，最后逐项汇报执行结果、备份位置和重启要求。
+
+### 快速开始（AI Agent）
+
+> 需要一个能够在本机执行 PowerShell 命令的 AI Agent。
+
+将下面的指令发送给 Agent：
+
+```text
 读取 https://raw.githubusercontent.com/Leonard8818/-Delta-Force-Graphics-Optimizer/main/SKILL.md
 并按其中的流程帮我优化《三角洲行动》的帧率
 ```
 
-它会自己完成检测 → 解释每一项在改什么 → **征得你同意** → 执行 → 汇报结果。
-[SKILL.md](SKILL.md) 里写明了红线：未经你明确同意不得执行任何改动，也不得代你同意免责声明。
+### 工作流程
 
-### 适用的 Agent
-
-判断标准只有一条：**能在你的 Windows 上执行 PowerShell 命令**。SKILL.md 不依赖任何特定工具的专有能力。
-
-国际：
-
-| Agent | 说明 |
+| 阶段 | Agent 行为 |
 |---|---|
-| [Claude Code](https://claude.com/claude-code) | 也可把仓库放进 `~/.claude/skills/` 注册为常驻技能 |
-| [Codex CLI](https://openai.com/codex) | OpenAI 官方命令行 agent |
-| [Cursor](https://cursor.com) | 在 Agent 模式下贴上面那句 |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google 官方命令行 agent |
-| [OpenCode](https://github.com/sst/opencode) | 开源，可接任意模型 |
+| 检测 | 读取硬件、游戏路径、管理员权限和当前优化状态 |
+| 说明 | 展示推荐项目、实际作用、可能的副作用和重启要求 |
+| 确认 | 获得用户明确同意，不代替用户接受免责声明 |
+| 执行 | 调用项目脚本，所有改动沿用统一备份机制 |
+| 汇报 | 区分成功、失败、跳过和体检异常，给出还原方法 |
 
-国内：
+Skill 不依赖某一家模型或专有工具。完整参数、预设说明和 Agent 操作红线见 [SKILL.md](SKILL.md)。
 
-| Agent | 说明 |
-|---|---|
-| [WorkBuddy](https://www.workbuddy.ai/) | 腾讯的桌面智能体，能操作本地文件与命令，与 CodeBuddy 同一套 Agent 架构 |
-| [CodeBuddy](https://www.codebuddy.cn/) | 腾讯云代码助手，有 CLI 端 |
-| [Trae](https://www.trae.cn/) | 字节，SOLO 智能体模式可自主执行多步任务 |
-| [通义灵码](https://lingma.aliyun.com/) | 阿里，IDE 插件形态 |
-| [文心快码 Comate](https://comate.baidu.com/) | 百度，IDE 插件形态 |
+## 命令行
 
-> 表格是按"具备本地命令执行能力"筛的，**我没有在每一个上逐一实测**。IDE 插件形态的工具（通义灵码、文心快码等）不同版本对执行本地命令的支持差异较大，跑不通的话直接用界面点，或者照 [SKILL.md](SKILL.md) 里的命令自己敲。
-
-不带 agent 直接用命令行：
+### 检测
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Detect
+```
+
+### 应用预设
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Apply -Preset main
+```
+
+### 还原
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Restore
 ```
 
-## 安装
-
-双击 `DeltaForceBooster-Setup-vX.Y.exe`，图形向导四步走完。安装位置可自选，默认在
-「下载」文件夹（无需管理员权限）；选 Program Files 等受保护目录会自动检测并引导提权。
-
-- **装在下载文件夹的提醒**：Windows「存储感知」可能自动清理这里，会连同 `backup\`
-  里的系统还原备份一起删掉。长期使用建议在位置页换个目录（向导会提示但不阻止）。
-- **覆盖安装保护**：`profiles\`（自存方案）、`backup\`（还原备份）、`config\`（运行状态）
-  不会被覆盖。
-- 完成页可勾选创建开始菜单/桌面快捷方式与立即运行，卸载时快捷方式一并清理。
+执行 `-Apply` 或 `-Restore` 前，请先阅读 [DISCLAIMER.md](DISCLAIMER.md)。每次应用都会在 `backup\` 目录生成备份文件。
 
 ## 更新
 
-检测到新版本时标题栏亮起「有新版本」入口（启动查一次，运行期间每 30 分钟静默复查）；
-标题栏的「检查更新」可随时手动查一次，立刻给出结果，且无视「不再提醒此版本」的记录。
+工具启动时检查一次新版本，运行期间每 30 分钟静默复查。自动检查只负责提醒，不会自行下载或安装。
 
-点「立即更新」后**全程自动**：下载（进度条、可取消）→ 强制校验 SHA256 与文件大小 →
-原地安装到当前目录 → 自动打开新版本，中途不需要再操作。下载源锁定官方域名白名单，
-任何一步失败都退回「浏览器打开下载页」并明确报错。自动检查只负责提醒，绝不自行下载或安装。
+用户点击「立即更新」后，工具会下载更新包、校验 SHA256 与文件大小、安装到当前目录并启动新版本。下载源限制为官方域名白名单，校验失败时不会执行安装包。
 
-## 下载后脚本被拦怎么办
+## 故障排查
 
-从网上下载的文件带「来自 Internet」标记，部分机器会拒绝运行未签名 .ps1。三选一：
+### PowerShell 脚本被拦截
 
-1. **用 `启动优化工具.exe` 启动**（推荐，不受执行策略限制）；
-2. 管理员 PowerShell 里 `Unblock-File -Path .\* -Recurse`；
-3. 手动运行时带豁免参数：`powershell -NoProfile -ExecutionPolicy Bypass -File <脚本>`。
+优先使用根目录的 `启动优化工具.exe`。手动运行脚本时，请保留 `-ExecutionPolicy Bypass`，或者执行：
 
-## 优化没生效？跑诊断脚本
-
+```powershell
+Unblock-File -Path .\* -Recurse
 ```
+
+### 优化没有生效
+
+以管理员身份运行诊断脚本：
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose.ps1
 ```
 
-打出全部电源方案的原始名与解析名、模板激活自检、隐藏电源项的真实写入自检（写完立即
-还原）、所有优化项的当前判定。把完整输出反馈即可定位问题。
+诊断输出包含电源方案、隐藏电源项和全部优化项的真实状态。提交问题时请附上完整输出。
 
-## 关于电源计划的命名
+## 安全与风险提示
 
-系统里没有可直接激活的「卓越性能」方案时，工具用 `powercfg -duplicatescheme` 实例化
-一份并命名为**「三角洲优化 · 卓越性能」**（GUID 记在 `config\`，重复执行只复用不堆积）。
-「还原设置」会把活动方案切回原来的，但**保留**这份方案（你可能已在用）；不需要就在
-控制面板→电源选项里手动删。
+- 所有写入操作都会先备份，失败时保留系统原始错误
+- 不修改游戏安装目录内的文件，不注入进程，不与反作弊交互
+- 不采集或自动上传用户数据
+- 诊断报告只有在用户主动点击并确认后才会上传
+- 更新包仅允许从官方 HTTPS 域名下载，并校验 SHA256 与文件大小
+- 效果有争议或副作用明显的项目默认不选中
 
-## 安全说明
+SHA256 可以校验下载文件是否与版本清单一致，但无法防止官方服务器和清单同时被篡改。项目目前没有代码签名证书，请在使用前了解这一限制。
 
-- 改动前所有被修改的注册表值、电源设置和配置文件都备份到 `backup\`，还原按逆序恢复。
-- 只改 Windows 系统设置、游戏 exe 的兼容性标记与 NVIDIA App 的自动优化开关，
-  **不碰游戏安装目录内任何文件**。
-- 不采集、不上传任何数据。两项网络行为：检查更新请求版本清单；「上传诊断报告」需你
-  主动点击并确认。
-- 内置更新只允许从官方域名（df.ltz88.cn）经 https 下载，下载后强制校验 SHA256 与文件
-  大小，任一不符立即删除、绝不执行。局限如实说明：这防的是传输途中被篡改，防不住
-  官方服务器本身被攻破（详见 `build/README.md`）。
+首次运行需要由用户本人阅读并接受 [DISCLAIMER.md](DISCLAIMER.md)。AI Agent 不得代替用户确认，也不得绕过该步骤。
 
-## 许可与声明
+## 贡献
 
-- 本项目以 [MIT 许可证](LICENSE) 开源。
-- 非官方个人项目，与腾讯公司及《三角洲行动》官方无任何关联——详见 [NOTICE.md](NOTICE.md)。
-- 首次运行需阅读并同意 [DISCLAIMER.md](DISCLAIMER.md)。
-- 安全问题请按 [SECURITY.md](SECURITY.md) 的方式报告；参与贡献见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎提交 [Issue](https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/issues) 或 [Pull Request](https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/pulls)。
+
+新增优化项必须满足一个硬性条件：能够准确检测当前状态、在写入前完整备份，并可靠恢复到原始状态。提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [SECURITY.md](SECURITY.md)。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
+
+这是一个非官方个人项目，与腾讯公司及《三角洲行动》官方没有关联。商标、免责声明及其他说明见 [NOTICE.md](NOTICE.md) 和 [DISCLAIMER.md](DISCLAIMER.md)。
