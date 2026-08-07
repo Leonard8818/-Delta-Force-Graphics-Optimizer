@@ -121,7 +121,7 @@ SHA256 与文件大小 → 通过后提示并关闭程序、启动安装器。**
    构建结束会自动生成 `build\update-manifest.json`，`sha256`/`size` 已按本次 Setup.exe
    算好——**不要手工改这两个字段**，改了客户端必然校验失败。
 2. 把 `notes` 占位换成真实更新说明。
-3. 上传到服务器（Caddy 站点 `df.ltz88.cn`，目录 `/opt/df-booster`）：
+3. 上传到发布服务器（静态站点 `df.ltz88.cn` 的托管目录）：
    Setup.exe 覆盖为 `DeltaForceBooster-Setup.exe`（无版本号固定名，`setupUrl` 才能不变），
    清单覆盖 `update-manifest.json`。**先传安装包、后传清单**——反过来会有一段时间窗口，
    老客户端按新清单校验旧安装包，全部失败。
