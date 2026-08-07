@@ -1,6 +1,14 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.8
+  DeltaForceBooster 核心脚本 — v0.9
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
+  v0.9：修复「继承默认」电源隐藏项的还原（实机 i5-12600KF 踩实）：电源方案注册表键的
+        ACL 只授权 SYSTEM 写入、管理员组只有读权限，直删设置子键必被拒——powercfg 能写
+        是因为它经电源服务（SYSTEM）代写。现在删键被拒时退而用 powercfg 把该项写回
+        DefaultPowerSchemeValues 里的方案默认值（生效值不变）；默认表里没有该方案 GUID
+        且方案是工具自建的，记「跳过（无实际影响）」——还原后活动方案已切回原方案，
+        停用方案里的残留显式值不影响任何生效设置。pcfg 备份新增 Label 字段，还原失败/
+        跳过的日志不再只剩空荡荡的「pcfg ：」。优化项新增 Reboot 标记，Apply 结果按项
+        标注「需重启才完全生效」，GUI 的重启提醒与 CLI 汇总都以此为准，不再靠 Note 文本猜。
   v0.8：Invoke-Restore 支持可选进度回调（与 Invoke-Apply 同约定，不传行为不变），
         界面还原时能逐项反馈进度不再整体假死；新增 nv-autoopt-off（关闭 NVIDIA App
         自动优化，防止 OPS 覆写玩家手调的游戏画质）及配套的 file 操作类型——正则只替换
@@ -489,7 +497,8 @@ function Get-VcRedistStatus {
   $all = @(Get-ItemProperty $keys -ErrorAction SilentlyContinue |
            Where-Object { $_.DisplayName -match 'Visual C\+\+' -and $_.DisplayVersion -match '^14\.' })
   if ($all.Count -eq 0) {
-    return @{ Ok = $false; Text = '未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动，建议装一次' }
+    # 文案直接带微软官方永久链接：用户不用再自己搜安装包，配合日志一键复制即可拿到
+    return @{ Ok = $false; Text = '未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：https://aka.ms/vs/17/release/vc_redist.x64.exe 和 https://aka.ms/vs/17/release/vc_redist.x86.exe，装完重启后再跑一次检测确认' }
   }
   # 同一批运行库的 x64/x86 应当是同一个次版本；错开说明某次安装只覆盖了一半
   $minors = @($all | ForEach-Object { if ($_.DisplayVersion -match '^(14\.\d+)') { $Matches[1] } } |
@@ -497,7 +506,7 @@ function Get-VcRedistStatus {
   $verList = ($minors -join ' / ')
   if ($minors.Count -gt 1) {
     return @{ Ok = $false
-              Text = "检测到 v14 运行库版本不一致（$verList）—— 这正是掉帧/闪退的常见原因。建议到微软官网下载最新 VC++ 2015-2022 x64 与 x86 各装一遍覆盖修复" }
+              Text = "检测到 v14 运行库版本不一致（$verList）—— 这正是掉帧/闪退的常见原因。请下载 x64 与 x86 两个都装、双击覆盖安装即可（不需要先卸载）：https://aka.ms/vs/17/release/vc_redist.x64.exe 和 https://aka.ms/vs/17/release/vc_redist.x86.exe，装完重启后再跑一次检测确认" }
   }
   @{ Ok = $true; Text = "v14 运行库版本一致（$verList，共 $($all.Count) 个组件），正常" }
 }
@@ -676,11 +685,13 @@ function Get-OptItems([string]$GamePath) {
 
   # ===== safe 档：默认推荐，不降低系统安全性 =====
 
-  $items += @{ Id = 'power-ultimate'; Tier = 'safe'; Name = '电源计划切换到「卓越性能」'; Admin = $true; Default = $true; Kind = 'power'
-               Note = '解除系统对 CPU 频率的保守限制。台式机收益明显；笔记本电池续航会变差。' }
+  # Reboot 标记：该项写入成功后仍需重启才完全生效。GUI 重启提醒和 CLI 汇总都读这个
+  # 字段而不是解析 Note 文本——文案会改，结构化标记不会漂
+  $items += @{ Id = 'power-ultimate'; Tier = 'safe'; Name = '电源计划切换到「卓越性能」'; Admin = $true; Default = $true; Kind = 'power'; Reboot = $true
+               Note = '解除系统对 CPU 频率的保守限制。台式机收益明显；笔记本电池续航会变差。重启后完全生效。' }
 
   # 电源计划隐藏项：控制面板里看不到，必须用 powercfg 直接写
-  $items += @{ Id = 'power-tuning'; Tier = 'safe'; Name = '电源计划隐藏项深度调优（USB/调度/时间片）'; Admin = $true; Default = $true; Kind = 'multi'
+  $items += @{ Id = 'power-tuning'; Tier = 'safe'; Name = '电源计划隐藏项深度调优（USB/调度/时间片）'; Admin = $true; Default = $true; Kind = 'multi'; Reboot = $true
                Ops  = @(
                  @{ Kind = 'pcfg'; Sub = $script:SubUsb;  Setting = 'd4e98f31-5ffe-4ce1-be31-1b38b384c009'; Value = 0;    Label = 'USB3 链路电源管理=关闭' }
                  @{ Kind = 'pcfg'; Sub = $script:SubProc; Setting = '4d2b0152-7d5c-498b-88e2-34345392a2c5'; Value = 5000; Label = '处理器性能时间检查间隔=5000ms' }
@@ -693,7 +704,7 @@ function Get-OptItems([string]$GamePath) {
   $items += @{ Id = 'powerplan-lock'; Tier = 'safe'; Name = '锁定电源计划（防游戏偷改回去）'; Admin = $true; Default = $false; Kind = 'sched'
                Note = '建立每分钟运行一次的计划任务，把电源计划重新设回当前方案。三角洲已知会在启动时篡改电源计划。这是持久化配置，还原时会自动删除该任务。' }
 
-  $items += @{ Id = 'hags'; Tier = 'safe'; Name = '开启硬件加速 GPU 计划（HAGS）'; Admin = $true; Default = $true; Kind = 'multi'
+  $items += @{ Id = 'hags'; Tier = 'safe'; Name = '开启硬件加速 GPU 计划（HAGS）'; Admin = $true; Default = $true; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers'; Name = 'HwSchMode'; Value = 2; Kind2 = 'DWord' })
                Note = '降低显卡调度延迟。需要 Win10 2004+ 与较新驱动，重启后生效。' }
 
@@ -715,7 +726,7 @@ function Get-OptItems([string]$GamePath) {
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl'; Name = 'Win32PrioritySeparation'; Value = 40; Kind2 = 'DWord' })
                Note = '短时间片 + 固定长度，牺牲一点后台响应换取前台游戏帧生成更稳定。' }
 
-  $items += @{ Id = 'paging-exec'; Tier = 'safe'; Name = '内核代码常驻内存（DisablePagingExecutive）'; Admin = $true; Default = $true; Kind = 'multi'
+  $items += @{ Id = 'paging-exec'; Tier = 'safe'; Name = '内核代码常驻内存（DisablePagingExecutive）'; Admin = $true; Default = $true; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'; Name = 'DisablePagingExecutive'; Value = 1; Kind2 = 'DWord' })
                Note = '禁止内核代码被换出到硬盘，减少卡顿尖峰。内存 8G 以下不建议。' }
 
@@ -725,7 +736,7 @@ function Get-OptItems([string]$GamePath) {
 
   # 内存压缩：16G 以下关掉反而更容易爆内存，默认只在 32G 及以上勾选
   $bigRam = ($hw -and $hw.RamGB -ge 32)
-  $items += @{ Id = 'mem-compress-off'; Tier = 'safe'; Name = '关闭内存压缩与页面合并'; Admin = $true; Default = $bigRam; Kind = 'multi'
+  $items += @{ Id = 'mem-compress-off'; Tier = 'safe'; Name = '关闭内存压缩与页面合并'; Admin = $true; Default = $bigRam; Kind = 'multi'; Reboot = $true
                Ops  = @(
                  @{ Kind = 'mmagent'; Feature = 'mc'; Label = '内存压缩' }
                  @{ Kind = 'mmagent'; Feature = 'pc'; Label = '页面合并' }
@@ -750,7 +761,7 @@ function Get-OptItems([string]$GamePath) {
 
   # ===== v0.4 新增：费利克斯路线补齐 =====
 
-  $items += @{ Id = 'mpo-off'; Tier = 'safe'; Name = '禁用 MPO 多平面叠加（治闪烁/卡顿）'; Admin = $true; Default = $true; Kind = 'multi'
+  $items += @{ Id = 'mpo-off'; Tier = 'safe'; Name = '禁用 MPO 多平面叠加（治闪烁/卡顿）'; Admin = $true; Default = $true; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm'; Name = 'OverlayTestMode'; Value = 5; Kind2 = 'DWord' })
                Note = 'MPO 与部分驱动组合会造成画面闪烁和掉帧，NVIDIA 官方曾专门发布禁用工具。副作用：视频播放时 DWM 功耗略升。重启生效。' }
 
@@ -764,11 +775,11 @@ function Get-OptItems([string]$GamePath) {
                Ops  = @(@{ Kind = 'reg'; Path = $mmcss; Name = 'SystemResponsiveness'; Value = 0; Kind2 = 'DWord'; Label = '后台 CPU 保留比例' })
                Note = '默认给后台任务保留 20% CPU；写 0 让前台游戏拿满（内核实际按 10% 下限钳制，0 是游戏圈通行写法）。' }
 
-  $items += @{ Id = 'sysmain-off'; Tier = 'safe'; Name = '禁用 SysMain 预取服务'; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'sysmain-off'; Tier = 'safe'; Name = '禁用 SysMain 预取服务'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Services\SysMain'; Name = 'Start'; Value = 4; Kind2 = 'DWord'; Label = 'SysMain 启动类型（4=禁用）' })
                Note = 'SysMain（旧名 Superfetch）后台预读抢内存和磁盘带宽，SSD 上收益存疑。副作用：常用程序冷启动可能略变慢，默认不勾选。重启后彻底停止。' }
 
-  $items += @{ Id = 'wsearch-off'; Tier = 'safe'; Name = '禁用 Windows Search 索引服务'; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'wsearch-off'; Tier = 'safe'; Name = '禁用 Windows Search 索引服务'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Services\WSearch'; Name = 'Start'; Value = 4; Kind2 = 'DWord'; Label = 'WSearch 启动类型（4=禁用）' })
                Note = '索引器后台扫盘占 IO。副作用明显：开始菜单和资源管理器搜索会变慢（现场逐盘找），只推荐给从不用系统搜索的人，默认不勾选。重启生效。' }
 
@@ -778,7 +789,7 @@ function Get-OptItems([string]$GamePath) {
                Note = '释放 C 盘数 GB 的 hiberfil.sys，并消除快速启动"假关机"导致的状态残留。副作用：休眠与快速启动都不可用，笔记本合盖只剩睡眠，故只在台式机默认勾选。' }
 
   $gpuClass = Get-GpuClassKeyPath $hw
-  $items += @{ Id = 'gpu-pstate-lock'; Tier = 'safe'; Name = '禁止显卡动态降频（锁 P-State）'; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'gpu-pstate-lock'; Tier = 'safe'; Name = '禁止显卡动态降频（锁 P-State）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = $(if ($gpuClass) { @(@{ Kind = 'reg'; Path = $gpuClass; Name = 'DisableDynamicPstate'; Value = 1; Kind2 = 'DWord' }) })
                Note = '阻止驱动随负载波动来回降频，减少频率抖动带来的帧率毛刺。副作用：待机功耗和发热明显上升、笔记本续航变差，默认不勾选。重启生效。' }
 
@@ -794,7 +805,7 @@ function Get-OptItems([string]$GamePath) {
                           Label   = 'NVIDIA 自动优化(OPS)' }) })
                Note = '这个开关开着时，NVIDIA 会自动把它认为「最佳」的画质设置写进游戏、覆盖你自己调好的参数（俗称"白调"）。关掉只是不再自动改游戏设置，不影响驱动本身。与「锁定电源计划」同源：都是防外部程序偷改你的配置。' }
 
-  $items += @{ Id = 'gpu-irq-affinity'; Tier = 'safe'; Name = '显卡中断绑核（费利克斯手法）'; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'gpu-irq-affinity'; Tier = 'safe'; Name = '显卡中断绑核（费利克斯手法）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = (Get-GpuIrqOps $hw)
                Note = '把独显中断固定到编号最大的物理核（大小核机型按 EfficiencyClass 选最后一个 P 核），避开挤满系统中断的 CPU0，压低 DPC 延迟。读不到核拓扑时本项自动不可用（宁可不做不能做错）。重启生效，还原即删除策略。' }
 
@@ -829,13 +840,13 @@ function Get-OptItems([string]$GamePath) {
                Check = 'Get-MemoryXmpStatus'
                Note = '内存没开 XMP/EXPO 时会跑在 JEDEC 保守频率上，白白损失几十帧。BIOS 设置无法由软件修改，本项只负责把"你的内存在摸鱼"这件事告诉你。' }
 
-  $items += @{ Id = 'dyntick-off'; Tier = 'safe'; Name = '禁用动态计时器（bcdedit）'; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'dyntick-off'; Tier = 'safe'; Name = '禁用动态计时器（bcdedit）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'bcd'; Name = 'disabledynamictick'; Value = 'yes'; Label = '动态计时器' })
                Note = '恢复固定时钟中断，部分机器帧生成间隔更稳。副作用：空闲功耗略升、笔记本续航变差，默认不勾选。重启生效。' }
 
   # 费利克斯公式：初始=内存GB×1024×1.5、最大=×2；他本人也只在闪退/卡死时才建议改
   $ramInt = $(if ($hw) { [int][math]::Round($hw.RamGB) } else { 0 })
-  $items += @{ Id = 'pagefile-custom'; Tier = 'safe'; Name = "虚拟内存固定为 $([int]($ramInt * 1.5))–$($ramInt * 2) GB"; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'pagefile-custom'; Tier = 'safe'; Name = "虚拟内存固定为 $([int]($ramInt * 1.5))–$($ramInt * 2) GB"; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = $(if ($ramInt -gt 0) { @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
                                                   Name = 'PagingFiles'; Kind2 = 'MultiString'; Label = '页面文件'
                                                   Value = [string[]]@("$env:SystemDrive\pagefile.sys $($ramInt * 1536) $($ramInt * 2048)") }) })
@@ -1150,7 +1161,8 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
                                Existed = $true; OldValue = $oldAttr; OldKind = 'DWord' }
       }
       Set-PowerSettingAc $Op.Sub $Op.Setting $Op.Value
-      $BackupOps.Value += @{ Kind = 'pcfg'; Sub = $Op.Sub; Setting = $Op.Setting
+      # Label 一并进备份：还原失败/跳过时日志要能报出人话项名，纯 GUID 用户根本对不上号
+      $BackupOps.Value += @{ Kind = 'pcfg'; Sub = $Op.Sub; Setting = $Op.Setting; Label = $Op.Label
                              Existed = ($null -ne $old); OldValue = $old; SchemeGuid = $act.Guid }
     }
     'mmagent' {
@@ -1301,6 +1313,13 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
     if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = $it.Name; Result = $results[-1] }) }
   }
 
+  # 结构化标注「哪些成功项要等重启」：GUI 的重启提醒弹窗、CLI 的收尾文案都以此为准。
+  # 跳过/失败/纯检测项一律 $false——没写进系统的东西谈不上重启生效
+  $rebootIds = @($sel | Where-Object { $_.Reboot } | ForEach-Object { $_.Id })
+  foreach ($x in $results) {
+    $x | Add-Member -NotePropertyName Reboot -NotePropertyValue ([bool]($x.Ok -and -not $x.Skipped -and -not $x.Attention -and ($rebootIds -contains $x.Id)))
+  }
+
   $bf = $null
   if ($backupOps.Count -gt 0) {
     if (-not (Test-Path -LiteralPath $script:BackupDir)) { New-Item -ItemType Directory -Path $script:BackupDir | Out-Null }
@@ -1316,7 +1335,8 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
 function Get-RestoreOpLabel($op) {
   switch ($op.Kind) {
     'power'   { '电源计划（切回原方案）' }
-    'pcfg'    { '电源计划隐藏项' }
+    # v0.9 起备份带 Label；旧备份没有该字段时保持泛称，不能显示成空白
+    'pcfg'    { if ($op.PSObject.Properties['Label'] -and $op.Label) { "电源隐藏项「$($op.Label)」" } else { '电源计划隐藏项' } }
     'mmagent' { "内存管理（$(if ($op.Feature -eq 'mc') { '内存压缩' } else { '页面合并' })）" }
     'sched'   { "计划任务 $($op.TaskName)" }
     'hib'     { '休眠状态' }
@@ -1335,7 +1355,7 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
   if (-not $File) { throw '未找到任何备份文件，无法还原' }
   $b = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json
   $ops = @($b.Ops); [array]::Reverse($ops)
-  $restored = 0; $failed = @(); $restoreNotes = @(); $seq = 0; $total = $ops.Count
+  $restored = 0; $failed = @(); $skippedOps = @(); $restoreNotes = @(); $seq = 0; $total = $ops.Count
   foreach ($op in $ops) {
     $seq++
     if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $null }) }
@@ -1354,11 +1374,34 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
           # 旧版备份没有 Existed 字段（当年读不到值就不会写入），一律按显式值写回
           $hasExisted = [bool]$op.PSObject.Properties['Existed']
           if ($hasExisted -and -not $op.Existed) {
-            Remove-PowerSettingAcOverride "$($op.SchemeGuid)" $op.Sub $op.Setting
+            try {
+              Remove-PowerSettingAcOverride "$($op.SchemeGuid)" $op.Sub $op.Setting
+              $restored++
+            } catch {
+              # 实机（i5-12600KF）踩实：PowerSchemes 键的 ACL 只给 SYSTEM 写权限，管理员组
+              # 只有 ReadKey，直删子键必被「不允许所请求的注册表访问权」拒掉。powercfg 写入
+              # 能成是因为它经电源服务（SYSTEM）代写。删不掉就退而求其次——
+              # 用 powercfg 把该项写回方案默认值：生效值与继承态完全一致，只是形式上从
+              # 「继承」变成了「显式等于默认」，对用户零影响
+              $guid = $(if ($op.SchemeGuid) { "$($op.SchemeGuid)" } else { (Get-ActiveScheme).Guid })
+              $def = Get-RegValue "$script:PsRoot\$($op.Sub)\$($op.Setting)\DefaultPowerSchemeValues\$guid" 'ACSettingIndex'
+              if ($null -ne $def) {
+                Set-PowerSettingAc $op.Sub $op.Setting ([int]$def) $guid
+                $restored++
+              } else {
+                # 默认表里只有三个内置方案 GUID，duplicatescheme 出来的方案（含工具自建的
+                # 卓越性能）读不到默认值。方案是工具自建的就明说「无影响」：还原时活动方案
+                # 已切回原方案，停用方案里的残留显式值不参与任何生效设置，不该吓唬用户
+                $toolGuid = Get-ToolSchemeGuid
+                if ($toolGuid -and ($guid -ieq "$toolGuid")) {
+                  $skippedOps += "$(Get-RestoreOpLabel $op)：跳过（工具自建方案内的残留设置，该方案已停用，无实际影响）"
+                } else { throw }
+              }
+            }
           } else {
             Set-PowerSettingAc $op.Sub $op.Setting ([int]$op.OldValue) "$($op.SchemeGuid)"
+            $restored++
           }
-          $restored++
         }
         'mmagent' { Set-MMAgentState $op.Feature ([bool]$op.OldEnabled); $restored++ }
         'sched'   { & schtasks /Delete /TN $op.TaskName /F 2>&1 | Out-Null; $restored++ }
@@ -1382,10 +1425,14 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
         }
         default   { throw "未知备份类型：$($op.Kind)" }
       }
-    } catch { $opOk = $false; $failed += "$($op.Kind) $($op.Name)$($op.Label)：$($_.Exception.Message)" }
+    } catch {
+      # 失败行必须带人话项名：pcfg 备份没有 Name 字段，旧写法拼出来只剩「pcfg ：」，
+      # 用户完全不知道哪项失败了——统一走 Get-RestoreOpLabel
+      $opOk = $false; $failed += "$(Get-RestoreOpLabel $op)：$($_.Exception.Message)"
+    }
     if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $opOk }) }
   }
-  [pscustomobject]@{ File = $File; RestoredOps = $restored; Failed = $failed; Notes = $restoreNotes }
+  [pscustomobject]@{ File = $File; RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes }
 }
 
 # ---------- 输出 ----------
@@ -1479,7 +1526,10 @@ elseif ($Apply) {
     $failN = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention }).Count
     Write-Output "执行完成：共 $(@($r.Results).Count) 项 — $okN 成功、$failN 失败、$skipN 跳过$(if ($attN -gt 0) { "、$attN 项体检发现问题" })。"
     if ($r.Backup) { Write-Output "备份已保存：$($r.Backup)（用 -Restore 可一键还原）" }
-    Write-Output "提示：HAGS、电源计划等项重启后完全生效。"
+    $rebootList = @($r.Results | Where-Object { $_.Reboot })
+    if ($rebootList.Count -gt 0) {
+      Write-Output "提示：以下 $($rebootList.Count) 个成功项需重启电脑后完全生效——$(@($rebootList | ForEach-Object { $_.Name }) -join '、')。"
+    }
   }
 }
 elseif ($Restore) {
@@ -1488,6 +1538,7 @@ elseif ($Restore) {
   else {
     Write-Output "已按备份还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
     foreach ($f in $r.Failed) { Write-Output "  [还原失败] $f" }
+    foreach ($s in $r.Skipped) { Write-Output "  [还原跳过] $s" }
     foreach ($n in $r.Notes) { Write-Output "  [提示] $n" }
   }
 }

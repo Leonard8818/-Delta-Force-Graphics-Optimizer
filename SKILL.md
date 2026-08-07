@@ -43,11 +43,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   两派都有实测支持，默认不勾选，建议让用户开关各测一次再定；
 - `wsearch-off` 会让系统搜索变慢，`hibernate-off` 会顺带关掉快速启动；
 - 笔记本用户切「卓越性能」电源计划会更耗电；
-- HAGS、MPO、服务禁用、bcdedit、中断绑核等项需要重启后完全生效；
+- 电源计划、HAGS、MPO、服务禁用、bcdedit、中断绑核等项需要重启后完全生效——Apply 结果里
+  每项带 `Reboot` 字段（成功且确需重启才为 true），汇报时按它提醒用户重启，别自己猜；
 - `pcie-check` / `vcredist-check` / `xmp-check` 是纯检测项，只读不写：分别报告 PCIe 链路
   异常（引导查插槽/延长线）、VC++ v14 运行库版本错乱（引导手动重装，**不要代劳卸载**）、
   内存未开 XMP/EXPO（引导进 BIOS，软件改不了）。检测项查出问题时结果标 `Attention`
-  归入「体检发现问题」，不计入失败。
+  归入「体检发现问题」，不计入失败。vcredist 的提示文案已带微软官方永久下载链接
+  （aka.ms/vs/17/release/vc_redist.x64.exe 与 .x86.exe），转述时直接给用户即可。
 - **不要建议关闭引导虚拟化**：ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错进不去，
   该项已于 v0.6 移除。
 
@@ -104,6 +106,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 ```
 
 按最近一次备份逆序恢复；`-BackupFile` 可指定某个具体备份。
+结果字段：`RestoredOps`（还原条数）、`Failed`（真失败，带人话项名）、`Skipped`
+（跳过且无实际影响——「继承默认」的电源隐藏项删不掉注册表子键（ACL 只授权 SYSTEM）
+且残留在已停用的工具自建方案里时归此类，转述时明确告诉用户这不影响任何生效设置）、
+`Notes`（如工具自建电源方案保留的说明）。
 
 ## 优化项一览（Id 供 -Items 使用）
 

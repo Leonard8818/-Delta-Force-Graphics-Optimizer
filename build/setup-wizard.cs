@@ -9,6 +9,9 @@
 // 避免对绝大多数用户弹无意义的 UAC。
 // 为什么快捷方式走 IShellLinkW COM：本机实测 ACP=1252 时 WScript.Shell 会把中文转成 "?"
 // 导致快捷方式保存失败，必须用原生 Unicode 接口。
+// 快捷方式落点（真机踩过「装完找不到入口」）：提权态一律写公共开始菜单/公共桌面——
+// 提权后 %APPDATA% 指向提权账号，多账户机器上会把快捷方式建进管理员的开始菜单；
+// 完成页默认勾选「创建桌面快捷方式」，静默模式同样创建。
 //
 // 命令行（全部供自动化验证，普通用户双击即图形向导）：
 //   /dir=<路径>        预填安装位置（提权重启时回传用）
@@ -79,6 +82,9 @@ static class Program {
             Installer.Install(dest, delegate(int i, int n, string name) {
                 if (i == 1 || i == n || i % 20 == 0) Log(logFile, string.Format("  {0}/{1} {2}", i, n, name));
             });
+            Log(logFile, "开始菜单快捷方式: " + Installer.LastMenuDir);
+            // 静默模式与向导完成页的默认勾选保持一致：都建桌面快捷方式
+            Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(dest));
             Log(logFile, "安装完成: " + dest);
             return 0;
         } catch (Exception ex) {
@@ -206,11 +212,52 @@ static class Installer {
         CreateShortcuts(full);
     }
 
-    public static string CreateShortcuts(string dest) {
+    public static string LastMenuDir;
+
+    // 开始菜单 Programs 目录的解析。教训（真机「装完找不到入口」）：安装器虽是 asInvoker，
+    // 但用户会右键「以管理员身份运行」，或选 Program Files 触发提权重启——提权后
+    // %APPDATA% 指向提权账号的目录，多账户机器上快捷方式会建进管理员的开始菜单，
+    // 当前用户根本看不到，而 IPersistFile.Save 照样成功、安装显示成功。
+    // 所以提权态一律写公共开始菜单（ProgramData，所有用户可见，也是常规安装器的
+    // 标准做法）；非提权态仍按环境变量解析（沙箱验证靠重定向 APPDATA），缺失时
+    // 回退 SHGetFolderPath（尊重 User Shell Folders 重定向）。
+    static string ProgramsDir() {
+        if (IsElevated()) {
+            string common = Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms);
+            if (!string.IsNullOrEmpty(common)) return common;
+        }
         string appdata = Environment.GetEnvironmentVariable("APPDATA");
-        if (string.IsNullOrEmpty(appdata)) appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string menu = Path.Combine(appdata, "Microsoft\\Windows\\Start Menu\\Programs\\DeltaForceBooster");
+        if (string.IsNullOrEmpty(appdata)) return Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+        return Path.Combine(appdata, "Microsoft\\Windows\\Start Menu\\Programs");
+    }
+
+    // 桌面目录同理：提权态写公共桌面；DFB_TEST_DESKTOP 是沙箱验证的重定向钩子
+    // （桌面没有对应的标准环境变量可用）
+    static string DesktopDir() {
+        string t = Environment.GetEnvironmentVariable("DFB_TEST_DESKTOP");
+        if (!string.IsNullOrEmpty(t)) return t;
+        if (IsElevated()) {
+            string common = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
+            if (!string.IsNullOrEmpty(common)) return common;
+        }
+        return Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+    }
+
+    // 桌面快捷方式：装完找不到入口的直接解药。完成页默认勾选，用户可取消
+    public static string CreateDesktopShortcut(string dest) {
+        string full = Path.GetFullPath(dest.Trim());
+        string mainExe = Path.Combine(full, "启动优化工具.exe");
+        string target = File.Exists(mainExe) ? mainExe : Path.Combine(full, "启动优化工具.bat");
+        string lnk = Path.Combine(DesktopDir(), "三角洲行动优化助手.lnk");
+        Shortcut.Create(lnk, target, full, File.Exists(mainExe) ? mainExe : null, 0,
+            "三角洲行动 画面/帧率优化助手");
+        return lnk;
+    }
+
+    public static string CreateShortcuts(string dest) {
+        string menu = Path.Combine(ProgramsDir(), "DeltaForceBooster");
         Directory.CreateDirectory(menu);
+        LastMenuDir = menu;
         string sysroot = Environment.GetEnvironmentVariable("SystemRoot");
         if (string.IsNullOrEmpty(sysroot)) sysroot = "C:\\Windows";
         string mainExe = Path.Combine(dest, "启动优化工具.exe");
@@ -303,8 +350,9 @@ class SetupWindow : Window {
     TextBlock _spaceText, _warnText, _pctText, _cntText, _fileText, _destText, _hintText;
     Border _barFill, _closeBtn;
     Grid _btnNext, _btnBack, _btnInstall, _btnFinish, _btnCancel;
-    TextBlock _checkMark;
+    TextBlock _checkMark, _deskMark;
     bool _runChecked = true;
+    bool _deskChecked = true;   // 桌面快捷方式默认勾选：真机反馈「装完找不到入口」的直接解药
     bool _installing;
     string _installedDir;
     int _curStep;
@@ -685,8 +733,16 @@ class SetupWindow : Window {
             Margin = new Thickness(0, -2, 0, 0)
         };
         box.Child = _checkMark;
+        // 桌面快捷方式勾选行在前（「装完找不到入口」的直接解药），立即运行在后
+        _deskMark = MakeCheckMark();
+        var deskRow = MakeCheckRow(_deskMark, "创建桌面快捷方式（三角洲行动优化助手）", new Thickness(0, 20, 0, 0));
+        deskRow.MouseLeftButtonUp += delegate {
+            _deskChecked = !_deskChecked;
+            _deskMark.Visibility = _deskChecked ? Visibility.Visible : Visibility.Collapsed;
+        };
+        sp.Children.Add(deskRow);
         var runRow = new StackPanel {
-            Orientation = Orientation.Horizontal, Margin = new Thickness(0, 20, 0, 0), Cursor = Cursors.Hand
+            Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0), Cursor = Cursors.Hand
         };
         runRow.Children.Add(box);
         runRow.Children.Add(new TextBlock {
@@ -704,6 +760,29 @@ class SetupWindow : Window {
         });
         page.Children.Add(sp);
         return page;
+    }
+
+    static TextBlock MakeCheckMark() {
+        return new TextBlock {
+            Text = "✓", Foreground = Theme.Green, FontWeight = FontWeights.Bold, FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, -2, 0, 0)
+        };
+    }
+
+    static StackPanel MakeCheckRow(TextBlock mark, string label, Thickness margin) {
+        var box = new Border {
+            Width = 16, Height = 16, Background = Theme.InputBg,
+            BorderBrush = Theme.Line2, BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center, Child = mark
+        };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = margin, Cursor = Cursors.Hand };
+        row.Children.Add(box);
+        row.Children.Add(new TextBlock {
+            Text = label, Foreground = Theme.TextMain,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0)
+        });
+        return row;
     }
 
     // ---------- 行为 ----------
@@ -837,6 +916,11 @@ class SetupWindow : Window {
     }
 
     void OnFinishClick() {
+        if (_deskChecked && _installedDir != null) {
+            // 快捷方式建不上不该拦着完成流程：极端失败（桌面目录只读等）静默放过，
+            // 用户仍有开始菜单入口
+            try { Installer.CreateDesktopShortcut(_installedDir); } catch (Exception) { }
+        }
         if (_runChecked && _installedDir != null) {
             string exe = Path.Combine(_installedDir, "启动优化工具.exe");
             try {
@@ -882,7 +966,7 @@ class SetupWindow : Window {
         sb.AppendLine("步骤=" + string.Join("/", StepNames));
         sb.AppendLine("欢迎标题=欢迎安装 三角洲行动优化助手");
         sb.AppendLine("按钮=上一步/取消/下一步/开始安装/完成/浏览…");
-        sb.AppendLine("完成页勾选=立即运行 三角洲行动优化助手");
+        sb.AppendLine("完成页勾选=创建桌面快捷方式（三角洲行动优化助手）/立即运行 三角洲行动优化助手");
         sb.AppendLine("默认路径=" + Installer.DefaultDir());
         sb.AppendLine("所需空间行=" + _spaceText.Text);
         sb.AppendLine("权限警告=" + _warnText.Text);

@@ -1,5 +1,7 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.3
+  DeltaForceBooster 安装包构建脚本 — v0.4
+  v0.4：卸载脚本同步清理桌面快捷方式与公共开始菜单目录（安装向导新增桌面快捷方式、
+        提权安装改写公共开始菜单后，卸载必须把这些落点全兜住）。
   只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖：
     build\DeltaForceBooster-Setup-vX.Y.exe   —— 图形安装向导（WPF，三角洲官网视觉）：
                                                 欢迎/自选安装位置/进度/完成四页，
@@ -57,12 +59,20 @@ foreach ($p in $parts) {
 # 全程不用 WScript.Shell：它按系统 ANSI 代码页转字符串，非中文代码页（如 1252）的系统上
 # 中文全变 "?"。消息框走 .NET WinForms（原生 Unicode）。
 $uninstallPs = @'
-# DeltaForceBooster 卸载：删开始菜单快捷方式 + 安装目录；backup\ 是系统还原凭据，默认保留
+# DeltaForceBooster 卸载：删快捷方式（开始菜单/桌面，含提权安装写入的公共位置）+
+# 安装目录；backup\ 是系统还原凭据，默认保留
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 # 安装位置可自选，以脚本自身所在目录为卸载目标
 $dest = Split-Path -Parent $MyInvocation.MyCommand.Path
-$menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeltaForceBooster'
+# 安装器行为：非提权装用户开始菜单，提权装公共开始菜单——卸载把两处都兜住；
+# 桌面快捷方式同理（DFB_TEST_DESKTOP 是沙箱验证的重定向钩子，与安装器一致）
+$menuDirs = @(
+  (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeltaForceBooster'),
+  (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\DeltaForceBooster'))
+$deskDirs = @($env:DFB_TEST_DESKTOP,
+  [Environment]::GetFolderPath('DesktopDirectory'),
+  [Environment]::GetFolderPath('CommonDesktopDirectory')) | Where-Object { $_ }
 # 脚本被单独拷到别处运行时绝不能误删所在目录：认准引擎文件才动手
 if (-not (Test-Path (Join-Path $dest 'scripts\delta-booster.ps1'))) {
   [Windows.Forms.MessageBox]::Show('未在本目录找到优化工具，卸载已取消。', 'DeltaForceBooster 卸载', 'OK', 'Warning') | Out-Null
@@ -77,7 +87,11 @@ if (-not $silent) {
     'DeltaForceBooster 卸载', 'YesNo', 'Question')
   $keep = ($r -ne 'No')
 }
-if (Test-Path $menu) { Remove-Item $menu -Recurse -Force }
+foreach ($m in $menuDirs) { if (Test-Path $m) { Remove-Item $m -Recurse -Force } }
+foreach ($d in $deskDirs) {
+  $lnk = Join-Path $d '三角洲行动优化助手.lnk'
+  if (Test-Path $lnk) { Remove-Item $lnk -Force }
+}
 if (Test-Path $dest) {
   if ($keep) {
     Get-ChildItem $dest -Force | Where-Object { $_.Name -ne 'backup' } | Remove-Item -Recurse -Force

@@ -1,5 +1,7 @@
 ﻿<#
-  DeltaForceBooster 启动器构建脚本 — v0.1
+  DeltaForceBooster 启动器构建脚本 — v0.2
+  v0.2：ICO 除内嵌进 exe 外，另落一份 gui\app.ico 随包分发——WPF 窗口不设 Icon 时
+        任务栏/Alt-Tab 显示宿主 powershell.exe 的图标（实机反馈），GUI 启动时读它。
   用系统自带的 .NET Framework csc.exe 编译出根目录「启动优化工具.exe」，零第三方依赖：
     - exe 内嵌 requireAdministrator 清单：双击即弹一次 UAC，GUI 脚本检测到已是管理员
       就不会二次提权，也没有 bat 方式先闪黑色控制台窗口的问题；
@@ -68,6 +70,9 @@ $bw.Write((New-Object byte[] $andSize))                                   # 32bp
 $bw.Flush()
 $icoFile = Join-Path $work 'launcher.ico'
 [IO.File]::WriteAllBytes($icoFile, $ms.ToArray())
+# 同一枚图标另存 gui\app.ico 随包分发：GUI 的 WPF 窗口挂上它，任务栏/Alt-Tab
+# 才不会显示宿主 powershell.exe 的图标（实机反馈过）
+[IO.File]::WriteAllBytes((Join-Path $root 'gui\app.ico'), $ms.ToArray())
 $bw.Close()
 
 # ---------- 2. UAC 提权清单 ----------

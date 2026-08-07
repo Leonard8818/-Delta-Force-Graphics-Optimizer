@@ -1,9 +1,15 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.9
+  DeltaForceBooster 图形界面 — v0.10
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
     近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
     等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
     + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
+  v0.10：执行优化后若有需重启才完全生效的成功项，弹主题化「需要重启电脑」提醒
+        （列出等重启的项，「立即重启」须二次确认后才 shutdown /r /t 5，重启调用包在
+        Invoke-SystemReboot 里便于测试替换）；运行日志区新增一键复制小按钮（成功短暂
+        变「已复制」，剪贴板被占用时落日志引导手动复制）；还原结果展示引擎新增的
+        「跳过（无实际影响）」类别，不再与失败混在一起；窗口挂 gui\app.ico——
+        此前任务栏/Alt-Tab 显示的是宿主 powershell.exe 的图标（实机反馈）。
   v0.9：还原设置改为逐项进度反馈（复用执行优化的进度面板，引擎 Invoke-Restore 新增
         可选回调），结束弹主题化完成提示——此前同步跑完才刷新，界面卡一下就结束，
         用户不知道还原有没有真的发生。
@@ -33,7 +39,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.9'
+$script:GuiVersion = '0.10'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -413,7 +419,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.9 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.10 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
         <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
@@ -660,6 +666,7 @@ $xaml = @'
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal">
           <TextBlock Text="运行日志" Foreground="{StaticResource TextPri}" FontSize="12"
@@ -667,7 +674,17 @@ $xaml = @'
           <TextBlock Text="RUN LOG" Style="{StaticResource Mono}" FontSize="8" Margin="8,2,0,0"/>
         </StackPanel>
         <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
-                VerticalAlignment="Center" Margin="12,0,0,0"/>
+                VerticalAlignment="Center" Margin="12,0,12,0"/>
+        <!-- 一键复制：用户反馈问题时直接整段拷日志，不用在小窗里手动拖选。
+             图标 Path 用固定坐标（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
+        <Button x:Name="CopyLogBtn" Grid.Column="2" Style="{StaticResource Ghost}" Height="22"
+                FontSize="10" ToolTip="复制全部日志到剪贴板">
+          <StackPanel Orientation="Horizontal">
+            <Path Data="M 0,3 L 0,11 L 6,11 L 6,3 Z M 3,0 L 9,0 L 9,8 L 6,8" Stroke="#FF00E884"
+                  StrokeThickness="1" Fill="Transparent" VerticalAlignment="Center"/>
+            <TextBlock x:Name="CopyLogTxt" Text="复制" Margin="5,0,0,0" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
       </Grid>
       <Border Background="{StaticResource LogBg}" BorderBrush="{StaticResource Line}" BorderThickness="1">
         <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" Height="58"
@@ -689,19 +706,28 @@ $xaml = @'
       <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
-      <TextBlock Grid.Column="4" Text="[ V0.9 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+      <TextBlock Grid.Column="4" Text="[ V0.10 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
     </Grid>
   </Grid>
 </Window>
 '@
 
 $window = [Windows.Markup.XamlReader]::Parse($xaml)
+# 不设 Icon 时任务栏/Alt-Tab 显示宿主 powershell.exe 的图标（实机反馈）。
+# app.ico 由 build\make-launcher.ps1 生成、随包分发；缺失（手动拷贝的残缺包）时
+# 静默跳过——图标问题绝不能挡启动
+try {
+  $icoPath = Join-Path $PSScriptRoot 'app.ico'
+  if (Test-Path -LiteralPath $icoPath) {
+    $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $icoPath))
+  }
+} catch {}
 $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
                'TabOptBtn','TabRefBtn','OptPage','RefPage','RefPanel','ActionRow','LogRow',
-               'ProgressPanel','ProgTrack','ProgFill','ProgText','ProgCount') {
+               'ProgressPanel','ProgTrack','ProgFill','ProgText','ProgCount','CopyLogBtn','CopyLogTxt') {
   $ui[$n] = $window.FindName($n)
 }
 
@@ -1202,6 +1228,100 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
   [bool]$script:CfmDlg.ShowDialog()
 }
 
+# 重启调用单独包一层：验证脚本可整体替换成 mock 走完整个交互链路，
+# 保证任何测试都不会真的把机器重启掉
+function Invoke-SystemReboot {
+  Start-Process shutdown.exe -ArgumentList '/r', '/t', '5'
+}
+
+# 执行完成后的醒目重启提醒：此前只在日志末尾一行小字，用户根本注意不到（实机反馈）。
+# 只在「本次成功项里确实有需重启的」才弹；纯检测/即时生效项不触发。
+# 返回 $true 表示用户点了「立即重启」——调用方还要再走一道确认，重启是破坏性动作
+function Show-RebootDialog([string[]]$ItemNames) {
+  $rxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="460" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <StackPanel Margin="0,0,0,16">
+    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+      <StackPanel Orientation="Horizontal">
+        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="重启提醒" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        </Border>
+        <TextBlock Text="REBOOT REQUIRED" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+                   VerticalAlignment="Center" Margin="9,0,0,0"/>
+      </StackPanel>
+    </Border>
+    <StackPanel Orientation="Horizontal" Margin="16,14,16,4">
+      <!-- 电源符号图标：圆环开口 + 竖杠，全部固定尺寸拼装，不用归一化 Path（教训 #3） -->
+      <Grid Width="34" Height="34" VerticalAlignment="Center">
+        <Ellipse Stroke="#FF00E884" StrokeThickness="2.5" Margin="3,6,3,2"/>
+        <Border Width="8" Height="14" Background="#FF0C1814" VerticalAlignment="Top" HorizontalAlignment="Center"/>
+        <Border Width="3" Height="15" Background="#FF00E884" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,1,0,0"/>
+      </Grid>
+      <StackPanel Margin="13,0,0,0" VerticalAlignment="Center">
+        <TextBlock Text="需要重启电脑" Foreground="#FFFFFFFF" FontSize="16" FontWeight="Bold"/>
+        <TextBlock Text="以下优化项已写入成功，但要等重启后才完全生效：" Foreground="#FF9AA5A0"
+                   FontSize="11" Margin="0,3,0,0"/>
+      </StackPanel>
+    </StackPanel>
+    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="16,8,16,12">
+      <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto">
+        <TextBlock x:Name="ItemsTxt" Text="" Foreground="#FF9AA5A0" FontSize="12" LineHeight="20"
+                   TextWrapping="Wrap" Padding="12,8"/>
+      </ScrollViewer>
+    </Border>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="16,0,16,0">
+      <Button x:Name="RebootBtn" MinWidth="110" Height="32" Foreground="#FF04241B" FontWeight="Bold">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+                    Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bg" Property="Fill" Value="#FF33F09E"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock Text="立即重启"/>
+      </Button>
+      <Button x:Name="LaterBtn" MinWidth="110" Height="32" IsCancel="True" Foreground="#FF00E884" Margin="9,0,0,0">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock Text="稍后自己重启"/>
+      </Button>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+  # 事件处理器在模态期间回调，与其他对话框同理：要用的对象放 script 作用域最稳
+  $script:RbDlg = [Windows.Markup.XamlReader]::Parse($rxaml)
+  $script:RbDlg.Owner = $window
+  $script:RbDlg.FindName('ItemsTxt').Text = (@($ItemNames | ForEach-Object { "· $_" }) -join "`n")
+  $script:RbDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:RbDlg.DragMove() })
+  $script:RbDlg.FindName('RebootBtn').Add_Click({ $script:RbDlg.DialogResult = $true })
+  $script:RbDlg.FindName('LaterBtn').Add_Click({ $script:RbDlg.DialogResult = $false })
+  [bool]$script:RbDlg.ShowDialog()
+}
+
 # 贴合主题的输入对话框：项目禁用原生 InputBox 风格弹窗
 function Show-NameDialog {
   $dxaml = @'
@@ -1526,6 +1646,36 @@ $ui.BrowseBtn.Add_Click({
 
 $ui.RefreshBtn.Add_Click({ Update-ItemList; Write-Log '状态已刷新。' })
 
+# 复制成功后按钮短暂变「已复制」再复原：给出即时反馈但不打断视线
+$script:CopyRevertTimer = New-Object Windows.Threading.DispatcherTimer
+$script:CopyRevertTimer.Interval = [TimeSpan]::FromSeconds(1.5)
+$script:CopyRevertTimer.Add_Tick({ $script:CopyRevertTimer.Stop(); $ui.CopyLogTxt.Text = '复制' })
+$ui.CopyLogBtn.Add_Click({
+  $txt = $ui.LogBox.Text
+  if (-not $txt) { Write-Log '日志还是空的，没有可复制的内容。'; return }
+  # GUI 线程本就是 STA；但 SetText 的冲刷（flush）步骤会被短暂占用剪贴板的进程搅黄而抛
+  # CLIPBRD_E_CANT_OPEN——本机实测这种情况下数据其实已经写进去了，所以抛错后先回读确认，
+  # 确认不了再用不冲刷的 SetDataObject 兜底（代价只是应用退出后剪贴板内容失效）
+  $copied = $false
+  try { [Windows.Clipboard]::SetText($txt); $copied = $true }
+  catch {
+    # 回读确认也可能撞上同一把短锁，稍候重试几次再下结论
+    foreach ($attempt in 1..3) {
+      try { $copied = ([Windows.Clipboard]::GetText() -eq $txt); break } catch { Start-Sleep -Milliseconds 80 }
+    }
+    if (-not $copied) {
+      try { [Windows.Clipboard]::SetDataObject($txt, $false); $copied = $true } catch {}
+    }
+  }
+  if ($copied) {
+    $ui.CopyLogTxt.Text = '已复制'
+    $script:CopyRevertTimer.Stop()
+    $script:CopyRevertTimer.Start()
+  } else {
+    Write-Log '复制到剪贴板失败（剪贴板被其他程序占用），请手动选中日志文本按 Ctrl+C 复制。'
+  }
+})
+
 $ui.GuideBtn.Add_Click({
   $hw = Get-HardwareInfo
   Show-ConfirmDialog '显卡指引' 'GPU DRIVER GUIDE' (Get-GpuGuideText $hw.MainGpuVendor) '知道了' -InfoOnly | Out-Null
@@ -1621,8 +1771,21 @@ $ui.ApplyBtn.Add_Click({
       Write-Log "体检发现以下问题（工具改不了，需按提示手动处理）："
       foreach ($x in $attList) { Write-Log "  [提示] $($x.Name) — $($x.Msg)" }
     }
-    Write-Log '电源计划、HAGS 等项重启电脑后完全生效。'
     Update-ItemList
+    # 醒目的重启提醒取代此前日志末尾的一行小字（实机反馈根本注意不到）：
+    # 引擎已在每条结果上标好 Reboot（成功且确需重启才为 true），全失败/全即时项不弹
+    $rebootList = @($r.Results | Where-Object { $_.Reboot })
+    if ($rebootList.Count -gt 0) {
+      $rebootNames = @($rebootList | ForEach-Object { $_.Name })
+      Write-Log "以下 $($rebootList.Count) 个成功项需重启电脑后完全生效：$($rebootNames -join '、')。"
+      if (Show-RebootDialog $rebootNames) {
+        # 重启是破坏性动作：即便用户点了「立即重启」也必须再确认一次，双重确认不可省
+        if (Show-ConfirmDialog '确认重启' 'CONFIRM REBOOT' '确定现在重启电脑？未保存的工作会丢失。确认后系统将在 5 秒内重启。' '确认重启') {
+          Write-Log '已确认重启，系统将在 5 秒内重启…'
+          Invoke-SystemReboot
+        } else { Write-Log '已取消重启，稍后请自行重启电脑以让优化完全生效。' }
+      } else { Write-Log '你选择了稍后重启，优化项将在下次重启后完全生效。' }
+    }
   } catch { Write-Log "执行失败：$($_.Exception.Message)" }
   finally { Set-BusyState $false }
 })
@@ -1640,16 +1803,21 @@ $ui.RestoreBtn.Add_Click({
     $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
     $r = Invoke-Restore $null ${function:Update-RestoreProgress}
     $failN = @($r.Failed).Count
+    $skipN = @($r.Skipped).Count
     $bakName = Split-Path -Leaf $r.File
-    $ui.ProgText.Text = "还原完成：$($r.RestoredOps) 项已还原 / $failN 项失败"
+    $ui.ProgText.Text = "还原完成：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项跳过（无实际影响）" })"
     $ui.ProgCount.Text = "备份：$bakName"
     Write-Log "已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
     foreach ($f in $r.Failed) { Write-Log "[还原失败] $f" }
+    # 跳过与失败必须分开呈现：跳过是「删不掉但不影响任何生效设置」，混在失败里会吓到用户
+    foreach ($s in $r.Skipped) { Write-Log "[还原跳过] $s" }
     foreach ($n in $r.Notes) { Write-Log "[提示] $n" }
     Update-ItemList
     # 成功与否都要有明确收尾：全成给定心丸，有失败的把数量点出来引导看日志
     $sum = "已按备份「$bakName」还原 $($r.RestoredOps) 项改动。" +
+           $(if ($skipN -gt 0) { "`n`n$skipN 项跳过：工具自建电源方案里的残留设置，该方案已停用，无实际影响。" }) +
            $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，明细见运行日志。" }
+             elseif ($skipN -gt 0) { "`n`n其余全部还原成功，各项已回到优化前的状态。" }
              else { "`n`n全部还原成功，各项已回到优化前的状态。" })
     Show-ConfirmDialog '还原完成' 'RESTORE DONE' $sum '知道了' -InfoOnly | Out-Null
   } catch { Write-Log "还原失败：$($_.Exception.Message)" }

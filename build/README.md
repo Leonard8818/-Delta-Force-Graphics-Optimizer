@@ -16,7 +16,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
 | 产物 | 用途 |
 |---|---|
-| `DeltaForceBooster-Setup-vX.Y.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/自选安装位置/进度/完成四页，创建开始菜单「三角洲行动优化助手」「卸载优化助手」快捷方式 |
+| `DeltaForceBooster-Setup-vX.Y.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/自选安装位置/进度/完成四页，创建开始菜单「三角洲行动优化助手」「卸载优化助手」快捷方式；完成页可勾选创建桌面快捷方式（默认勾选，静默安装同样创建） |
 | `DeltaForceBooster-Portable-vX.Y.zip` | 绿色版：解压到任意目录，双击「启动优化工具.exe」即用 |
 
 设计要点：
@@ -33,7 +33,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
   `/silent /dir=<路径> /log=<文件>` 静默安装；`/checkdir=<路径> /log=<文件>` 只跑权限
   预检（退出码 0 可写 / 2 需管理员 / 3 无效）；`/render=<目录>` 离屏渲染各页为 PNG 并
   导出界面字符串（验证视觉与中文编码）。静默安装读 `LOCALAPPDATA`/`APPDATA` 环境变量，
-  可重定向到沙箱。卸载脚本仍认 `DFB_INSTALL_SILENT=1`（不弹框、保留备份）。
+  可重定向到沙箱；桌面快捷方式的沙箱钩子是 `DFB_TEST_DESKTOP`（安装与卸载脚本同认）。
+  卸载脚本仍认 `DFB_INSTALL_SILENT=1`（不弹框、保留备份）。
+- **快捷方式落点**（真机踩过「装完找不到入口」）：提权安装（右键管理员运行，或选
+  Program Files 触发提权重启）时 `%APPDATA%` 指向提权账号，多账户机器上快捷方式会
+  建进管理员的开始菜单——所以提权态一律写公共开始菜单/公共桌面（所有用户可见）；
+  非提权态写当前用户。卸载脚本把用户/公共两处落点都清理。
 
 ## 二、两个必须知道的现实问题（别指望能绕过）
 
