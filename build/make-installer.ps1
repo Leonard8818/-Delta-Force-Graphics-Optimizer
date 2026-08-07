@@ -1,5 +1,8 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.4
+  DeltaForceBooster 安装包构建脚本 — v0.5
+  v0.5：构建完成后自动生成 build\update-manifest.json 清单模板（带 Setup.exe 的
+        sha256/size，version 取自 GUI 徽标，notes 留占位）——内置更新强制校验哈希，
+        每次发版手工算哈希迟早算错一次，让构建脚本代劳。
   v0.4：卸载脚本同步清理桌面快捷方式与公共开始菜单目录（安装向导新增桌面快捷方式、
         提权安装改写公共开始菜单后，卸载必须把这些落点全兜住）。
   只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖：
@@ -217,6 +220,25 @@ foreach ($f in @($setupTmp, $portableTmp)) {
 }
 Remove-Item $work -Recurse -Force
 
+# ---------- 7. 更新清单模板（配合内置更新） ----------
+# sha256/size 直接从刚构建的 Setup.exe 现算：客户端下载后强制校验这两个字段，
+# 手工计算迟早抄错一次哈希，发布时只需把 notes 占位换成真实更新说明再上传。
+# setupUrl 固定指向服务器上的无版本号文件名（发布即覆盖），域名必须保持在
+# scripts\updater.ps1 的白名单内，否则老客户端会拒绝下载。
+$setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
+$manifestOut = Join-Path $build 'update-manifest.json'
+$manifestObj = [ordered]@{
+  version  = "$ver.0"
+  notes    = '（发布前把这里换成真实的更新说明，支持 \n 换行）'
+  url      = 'https://df.ltz88.cn/'
+  setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'
+  sha256   = (Get-FileHash -LiteralPath $setupOut -Algorithm SHA256).Hash.ToLowerInvariant()
+  size     = (Get-Item -LiteralPath $setupOut).Length
+}
+# 不带 BOM：服务器上的清单由 .NET/浏览器直接消费，带 BOM 的 JSON 部分解析器会噎住
+[IO.File]::WriteAllText($manifestOut, ($manifestObj | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+
 "构建完成（v$ver）："
 Get-ChildItem $build -File | Where-Object { $_.Extension -in '.exe', '.zip' } |
   ForEach-Object { "  {0}  ({1:N0} KB)" -f $_.Name, ($_.Length / 1KB) }
+"  update-manifest.json  已生成（sha256/size 取自本次 Setup.exe，notes 待填写）"

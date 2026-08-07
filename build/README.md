@@ -1,6 +1,6 @@
 # DeltaForceBooster 分发与更新说明
 
-本目录负责两件事：**打 Windows 安装包**、**发布版本更新清单**（配合内置更新提醒）。
+本目录负责两件事：**打 Windows 安装包**、**发布版本更新清单**（配合 v0.11 起的内置更新）。
 全部只用系统自带组件（PowerShell + .NET Framework csc），不需要安装任何第三方工具。
 v0.3 起弃用 IExpress：它的解压界面不可定制、安装位置只能硬编码，改为 csc 现场编译
 `setup-wizard.cs`（WPF 图形安装向导，官网同款三角洲视觉）。
@@ -18,6 +18,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 |---|---|
 | `DeltaForceBooster-Setup-vX.Y.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/自选安装位置/进度/完成四页，创建开始菜单「三角洲行动优化助手」「卸载优化助手」快捷方式；完成页可勾选创建桌面快捷方式（默认勾选，静默安装同样创建） |
 | `DeltaForceBooster-Portable-vX.Y.zip` | 绿色版：解压到任意目录，双击「启动优化工具.exe」即用 |
+| `update-manifest.json` | 更新清单模板：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 徽标，`notes` 留占位待发布时填写 |
 
 设计要点：
 
@@ -75,35 +76,57 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 - 中间产物放 `%TEMP%` 的 ASCII 路径构建，成品再移回 build\（仓库路径含「桌面」，
   非中文代码页下命令行工具处理中文路径容易翻车）。
 
-## 四、发布版本更新（配合内置更新提醒）
+## 四、发布版本更新（配合内置更新）
 
-界面启动后会**异步**拉取一个 JSON 清单并和本地版本比对，发现新版本才弹提醒框。
-提醒框只提供「前往下载」（浏览器打开下载页，且只放行 http/https 链接）和「稍后再说」
-「不再提醒此版本」，**永远不会自动下载或自动执行任何东西**——自动更新就是供应链
-攻击入口，这是刻意不做的功能，不要加。
+界面启动时**异步**拉取 JSON 清单并和本地版本比对，此后运行期间每 30 分钟静默复查一次
+（GUI 常量 `$script:UpdateCheckIntervalMinutes`）；发现新版本点亮标题栏「有新版本」入口。
+v0.11 起更新详情框支持「立即更新」：应用内下载安装包（进度条、可取消）→ 强制校验
+SHA256 与文件大小 → 通过后提示并关闭程序、启动安装器。**下载与安装必须由用户点击触发**，
+自动检查只负责提醒，永不静默安装。
 
-清单格式（`update-manifest.json`，UTF-8）：
+内置下载的硬约束（实现于 `scripts\updater.ps1`，一条都不能省）：
+
+- **域名白名单硬编码**在 `$script:BoosterDownloadHosts`（当前只有 `df.ltz88.cn`）：
+  `setupUrl` 必须是 https 且主机在白名单内，否则拒绝下载并落日志。清单文件本身可能
+  被篡改，**绝不信任清单里的任意 URL**——没有这道闸，攻击者改一行 JSON 就能把用户
+  导去恶意地址。
+- 清单缺 `sha256` 或 `size`（或值不合法）时视为不可信，界面自动退化为
+  「仅提示 + 浏览器打开下载页」的旧行为；下载完成后哈希或大小任一不符，
+  立即删除临时文件并报错，绝不执行。下载全程落在 `%TEMP%\DeltaForceBooster-Update\`，
+  校验通过前不进程序目录。
+- **如实告知局限（别粉饰）**：SHA256 校验防的是*传输途中*被篡改（中间人、镜像污染）。
+  清单和安装包放在同一台服务器上，**服务器本身被攻破时攻击者可以同时替换两者并配好
+  哈希，这套校验完全失效**。真正能防这种情况的是代码签名证书（私钥不在服务器上），
+  本项目目前没有证书，所以服务器的安全就是更新链路的安全上限——SSH 键值登录、
+  最小化暴露面，比在客户端加花样更有用。
+
+清单格式（`update-manifest.json`，UTF-8 无 BOM，构建脚本自动生成模板）：
 
 ```json
 {
-  "version": "0.7.0",
+  "version": "0.11.0",
   "notes": "1. 新增 XX 优化项\n2. 修复 YY 问题",
-  "url": "https://github.com/Leonard8818/DeltaForceBooster/releases"
+  "url": "https://df.ltz88.cn/",
+  "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
+  "sha256": "（安装包的 SHA256，小写十六进制，构建脚本自动填）",
+  "size": 137728
 }
 ```
 
 发布流程：
 
 1. 改完代码，把 `gui\DeltaForceBooster-GUI.ps1` 的版本徽标升号，跑本目录构建脚本出包。
-2. 写好 `update-manifest.json`（`version` 填新版本号，`url` 填下载页地址）。
-3. 二选一：
-   - **GitHub Releases**：建一个新 Release，把 Setup.exe / Portable.zip / update-manifest.json
-     都作为 Release 资产上传。清单默认地址
-     `https://github.com/Leonard8818/DeltaForceBooster/releases/latest/download/update-manifest.json`
-     永远指向最新 Release 的清单，老版本客户端自动看得到新版本。
-   - **自有服务器**：把清单放到固定 URL（如 `https://flowai.ltz88.cn/dfbooster/update-manifest.json`），
-     并把 `scripts\updater.ps1` 顶部的 `$script:BoosterManifestUrl` 常量改成该地址后再出包。
+   构建结束会自动生成 `build\update-manifest.json`，`sha256`/`size` 已按本次 Setup.exe
+   算好——**不要手工改这两个字段**，改了客户端必然校验失败。
+2. 把 `notes` 占位换成真实更新说明。
+3. 上传到服务器（Caddy 站点 `df.ltz88.cn`，目录 `/opt/df-booster`）：
+   Setup.exe 覆盖为 `DeltaForceBooster-Setup.exe`（无版本号固定名，`setupUrl` 才能不变），
+   清单覆盖 `update-manifest.json`。**先传安装包、后传清单**——反过来会有一段时间窗口，
+   老客户端按新清单校验旧安装包，全部失败。
 4. 版本号比较是语义化的（`0.10.0` > `0.9.0`），清单里带不带 `v` 前缀都行。
+   若换下载域名，必须同步改 `scripts\updater.ps1` 的白名单常量再出包，否则老客户端拒绝下载。
 
 更新检查的全部失败路径（断网、超时、清单格式坏）都静默吞掉，不会影响主程序；
-「不再提醒此版本」记录在工具根目录 `config\updater.json`。
+「不再提醒此版本」记录在工具根目录 `config\updater.json`，定时复查同样跳过该版本。
+绿色版没有独立更新通道：更新对话框会说明其同样经安装器升级（把安装位置选到原目录
+即可原地覆盖，`profiles\`/`backup\`/`config\` 受覆盖安装保护不会丢）。

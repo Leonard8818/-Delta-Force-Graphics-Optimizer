@@ -1,9 +1,14 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.10
+  DeltaForceBooster 图形界面 — v0.11
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
     近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
     等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
     + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
+  v0.11：内置更新——更新详情框新增「立即更新」：应用内下载安装包（进度条 + 可取消），
+        下载完成强制校验 SHA256 与大小（更新模块 v0.2，域名白名单 + 校验失败即删），
+        通过后提示并关闭本程序启动安装器；清单缺校验信息或下载/校验失败时退回
+        「跳浏览器打开下载页」的旧行为。更新检查从「仅启动时一次」改为运行期间每
+        30 分钟静默复查，运行中出了新版本标题栏入口也会亮起，无需重启软件。
   v0.10：执行优化后若有需重启才完全生效的成功项，弹主题化「需要重启电脑」提醒
         （列出等重启的项，「立即重启」须二次确认后才 shutdown /r /t 5，重启调用包在
         Invoke-SystemReboot 里便于测试替换）；运行日志区新增一键复制小按钮（成功短暂
@@ -21,8 +26,8 @@
         data\streamer-settings.json，纯展示不可应用）；执行优化改为逐项进度条 + 实时日志
         + 完成度汇总，执行期间按钮全部禁用。
   双击根目录「启动优化工具.exe」（或后备的 .bat）运行；本文件点源加载
-  scripts\delta-booster.ps1 作为引擎，scripts\updater.ps1 作为更新检查模块
-  （异步、静默失败、绝不自动下载）。
+  scripts\delta-booster.ps1 作为引擎，scripts\updater.ps1 作为更新模块
+  （异步、静默失败；下载仅限白名单域名 + SHA256 校验，且必须用户点击触发）。
 #>
 #requires -Version 5.1
 
@@ -39,7 +44,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.10'
+$script:GuiVersion = '0.11'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -419,7 +424,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.10 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.11 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
         <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
@@ -1399,12 +1404,26 @@ function Show-NameDialog {
   $null
 }
 
-# 更新提醒对话框：只展示信息 + 用浏览器打开下载页，绝不下载/执行任何文件（供应链红线）
+# 更新对话框的按钮态复位：取消下载 / 下载失败后回到可再次操作的状态。
+# 「立即更新」只在清单过了安检（CanInline）时出现，降级入口「前往下载」永远可用。
+function Reset-UpdDialogButtons {
+  $script:UpdUi.DlPanel.Visibility = 'Collapsed'
+  $script:UpdUi.CancelDlBtn.Visibility = 'Collapsed'
+  $script:UpdUi.SkipChk.Visibility = 'Visible'
+  $script:UpdUi.UpdBtn.Visibility = $(if ($script:UpdDlgInfo.CanInline) { 'Visible' } else { 'Collapsed' })
+  $script:UpdUi.GoBtn.Visibility = 'Visible'
+  $script:UpdUi.LaterBtn.Visibility = 'Visible'
+}
+
+# 更新提醒对话框：v0.11 起支持内置更新——「立即更新」在应用内下载安装包（进度条 +
+# 可取消），完成后强制 SHA256/大小校验，通过才提示关闭本程序并启动安装器；
+# 下载源限白名单 https（见 scripts\updater.ps1），清单缺校验信息或任一环节失败都
+# 退回「浏览器打开下载页」的旧行为。下载/安装永远由用户点击触发，检查只负责提醒。
 function Show-UpdateDialog($UpdInfo) {
   $uxaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="430" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
+        Width="470" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
@@ -1423,15 +1442,38 @@ function Show-UpdateDialog($UpdInfo) {
       <TextBlock x:Name="CurText" Text="" Foreground="#FF7A8580" FontSize="11" Margin="9,0,0,0"
                  VerticalAlignment="Bottom"/>
     </StackPanel>
-    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,6,14,10">
+    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,6,14,8">
       <ScrollViewer MaxHeight="140" VerticalScrollBarVisibility="Auto">
         <TextBlock x:Name="NotesText" Text="" Foreground="#FF9AA5A0" FontSize="11"
                    TextWrapping="Wrap" Padding="10,8"/>
       </ScrollViewer>
     </Border>
+    <!-- 内置更新说明：绿色版没有独立更新通道，也走安装器（覆盖安装保护会保住配置与备份） -->
+    <TextBlock x:Name="InlineNote" Text="" Foreground="#FF7A8580" FontSize="10"
+               TextWrapping="Wrap" Margin="14,0,14,8"/>
+    <!-- 下载进度区：点「立即更新」后展开；进度由轮询定时器在 UI 线程刷新 -->
+    <StackPanel x:Name="DlPanel" Visibility="Collapsed" Margin="14,0,14,10">
+      <Grid>
+        <TextBlock x:Name="DlPhaseText" Text="正在下载更新…" Foreground="#FF9AA5A0" FontSize="11"/>
+        <TextBlock x:Name="DlSizeText" Text="" Foreground="#FF7A8580" FontFamily="Consolas"
+                   FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+      </Grid>
+      <Border x:Name="DlTrack" Height="8" Background="#FF081310" BorderBrush="#FF1B2E28"
+              BorderThickness="1" Margin="0,6,0,0">
+        <Border x:Name="DlFill" Background="#FF00E884" HorizontalAlignment="Left" Width="0"/>
+      </Border>
+    </StackPanel>
+    <!-- 失败区：下载/校验失败的明确报错，旁边的「前往下载」变身降级入口 -->
+    <Border x:Name="ErrPanel" Visibility="Collapsed" Background="#FF1A0E10" BorderBrush="#FF7A3034"
+            BorderThickness="1" Margin="14,0,14,10">
+      <TextBlock x:Name="ErrText" Text="" Foreground="#FFE5484D" FontSize="11"
+                 TextWrapping="Wrap" Padding="10,7"/>
+    </Border>
     <Grid Margin="14,0,14,0">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
@@ -1462,13 +1504,13 @@ function Show-UpdateDialog($UpdInfo) {
           </ControlTemplate>
         </CheckBox.Template>
       </CheckBox>
-      <Button x:Name="GoBtn" Grid.Column="1" Width="110" Height="30" Foreground="#FF04241B" FontWeight="Bold">
+      <Button x:Name="UpdBtn" Grid.Column="1" MinWidth="96" Height="30" Foreground="#FF04241B" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
               <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
@@ -1477,9 +1519,46 @@ function Show-UpdateDialog($UpdInfo) {
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Button.Template>
-        <TextBlock Text="前往下载"/>
+        <TextBlock Text="立即更新"/>
       </Button>
-      <Button x:Name="LaterBtn" Grid.Column="2" Width="86" Height="30" IsCancel="True"
+      <Button x:Name="GoBtn" Grid.Column="2" MinWidth="96" Height="30" Foreground="#FF00E884" Margin="9,0,0,0">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock x:Name="GoTxt" Text="前往下载"/>
+      </Button>
+      <Button x:Name="CancelDlBtn" Grid.Column="3" Visibility="Collapsed" MinWidth="96" Height="30"
+              Foreground="#FF00E884" Margin="9,0,0,0">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="#FF7A8580"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="#FF1B2E28"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock x:Name="CancelDlTxt" Text="取消下载"/>
+      </Button>
+      <Button x:Name="LaterBtn" Grid.Column="4" Width="86" Height="30" IsCancel="True"
               Foreground="#FF00E884" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
@@ -1500,25 +1579,142 @@ function Show-UpdateDialog($UpdInfo) {
   </StackPanel>
 </Window>
 '@
+  # 上一次对话框可能留有未收尾的下载：先请求取消并回收，避免两套轮询同时操作控件
+  if ($script:DlPollTimer) { $script:DlPollTimer.Stop() }
+  if ($script:DlState -and -not $script:DlState.Done) { $script:DlState.Cancel = $true }
+  if ($script:DlJob) { try { $script:DlJob.Dispose() } catch {}; $script:DlJob = $null }
+  $script:DlState = $null
+
   # 事件处理器在模态期间回调，跟 Show-NameDialog 一样把要用的对象放 script 作用域最稳
   $script:UpdDlg = [Windows.Markup.XamlReader]::Parse($uxaml)
   $script:UpdDlgInfo = $UpdInfo
   $script:UpdDlg.Owner = $window
-  $script:UpdDlg.FindName('VerText').Text = "新版本 v$($UpdInfo.Version)"
-  $script:UpdDlg.FindName('CurText').Text = "当前 v$($UpdInfo.Current)"
+  $script:UpdUi = @{}
+  foreach ($n in 'DlgTitle','VerText','CurText','NotesText','InlineNote','DlPanel','DlPhaseText','DlSizeText',
+                 'DlTrack','DlFill','ErrPanel','ErrText','SkipChk','UpdBtn','GoBtn','GoTxt',
+                 'CancelDlBtn','CancelDlTxt','LaterBtn') {
+    $script:UpdUi[$n] = $script:UpdDlg.FindName($n)
+  }
+  $script:UpdUi.VerText.Text = "新版本 v$($UpdInfo.Version)"
+  $script:UpdUi.CurText.Text = "当前 v$($UpdInfo.Current)"
   $notes = "$($UpdInfo.Notes)".Trim()
-  $script:UpdDlg.FindName('NotesText').Text = $(if ($notes) { $notes } else { '（本次更新没有附带说明）' })
-  $skipChk = $script:UpdDlg.FindName('SkipChk')
+  $script:UpdUi.NotesText.Text = $(if ($notes) { $notes } else { '（本次更新没有附带说明）' })
+  if ($UpdInfo.CanInline) {
+    # 绿色版没有独立的解压覆盖通道，统一走安装器：覆盖安装保护会保住 profiles/backup/config，
+    # 把安装位置选到现在的目录即可原地升级，在这里就把话说清楚
+    $script:UpdUi.InlineNote.Text = '「立即更新」将从官方源（df.ltz88.cn）下载安装包并校验完整性，随后关闭本程序运行安装器。绿色版用户把安装位置选到当前目录即可原地升级，自存方案 / 备份 / 运行状态不会被覆盖。'
+  } else {
+    # 清单缺 sha256/size 或 setupUrl 过不了白名单安检：内置更新不可用，退回旧行为并留痕
+    $script:UpdUi.UpdBtn.Visibility = 'Collapsed'
+    $script:UpdUi.InlineNote.Text = '本次更新将打开浏览器前往下载页。'
+    if ("$($UpdInfo.InlineDeny)") { Write-Log "内置更新不可用（$($UpdInfo.InlineDeny)），已退回浏览器下载。" }
+  }
   $script:UpdDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:UpdDlg.DragMove() })
-  $script:UpdDlg.FindName('GoBtn').Add_Click({
+
+  # 下载进度轮询：后台 runspace 只写 Synchronized 哈希表，UI 一律在这里（Dispatcher 线程）刷新。
+  # 对话框中途被关也让它继续跑到 Done 再回收 runspace——取消清理必须有人等到底。
+  $script:DlPollTimer = New-Object Windows.Threading.DispatcherTimer
+  $script:DlPollTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+  $script:DlPollTimer.Add_Tick({
+    $st = $script:DlState
+    if (-not $st) { $script:DlPollTimer.Stop(); return }
+    if ($script:UpdDlg.IsVisible -and $st.Phase -eq 'downloading') {
+      $recv = [long]$st.Received; $totalB = [long]$st.Total
+      $pct = $(if ($totalB -gt 0) { [Math]::Min(100, [Math]::Floor($recv * 100.0 / $totalB)) } else { 0 })
+      $script:UpdUi.DlSizeText.Text = "{0:N1} MB / {1:N1} MB · {2}%" -f ($recv / 1MB), ($totalB / 1MB), $pct
+      $trackW = $script:UpdUi.DlTrack.ActualWidth - 2
+      if ($trackW -gt 0) { $script:UpdUi.DlFill.Width = $trackW * $pct / 100 }
+    }
+    if (-not $st.Done) { return }
+    $script:DlPollTimer.Stop()
+    try { if ($script:DlJob) { $script:DlJob.EndInvoke($script:DlAsync); $script:DlJob.Dispose() } } catch {}
+    $script:DlJob = $null
+    if (-not $script:UpdDlg.IsVisible) { return }   # 对话框已关：上面已把后台资源回收完
+    if ($st.Phase -eq 'done') {
+      $script:UpdUi.DlPhaseText.Text = '下载完成，SHA256 校验通过'
+      $script:UpdUi.DlSizeText.Text = "{0:N1} MB · 100%" -f ([long]$st.Total / 1MB)
+      $trackW = $script:UpdUi.DlTrack.ActualWidth - 2
+      if ($trackW -gt 0) { $script:UpdUi.DlFill.Width = $trackW }
+      $script:UpdUi.CancelDlBtn.Visibility = 'Collapsed'
+      Write-Log "更新包已下载并通过校验：$($st.File)"
+      Show-ConfirmDialog '准备安装' 'READY TO INSTALL' '校验通过，即将关闭本程序并启动安装程序。安装器会请你确认安装位置；覆盖安装不会丢失自存方案和备份。' '关闭并安装' -InfoOnly | Out-Null
+      try {
+        # 先启动安装器再退出：本程序不退出会占住程序文件，安装器覆盖时必失败
+        Start-Process -FilePath $st.File
+        $script:UpdDlg.DialogResult = $false
+        $window.Close()
+      } catch {
+        $script:UpdUi.ErrText.Text = "启动安装程序失败：$($_.Exception.Message)"
+        $script:UpdUi.ErrPanel.Visibility = 'Visible'
+        $script:UpdUi.GoTxt.Text = '改为打开下载页'
+        Reset-UpdDialogButtons
+        Write-Log "启动安装程序失败：$($_.Exception.Message)"
+      }
+    } elseif ($st.Phase -eq 'cancelled') {
+      Reset-UpdDialogButtons
+      Write-Log '已取消更新下载，临时文件已清理。'
+    } else {
+      # 失败要说人话并给降级出路：改为浏览器打开下载页（旧行为）
+      Reset-UpdDialogButtons
+      $script:UpdUi.ErrText.Text = "$($st.Error)"
+      $script:UpdUi.ErrPanel.Visibility = 'Visible'
+      $script:UpdUi.GoTxt.Text = '改为打开下载页'
+      Write-Log "内置更新失败：$($st.Error)"
+    }
+  })
+
+  $script:UpdUi.UpdBtn.Add_Click({
+    if ($script:DlState -and -not $script:DlState.Done) { return }
+    $script:DlState = [hashtable]::Synchronized(@{
+      Received = 0L; Total = [long]$script:UpdDlgInfo.Size; Phase = 'downloading'
+      Error = ''; File = ''; Cancel = $false; Done = $false
+    })
+    foreach ($n in 'SkipChk','UpdBtn','GoBtn','LaterBtn') { $script:UpdUi[$n].Visibility = 'Collapsed' }
+    $script:UpdUi.ErrPanel.Visibility = 'Collapsed'
+    $script:UpdUi.DlPanel.Visibility = 'Visible'
+    $script:UpdUi.DlPhaseText.Text = '正在下载更新…'
+    $script:UpdUi.DlSizeText.Text = ''
+    $script:UpdUi.DlFill.Width = 0
+    $script:UpdUi.CancelDlBtn.Visibility = 'Visible'
+    $script:UpdUi.CancelDlBtn.IsEnabled = $true
+    $script:UpdUi.CancelDlTxt.Text = '取消下载'
+    Write-Log "开始下载更新包：$($script:UpdDlgInfo.SetupUrl)"
+    # 下载放后台 runspace：白名单安检、SHA256/大小校验都在 Invoke-BoosterSetupDownload 里强制执行
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript({
+      param($ModulePath, $Url, $Sha, $Bytes, $State)
+      try { . $ModulePath; Invoke-BoosterSetupDownload -SetupUrl $Url -Sha256 $Sha -Size $Bytes -State $State }
+      catch { $State.Phase = 'failed'; $State.Error = "下载线程异常：$($_.Exception.Message)"; $State.Done = $true }
+    })
+    foreach ($arg in @($script:UpdaterPath, "$($script:UpdDlgInfo.SetupUrl)",
+                       "$($script:UpdDlgInfo.Sha256)", [long]$script:UpdDlgInfo.Size, $script:DlState)) {
+      [void]$ps.AddArgument($arg)
+    }
+    $script:DlJob = $ps
+    $script:DlAsync = $ps.BeginInvoke()
+    $script:DlPollTimer.Start()
+  })
+  $script:UpdUi.CancelDlBtn.Add_Click({
+    if ($script:DlState -and -not $script:DlState.Done) {
+      $script:DlState.Cancel = $true
+      $script:UpdUi.CancelDlBtn.IsEnabled = $false
+      $script:UpdUi.CancelDlTxt.Text = '正在取消…'
+      $script:UpdUi.DlPhaseText.Text = '正在取消下载…'
+    }
+  })
+  $script:UpdUi.GoBtn.Add_Click({
     # 只允许 http/https：清单被篡改成本地路径/其他协议时拒绝打开，防止借更新入口执行文件
     $u = "$($script:UpdDlgInfo.Url)"
     if ($u -match '^https?://') { Start-Process $u } else { Write-Log '更新清单里的下载地址不是网页链接，已拦截。' }
     $script:UpdDlg.DialogResult = $true
   })
-  $script:UpdDlg.FindName('LaterBtn').Add_Click({ $script:UpdDlg.DialogResult = $false })
+  $script:UpdUi.LaterBtn.Add_Click({ $script:UpdDlg.DialogResult = $false })
+  # 下载中途直接关掉对话框：请求后台取消，轮询定时器会等它清理完临时文件再回收
+  $script:UpdDlg.Add_Closed({
+    if ($script:DlState -and -not $script:DlState.Done) { $script:DlState.Cancel = $true }
+  })
   $script:UpdDlg.ShowDialog() | Out-Null
-  if ($skipChk.IsChecked -and (Get-Command Set-BoosterSkipVersion -ErrorAction SilentlyContinue)) {
+  if ($script:UpdUi.SkipChk.IsChecked -and (Get-Command Set-BoosterSkipVersion -ErrorAction SilentlyContinue)) {
     # 返回值必须吞掉：现在函数输出会被调用方接住，落盘结果混进去会把 $skipped 变成数组
     Set-BoosterSkipVersion $UpdInfo.Version | Out-Null
     Write-Log "已设置不再提醒 v$($UpdInfo.Version)。"
@@ -1548,9 +1744,17 @@ function Update-ItemList {
   Update-Count
 }
 
-# 启动后异步检查更新：网络请求放后台运行空间，界面渲染不等它；任何失败静默吞掉
+# 更新检查间隔（分钟）：做成常量便于调整；验证定时机制时可临时改小
+$script:UpdateCheckIntervalMinutes = 30
+
+# 异步检查更新：网络请求放后台运行空间，界面渲染不等它；任何失败静默吞掉。
+# 启动时查一次，此后由定时器每 $script:UpdateCheckIntervalMinutes 分钟复查——
+# 用户长期挂着软件也能等到标题栏入口亮起，不必重启软件才发现新版（实机诉求）。
 function Start-UpdateCheck {
   if (-not (Get-Command Test-BoosterUpdate -ErrorAction SilentlyContinue)) { return }
+  # 上一轮检查还没回来就跳过本轮：慢网络下 30 分钟间隔也可能追尾
+  if ($script:UpdateCheckBusy) { return }
+  $script:UpdateCheckBusy = $true
   try {
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript({
@@ -1568,16 +1772,18 @@ function Start-UpdateCheck {
         $r = @($script:UpdateJob.EndInvoke($script:UpdateAsync))
         $found = $r | Where-Object { $_ } | Select-Object -First 1
         if ($found) {
-          # 不再启动即弹框打断用户：只点亮标题栏的常驻入口（Discord 手法），详情由用户点开
+          # 不再启动即弹框打断用户：只点亮标题栏的常驻入口（Discord 手法），详情由用户点开。
+          # 定时复查发现同一版本时只静默刷新信息，日志不重复刷屏
+          $isNew = ("$($found.Version)" -ne "$(if ($script:UpdateInfo) { $script:UpdateInfo.Version })")
           $script:UpdateInfo = $found
           $ui.UpdateBtn.ToolTip = "新版本 v$($found.Version) 可用（当前 v$($found.Current)），点击查看详情"
           $ui.UpdateBtn.Visibility = 'Visible'
-          Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)），点右上角「有新版本」查看详情。"
+          if ($isNew) { Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)），点右上角「有新版本」查看详情。" }
         }
-      } catch {} finally { $script:UpdateJob.Dispose() }
+      } catch {} finally { $script:UpdateJob.Dispose(); $script:UpdateCheckBusy = $false }
     })
     $script:UpdateTimer.Start()
-  } catch {}
+  } catch { $script:UpdateCheckBusy = $false }
 }
 
 $script:TargetExe = $null
@@ -1610,6 +1816,12 @@ $window.Add_ContentRendered({
     $ui.ScanState.Text = '检测完成'
     Write-Log '检测完成。选预设方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
     Start-UpdateCheck
+    # 运行期间定时复查：DispatcherTimer 在 UI 线程触发，真正的网络请求仍在后台 runspace，
+    # 静默失败的约定不变——断网/超时都不会打扰主界面
+    $script:UpdatePeriodicTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:UpdatePeriodicTimer.Interval = [TimeSpan]::FromMinutes($script:UpdateCheckIntervalMinutes)
+    $script:UpdatePeriodicTimer.Add_Tick({ Start-UpdateCheck })
+    $script:UpdatePeriodicTimer.Start()
   } catch {
     $ui.ScanState.Text = '检测失败'
     Write-Log "初始化失败：$($_.Exception.Message)"
