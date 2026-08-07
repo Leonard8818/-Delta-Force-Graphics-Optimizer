@@ -1,36 +1,14 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.11
+  DeltaForceBooster 核心脚本 — v0.13
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
-  v0.11：felix 预设显示名改为「主推全套」——Id 仍是 felix（改 Id 会让用户已存方案与
-        文档里的 -Preset felix 命令失效），费利克斯Fx 调试链路的来历保留在 Note 里。
-  v0.10：显卡指引按显卡型号标注功能适用范围（实机反馈用户感知不到指引是给自己显卡的）：
-        DLSS 仅 RTX 系可用、Preset K 还需 40/50 系、GTX/A 卡/Intel 用通用的 FSR、
-        低延迟 N 卡走 Reflex / A 卡走 Anti-Lag、XeSS 是 Intel 自家算法收益最大。
-  v0.9：修复「继承默认」电源隐藏项的还原（实机 i5-12600KF 踩实）：电源方案注册表键的
-        ACL 只授权 SYSTEM 写入、管理员组只有读权限，直删设置子键必被拒——powercfg 能写
-        是因为它经电源服务（SYSTEM）代写。现在删键被拒时退而用 powercfg 把该项写回
-        DefaultPowerSchemeValues 里的方案默认值（生效值不变）；默认表里没有该方案 GUID
-        且方案是工具自建的，记「跳过（无实际影响）」——还原后活动方案已切回原方案，
-        停用方案里的残留显式值不影响任何生效设置。pcfg 备份新增 Label 字段，还原失败/
-        跳过的日志不再只剩空荡荡的「pcfg ：」。优化项新增 Reboot 标记，Apply 结果按项
-        标注「需重启才完全生效」，GUI 的重启提醒与 CLI 汇总都以此为准，不再靠 Note 文本猜。
-  v0.8：Invoke-Restore 支持可选进度回调（与 Invoke-Apply 同约定，不传行为不变），
-        界面还原时能逐项反馈进度不再整体假死；新增 nv-autoopt-off（关闭 NVIDIA App
-        自动优化，防止 OPS 覆写玩家手调的游戏画质）及配套的 file 操作类型——正则只替换
-        目标片段保持文件其余部分逐字节不变，备份存整文件原始字节、还原逐字节写回。
-  v0.7：电源隐藏项写入不再要求「读得到当前值」——方案下没有显式值就是「继承默认」，
-        照常写入并在备份里记 Existed=$false，还原时删除该设置子键回到继承态（此前
-        新建方案 GUID 不在 DefaultPowerSchemeValues 表里，power-ultimate 之后
-        power-tuning 必然全军覆没）；检测类项目发现问题不再计成「失败」，改用独立的
-        Attention（提示）状态，汇总里单独列「x 项体检发现问题」。
-  v0.6：移除「关闭引导虚拟化」（ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错）；
-        新增 MMCSS 游戏档位、关闭窗口化游戏优化（复合串只改目标子键）、VC++ 运行库体检、
-        内存 XMP 体检；检测类项目改为按 Check 字段分发，新增检测项不再需要改分发逻辑。
-  v0.5：Invoke-Apply 支持进度回调（不传则行为不变）；电源计划创建/激活逐步查退出码并
-        带回 powercfg 原始错误；工具自建方案改用专属名「三角洲优化 · 卓越性能」并记录
-        GUID 到 config\（防与用户自建方案混淆、防重复堆方案）；power-tuning 逐项容错。
-  v0.4：新增 MPO/服务精简/休眠/MMCSS/显卡锁频/中断绑核/PCIe 体检/BCD/虚拟内存等 12 项，
-        预设方案按「费利克斯Fx」调试路线重组（电源→优先级→中断→精简→驱动层）。
+
+  v0.13：新增 risky 项 gpu-name-spoof（改独显上报型号，默认不勾、不进任何预设）；
+        新增 Get-GpuPanelApps（显卡控制面板安装检测，供界面决定是否显示入口按钮）；
+        显卡指引只保留驱动层内容（游戏内那部分已有独立页）。
+  v0.12：VC++ 体检只在「缺失某架构」时报问题，x64/x86 版本不同步改为中性陈述；
+        下载链接改用 aka.ms/vs/18（vs/17 是 14.44 线，在更新的机器上必报 0x80070666）。
+        主推预设 Id 改为 main。
+  早期版本的变更见 git 历史；关键结论都已就地写在对应代码处的注释里。
 
   用法（任意 AI 助手或用户均可直接调用）：
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Detect [-Json]
@@ -246,12 +224,10 @@ function Test-PowerSettingHidden([string]$Sub, [string]$Setting) {
   ($null -ne $a) -and (([int]$a -band 1) -eq 1)
 }
 
-# 读当前活动方案下该项的交流电(AC)取值。直接读注册表而不用 powercfg /q：
-# 隐藏项 /q 不输出，且中文系统输出无法用英文关键字解析。
-# 方案未显式设值时回落到该项的默认值，这才是系统实际生效的值。
-# 注意：DefaultPowerSchemeValues 下只有三个内置方案 GUID（平衡/高性能/节能），
-# duplicatescheme 复制出的方案（含本工具自建的卓越性能）两级都读不到、返回 $null——
-# 这是「继承默认」的合法状态，调用方绝不能把它当成错误。
+# 读活动方案下该项的 AC 取值。直接读注册表而不用 powercfg /q：隐藏项 /q 不输出，
+# 且中文系统输出没法用英文关键字解析。方案没显式设值就回落默认表。
+# DefaultPowerSchemeValues 里只有三个内置方案 GUID，duplicatescheme 出来的方案两级都
+# 读不到、返回 $null——这是「继承默认」的合法状态，调用方绝不能当成错误。
 function Get-PowerSettingAc([string]$Sub, [string]$Setting) {
   if (-not (Test-PowerSetting $Sub $Setting)) { return $null }
   $act = Get-ActiveScheme
@@ -377,6 +353,78 @@ function Remove-BcdEntryValue([string]$Name) {
   & bcdedit /deletevalue "{current}" $Name 2>&1 | Out-Null
 }
 
+# 独显在 Enum\PCI 下的实例路径。同一个 VEN_10DE 下还挂着 HD Audio 控制器等非显卡设备，
+# 必须按驱动服务名 nvlddmkm 认显卡，不能只看厂商 ID。
+# 实测（RTX 3070 Laptop / Win11 26200）：该键 Owner=BUILTIN\Administrators 且管理员组
+# FullControl，管理员可直接读写，无需 takeown/改 ACL——与电源方案键（只有 SYSTEM 可写）不同。
+function Get-NvidiaGpuEnumPath {
+  $root = 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI'
+  $base, $sub = Split-RegPath $root
+  $k = $base.OpenSubKey($sub)
+  if (-not $k) { return $null }
+  try {
+    foreach ($ven in ($k.GetSubKeyNames() | Where-Object { $_ -match 'VEN_10DE' })) {
+      $vk = $base.OpenSubKey("$sub\$ven")
+      if (-not $vk) { continue }
+      try {
+        foreach ($inst in $vk.GetSubKeyNames()) {
+          if ((Get-RegValue "$root\$ven\$inst" 'Service') -match 'nvlddmkm') { return "$root\$ven\$inst" }
+        }
+      } finally { $vk.Close() }
+    }
+  } finally { $k.Close() }
+  $null
+}
+
+# 显卡控制面板入口检测。装了才给按钮，没装只给下载页——按钮点了没反应比没有按钮更糟。
+# 查找方式与 Find-GamePath 同思路：应用包 → 传统安装路径 → 卸载注册表。
+# 下载页地址是本文件里的硬编码 https 常量，绝不从检测结果或网络取。
+function Get-GpuPanelApps([string]$Vendor) {
+  $apps = @()
+  # appx 类走 shell:appsFolder（Store 版控制面板没有可直接执行的 exe 路径）
+  $findAppx = {
+    param($Name)
+    try { @(Get-AppxPackage -Name $Name -ErrorAction SilentlyContinue)[0] } catch { $null }
+  }
+  switch ($Vendor) {
+    'NVIDIA' {
+      $pkg = & $findAppx 'NVIDIACorp.NVIDIAControlPanel'
+      $legacy = 'C:\Program Files\NVIDIA Corporation\Control Panel Client\nvcplui.exe'
+      $cpl = $(if ($pkg) { @{ Kind = 'appx'; Target = "$($pkg.PackageFamilyName)!NVIDIACorp.NVIDIAControlPanel" } }
+               elseif (Test-Path -LiteralPath $legacy) { @{ Kind = 'exe'; Target = $legacy } })
+      $apps += @{ Key = 'nv-cpl'; Name = 'NVIDIA 控制面板'; Installed = [bool]$cpl
+                  Kind = $cpl.Kind; Target = $cpl.Target
+                  Download = 'https://www.nvidia.cn/geforce/drivers/'
+                  Missing = '随显卡驱动一起安装，没有说明驱动装得不完整，重装驱动即可' }
+
+      $nvApp = @('C:\Program Files\NVIDIA Corporation\NVIDIA app\CEF\NVIDIA app.exe',
+                 'C:\Program Files\NVIDIA Corporation\NVIDIA App\CEF\NVIDIA app.exe') |
+               Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+      $apps += @{ Key = 'nv-app'; Name = 'NVIDIA App'; Installed = [bool]$nvApp
+                  Kind = 'exe'; Target = $nvApp
+                  Download = 'https://www.nvidia.cn/software/nvidia-app/'
+                  Missing = 'DLSS 预设、驱动更新等新功能在这里，建议装' }
+    }
+    'AMD' {
+      $rs = @('C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe',
+              "$env:SystemRoot\System32\amdow.exe") |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+      $apps += @{ Key = 'amd-sw'; Name = 'AMD Software (Adrenalin)'; Installed = [bool]$rs
+                  Kind = 'exe'; Target = $rs
+                  Download = 'https://www.amd.com/zh-cn/support/download/drivers.html'
+                  Missing = '随 Adrenalin 驱动一起安装，没有就去官网装完整版驱动' }
+    }
+    'Intel' {
+      $pkg = & $findAppx 'AppUp.IntelGraphicsExperience'
+      $apps += @{ Key = 'intel-gcc'; Name = 'Intel 显卡控制中心'; Installed = [bool]$pkg
+                  Kind = 'appx'; Target = $(if ($pkg) { "$($pkg.PackageFamilyName)!App" })
+                  Download = 'https://www.intel.cn/content/www/cn/zh/download-center/home.html'
+                  Missing = '随 Intel 显卡驱动一起安装，也可在微软商店搜「Intel Graphics Command Center」' }
+    }
+  }
+  $apps
+}
+
 # 独显在显示适配器 Class 键下的子键序号因机器而异（本机独显在 0002），
 # 必须按 DriverDesc 匹配主显卡名，绝不能硬编码 0000
 function Get-GpuClassKeyPath($Hw) {
@@ -444,10 +492,9 @@ public static class DfbCpuTopo {
   } catch { $null }
 }
 
-# 显卡中断绑核（微软文档：Interrupt Management\Affinity Policy，DevicePolicy=4 即
-# IrqPolicySpecifiedProcessors，AssignmentSetOverride 为 KAFFINITY 掩码、REG_BINARY 小端）。
-# 掩码取编号最大的 P 核（同构机型即最后一个物理核）的全部逻辑处理器：
-# 避开默认承接大量系统中断的 CPU0，又保持 ISR/DPC 固定在同一物理核上缓存友好。
+# 显卡中断绑核（微软 Interrupt Management\Affinity Policy：DevicePolicy=4 即
+# IrqPolicySpecifiedProcessors，AssignmentSetOverride 是 KAFFINITY 掩码、REG_BINARY 小端）。
+# 掩码取编号最大的 P 核：既避开承接大量系统中断的 CPU0，又让 ISR/DPC 留在同一物理核上。
 function Get-GpuIrqOps($Hw) {
   # KAFFINITY 只覆盖一个处理器组（64 逻辑核），超出的机器不做
   if (-not $Hw -or $Hw.Threads -lt 4 -or $Hw.Threads -gt 64) { return $null }
@@ -469,8 +516,6 @@ function Get-GpuIrqOps($Hw) {
   )
 }
 
-# PCIe 链路体检（纯读取）。只看"最大能力"：空闲时当前速率降到 x8 1.1 是正常省电，
-# 上限本身只有 x8/x4 才说明插错槽/延长线劣质，这种问题白丢帧且没有软件能修
 # DirectXUserGlobalSettings 这类值是 "键=值;键=值;" 的复合串，多个功能共用一个注册表值。
 # 必须逐项解析、只替换目标键，整串覆盖会把别人的设置一起抹掉。
 function Get-KvStringItem([string]$Raw, [string]$Key) {
@@ -494,26 +539,36 @@ function Set-KvStringItem([string]$Raw, [string]$Key, [string]$Value) {
   ($parts -join ';') + ';'
 }
 
-# VC++ 2015-2022(v14) 运行库错乱是 2026-07 游戏更新后的高发问题。只看 v14 系：
-# 更早的 2010/2012/2013 是各自独立的运行库，多版本共存本来就正常，不该报警。
+# VC++ 2015-2022(v14) 运行库体检。只看 v14 系：2010/2012/2013 是各自独立的运行库，
+# 多版本共存本来就正常。判定口径（用户实测坐实）：只有缺失某个架构才算问题——x64 与
+# x86 相互独立，版本不同步很常见且通常无害，一律报警是误报。
+# 下载链接必须用 vs/18：vs/17 是 14.44 线，在已装更新版本的机器上必撞 0x80070666。
 function Get-VcRedistStatus {
   $keys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
           'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
   $all = @(Get-ItemProperty $keys -ErrorAction SilentlyContinue |
            Where-Object { $_.DisplayName -match 'Visual C\+\+' -and $_.DisplayVersion -match '^14\.' })
+  # 文案直接带微软官方永久链接：用户不用再自己搜安装包，配合日志一键复制即可拿到
+  $dl = 'https://aka.ms/vs/18/release/vc_redist.x64.exe 和 https://aka.ms/vs/18/release/vc_redist.x86.exe'
   if ($all.Count -eq 0) {
-    # 文案直接带微软官方永久链接：用户不用再自己搜安装包，配合日志一键复制即可拿到
-    return @{ Ok = $false; Text = '未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：https://aka.ms/vs/17/release/vc_redist.x64.exe 和 https://aka.ms/vs/17/release/vc_redist.x86.exe，装完重启后再跑一次检测确认' }
+    return @{ Ok = $false; Text = "未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：$dl，装完重启后再跑一次检测确认" }
   }
-  # 同一批运行库的 x64/x86 应当是同一个次版本；错开说明某次安装只覆盖了一半
-  $minors = @($all | ForEach-Object { if ($_.DisplayVersion -match '^(14\.\d+)') { $Matches[1] } } |
-              Select-Object -Unique | Sort-Object)
-  $verList = ($minors -join ' / ')
-  if ($minors.Count -gt 1) {
-    return @{ Ok = $false
-              Text = "检测到 v14 运行库版本不一致（$verList）—— 这正是掉帧/闪退的常见原因。请下载 x64 与 x86 两个都装、双击覆盖安装即可（不需要先卸载）：https://aka.ms/vs/17/release/vc_redist.x64.exe 和 https://aka.ms/vs/17/release/vc_redist.x86.exe，装完重启后再跑一次检测确认" }
+  # 按架构分组（DisplayName 里带 x64/x86 字样；arm64 不含字母 x 不会误匹配）
+  $vc64 = @($all | Where-Object { $_.DisplayName -match '(?i)x64' })
+  $vc86 = @($all | Where-Object { $_.DisplayName -match '(?i)x86' })
+  if ($vc64.Count -eq 0 -or $vc86.Count -eq 0) {
+    $missArch = $(if ($vc64.Count -eq 0) { 'x64' } else { 'x86' })
+    return @{ Ok = $false; Text = "缺少 $missArch 架构的 v14 运行库 —— 依赖它的程序（含游戏组件）可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：$dl，装完重启后再跑一次检测确认" }
   }
-  @{ Ok = $true; Text = "v14 运行库版本一致（$verList，共 $($all.Count) 个组件），正常" }
+  # 每个架构取已装的最高版本作代表（同架构的 Minimum/Additional Runtime 组件版本一致）
+  $ver64 = @($vc64 | ForEach-Object { [version]$_.DisplayVersion } | Sort-Object -Descending)[0]
+  $ver86 = @($vc86 | ForEach-Object { [version]$_.DisplayVersion } | Sort-Object -Descending)[0]
+  if ($ver64.Minor -ne $ver86.Minor) {
+    # 中性陈述而非报警：没有严格证据表明版本不同步必然导致掉帧/闪退（社区只有
+    # 「重装后恢复」的个案报告），把它计入「体检发现问题」会制造误报和无谓折腾
+    return @{ Ok = $true; Text = "x64 $ver64 / x86 $ver86，版本不同步——两套运行库相互独立，这在多数机器上无害，不算问题；只有确实遇到闪退或异常掉帧且排除了其他原因时，才值得给两个架构都装同一条最新线的包来统一：$dl。若安装器报 0x80070666「已安装更新的版本」，说明系统里的比安装包还新——正常现象，不用处理，也不要为此卸载" }
+  }
+  @{ Ok = $true; Text = "v14 运行库 x64/x86 版本一致（x64 $ver64 / x86 $ver86，共 $($all.Count) 个组件），正常" }
 }
 
 # 内存没开 XMP/EXPO 会跑在 JEDEC 保守频率上。SPD 里的 XMP 档位 WMI 读不到，
@@ -764,7 +819,7 @@ function Get-OptItems([string]$GamePath) {
                )
                Note = '与帧率无关但影响压枪手感，FPS 玩家普遍关闭。会改变鼠标移动习惯，默认不勾选。' }
 
-  # ===== v0.4 新增：费利克斯路线补齐 =====
+  # ===== v0.4 新增：全套调试路线补齐 =====
 
   $items += @{ Id = 'mpo-off'; Tier = 'safe'; Name = '禁用 MPO 多平面叠加（治闪烁/卡顿）'; Admin = $true; Default = $true; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm'; Name = 'OverlayTestMode'; Value = 5; Kind2 = 'DWord' })
@@ -810,7 +865,7 @@ function Get-OptItems([string]$GamePath) {
                           Label   = 'NVIDIA 自动优化(OPS)' }) })
                Note = '这个开关开着时，NVIDIA 会自动把它认为「最佳」的画质设置写进游戏、覆盖你自己调好的参数（俗称"白调"）。关掉只是不再自动改游戏设置，不影响驱动本身。与「锁定电源计划」同源：都是防外部程序偷改你的配置。' }
 
-  $items += @{ Id = 'gpu-irq-affinity'; Tier = 'safe'; Name = '显卡中断绑核（费利克斯手法）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
+  $items += @{ Id = 'gpu-irq-affinity'; Tier = 'safe'; Name = '显卡中断绑核（固定到高性能核）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = (Get-GpuIrqOps $hw)
                Note = '把独显中断固定到编号最大的物理核（大小核机型按 EfficiencyClass 选最后一个 P 核），避开挤满系统中断的 CPU0，压低 DPC 延迟。读不到核拓扑时本项自动不可用（宁可不做不能做错）。重启生效，还原即删除策略。' }
 
@@ -837,9 +892,9 @@ function Get-OptItems([string]$GamePath) {
                Check = 'Get-PcieLinkStatus'
                Note = '读取独显 PCIe 链路的最大能力。上限只有 x8/x4 多半是插错插槽或用了劣质延长线，这种硬件问题白丢帧、软件修不了。空闲时当前速率自动降档属正常省电。' }
 
-  $items += @{ Id = 'vcredist-check'; Tier = 'safe'; Name = 'VC++ 运行库冲突体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
+  $items += @{ Id = 'vcredist-check'; Tier = 'safe'; Name = 'VC++ 运行库体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
                Check = 'Get-VcRedistStatus'
-               Note = '2026 年 7 月底游戏更新后的高发问题：VC++ 2015-2022(v14) 运行库版本错乱会让帧数从 300 掉到 100 甚至闪退。本项只检测不修——卸载重装运行库会波及其他软件，须你自己判断后手动处理。' }
+               Note = '检测 VC++ 2015-2022(v14) 运行库是否缺失——缺了游戏很可能无法启动。x64 与 x86 两套相互独立，版本不同步很常见且通常无害，只做中性提示不报问题。本项只检测不修——卸载重装运行库会波及其他软件，须你自己判断后手动处理。' }
 
   $items += @{ Id = 'xmp-check'; Tier = 'safe'; Name = '内存 XMP/EXPO 体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
                Check = 'Get-MemoryXmpStatus'
@@ -849,7 +904,8 @@ function Get-OptItems([string]$GamePath) {
                Ops  = @(@{ Kind = 'bcd'; Name = 'disabledynamictick'; Value = 'yes'; Label = '动态计时器' })
                Note = '恢复固定时钟中断，部分机器帧生成间隔更稳。副作用：空闲功耗略升、笔记本续航变差，默认不勾选。重启生效。' }
 
-  # 费利克斯公式：初始=内存GB×1024×1.5、最大=×2；他本人也只在闪退/卡死时才建议改
+  # 经验公式：初始=内存GB×1024×1.5、最大=×2。固定大小是为防页面文件动态收缩引发卡顿；
+  # 收益只在闪退/爆内存场景成立，平时不值得占这份磁盘，所以默认不勾选
   $ramInt = $(if ($hw) { [int][math]::Round($hw.RamGB) } else { 0 })
   $items += @{ Id = 'pagefile-custom'; Tier = 'safe'; Name = "虚拟内存固定为 $([int]($ramInt * 1.5))–$($ramInt * 2) GB"; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = $(if ($ramInt -gt 0) { @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
@@ -878,6 +934,18 @@ function Get-OptItems([string]$GamePath) {
                Ops = $prioOps; RequiresGame = $true
                Note = '通过 IFEO 让游戏进程一启动就是高优先级，抢占后台扫描/更新占用的资源。需要游戏 exe 路径。' }
 
+  # ===== risky 档：必须显式勾选 + -Risky 才执行，不进任何预设方案 =====
+
+  # 改独显上报的型号名。实测结论（RTX 3070 Laptop / Win11 26200）：该键管理员组有
+  # FullControl，直接写即可，无需 takeown 或改 ACL；写入即时生效（WMI 立刻改口径），
+  # 写回原字符串后逐字节一致、WMI 同步复原——所以备份/还原走通用 reg 通路就够。
+  $nvEnum = Get-NvidiaGpuEnumPath
+  $fakeGpu = $(if ($hw -and $hw.IsLaptop) { 'NVIDIA GeForce GTX 1050 Ti' } else { 'NVIDIA GeForce GTX 750 Ti' })
+  $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = "把显卡型号改成「$fakeGpu」"; Admin = $true; Default = $false; Kind = 'multi'
+               Ops = $(if ($nvEnum) { @(@{ Kind = 'reg'; Path = $nvEnum; Name = 'DeviceDesc'; Value = $fakeGpu
+                                           Kind2 = 'String'; Label = '显卡型号' }) })
+               Note = '让游戏以为你是低端卡从而走低配渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。仅 N 卡可用，备份原值可完整还原。' }
+
   # N 卡进阶：用户自行下载 NVIDIA Profile Inspector 放进 tools\ 后才出现此项
   $npi = Join-Path $script:ToolsDir 'nvidiaProfileInspector.exe'
   $nip = Get-ChildItem $script:ToolsDir -Filter '*.nip' -File -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -893,14 +961,14 @@ function Get-OptItems([string]$GamePath) {
 # ---------- 优化方案（内置推荐 + 用户自存） ----------
 
 # 内置方案只列"要勾选的项"，不存在的项（如本机没装 Profile Inspector）自动忽略。
-# 列表顺序即界面下拉顺序：「主推全套」（按费利克斯Fx 调试链路组织）排第一位。
+# 列表顺序即界面下拉顺序：「主推全套」排第一位。
 function Get-BuiltinPresets {
   @(
     [pscustomobject]@{
-      # Items 顺序刻意按费利克斯的调试链路排列：
+      # Items 顺序刻意按依赖关系排列：
       # ①电源深度定制（一切的前置）→ ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层
-      Id = 'felix'; Name = '主推全套'; Builtin = $true
-      Note = '按费利克斯Fx 的调试链路全套执行：电源→优先级→中断绑核→系统精简→显卡层。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
+      Id = 'main'; Name = '主推全套'; Builtin = $true
+      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
       Items = @('power-ultimate','power-tuning','powerplan-lock',
                 'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',
@@ -1074,48 +1142,41 @@ function Get-ItemState($Item) {
   @{ Optimized = $all; Current = ($cur -join '；') }
 }
 
-# ---------- 显卡驱动指引（无法安全脚本化的部分，给出精确手动步骤） ----------
+# ---------- 显卡驱动指引 ----------
 
+# 只讲驱动层设置：游戏内那部分已有独立的「游戏内设置参考」页，重复写只会让人两头对不上
 function Get-GpuGuideText([string]$Vendor) {
   switch ($Vendor) {
     'NVIDIA' { @(
-      '【N 卡驱动设置 — 手动 2 分钟】'
-      '打开 NVIDIA 控制面板 → 管理 3D 设置 → 程序设置 → 添加「三角洲行动」，逐项设置：'
+      'NVIDIA 控制面板 → 管理 3D 设置 → 程序设置 → 添加「三角洲行动」：'
       '  1. 电源管理模式 = 最高性能优先'
       '  2. 低延迟模式 = 超高'
-      '  3. 垂直同步 = 关（改用游戏内帧率上限，设为略低于显示器刷新率）'
+      '  3. 垂直同步 = 关（帧率上限改在游戏里设，略低于显示器刷新率）'
       '  4. 着色器缓存大小 = 无限制'
       '  5. 线程优化 = 开'
       '  6. 最大预渲染帧数 = 1'
-      '【提示】「NVIDIA App 自动优化」已可由本工具的「关闭 NVIDIA App 自动优化游戏设置」项'
-      '        一键关闭（它开着会自动覆写你游戏内调好的画质，等于白调），无需再手动进 App 关。'
-      '【游戏内 · 因显卡型号而异的项】'
-      '  · NVIDIA Reflex 低延迟 = 开+加速（N 卡专属；A 卡的对应功能是驱动里的 Anti-Lag）'
-      '  · 帧数不够时开超分辨率：DLSS 仅 RTX 系列可用（选画质/平衡档）；GTX 系列没有'
-      '    DLSS，改选各家显卡通用的 FSR'
-      '  · DLSS 模型预设 Preset K 仅 RTX 40/50 系支持：NVIDIA App → 图形 → 三角洲行动 →'
-      '    DLSS 模型预设 → Preset K；RTX 20/30 系保持默认预设即可'
-      '进阶：下载 NVIDIA Profile Inspector 放入本工具 tools\ 目录后可一键导入驱动配置档。'
+      ''
+      'NVIDIA App → 图形 → 三角洲行动：RTX 40/50 系可把 DLSS 模型预设选到 Preset K，'
+      '其余型号保持默认。'
+      ''
+      '「自动优化」会覆写你调好的画质，用本工具的「关闭 NVIDIA App 自动优化游戏设置」项关掉即可。'
+      '进阶：NVIDIA Profile Inspector 放进本工具 tools\ 目录后可一键导入驱动配置档。'
     ) -join "`n" }
     'AMD' { @(
-      '【A 卡驱动设置 — 手动 2 分钟】'
-      '打开 AMD Software (Adrenalin) → 游戏 → 三角洲行动，逐项设置：'
+      'AMD Software (Adrenalin) → 游戏 → 三角洲行动：'
       '  1. Radeon Anti-Lag = 开'
       '  2. Radeon Chill / Boost = 关'
       '  3. 等待垂直刷新 = 关闭，除非应用程序指定'
       '  4. 纹理过滤质量 = 性能'
       '  5. 表面格式优化 = 开'
-      '【游戏内 · 因显卡型号而异的项】'
-      '  · 帧数不够时开超分辨率：选各家显卡通用的 FSR；DLSS 是 N 卡专属、XeSS 主要为'
-      '    Intel 优化，A 卡都不适用'
-      '  · 低延迟用上面第 1 条的 Anti-Lag（驱动层）；游戏内的 NVIDIA Reflex 对 A 卡无效'
     ) -join "`n" }
     'Intel' { @(
-      '【Intel 显卡】性能上限有限，建议：游戏内画质预设调最低，并确认已安装最新'
-      'Intel Arc/核显驱动。'
-      '【游戏内 · 因显卡型号而异的项】'
-      '  · 超分辨率优先选 XeSS（Intel 自家算法，Arc 独显收益最大），也可用通用的 FSR；'
-      '    DLSS 与 NVIDIA Reflex 是 N 卡专属，Intel 显卡不可用'
+      'Intel 显卡控制中心 → 游戏 → 三角洲行动：'
+      '  1. 电源性能模式 = 最高性能'
+      '  2. 垂直同步 = 关'
+      '  3. 异常检测 = 关'
+      ''
+      '核显性能上限有限，先确认装的是最新 Intel 显卡驱动。'
     ) -join "`n" }
     default { '未识别到独立显卡，驱动层指引略过。' }
   }

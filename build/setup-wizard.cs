@@ -22,7 +22,9 @@
 //
 // 命令行（全部供自动化验证，普通用户双击即图形向导）：
 //   /dir=<路径>        预填安装位置（提权重启时回传用）
-//   /silent /log=<文件> 静默安装（沙箱验证用，读 LOCALAPPDATA/APPDATA 环境变量以便重定向）
+//   /silent /log=<文件> 静默安装（一键更新与沙箱验证共用，读 LOCALAPPDATA/APPDATA 环境变量以便重定向）
+//   /waitpid=<进程Id>  静默安装前先等该进程退出（主程序占着自己的文件，不退就覆盖不了）
+//   /runafter          静默安装完成后启动新版主程序；失败时弹框报错，绝不假装成功
 //   /checkdir=<路径>   只跑写入权限预检，结果写 /log 文件
 //   /render=<目录>     离屏渲染各页面为 PNG + 导出界面字符串（不弹窗，验证视觉与中文编码）
 using System;
@@ -59,16 +61,19 @@ static class Program {
     [STAThread]
     static void Main(string[] args) {
         string dir = null, logFile = null, renderDir = null, checkDir = null;
-        bool silent = false;
+        bool silent = false, runAfter = false;
+        int waitPid = 0;
         foreach (string a in args) {
             if (a.Equals("/silent", StringComparison.OrdinalIgnoreCase)) silent = true;
+            else if (a.Equals("/runafter", StringComparison.OrdinalIgnoreCase)) runAfter = true;
             else if (a.StartsWith("/dir=", StringComparison.OrdinalIgnoreCase)) dir = a.Substring(5).Trim('"');
             else if (a.StartsWith("/log=", StringComparison.OrdinalIgnoreCase)) logFile = a.Substring(5).Trim('"');
+            else if (a.StartsWith("/waitpid=", StringComparison.OrdinalIgnoreCase)) int.TryParse(a.Substring(9).Trim('"'), out waitPid);
             else if (a.StartsWith("/render=", StringComparison.OrdinalIgnoreCase)) renderDir = a.Substring(8).Trim('"');
             else if (a.StartsWith("/checkdir=", StringComparison.OrdinalIgnoreCase)) checkDir = a.Substring(10).Trim('"');
         }
         if (checkDir != null) { Environment.Exit(RunCheck(checkDir, logFile)); return; }
-        if (silent)           { Environment.Exit(RunSilent(dir, logFile)); return; }
+        if (silent)           { Environment.Exit(RunSilent(dir, logFile, waitPid, runAfter)); return; }
         if (renderDir != null) { RunRender(renderDir); return; }
         var app = new Application();
         app.Run(new SetupWindow(dir));
@@ -79,13 +84,21 @@ static class Program {
         File.AppendAllText(file, DateTime.Now.ToString("HH:mm:ss") + " " + msg + "\r\n", new UTF8Encoding(true));
     }
 
-    // 静默安装：沙箱验证的入口。日志落文件（winexe 没有控制台，这是唯一输出通道）
-    static int RunSilent(string dir, string logFile) {
+    // 静默安装：一键更新与沙箱验证共用。日志落文件（winexe 没有控制台，这是唯一输出通道）。
+    // /runafter 时属于用户点了「立即更新」的链路——主程序此刻已退出，失败必须弹框，
+    // 否则用户看着窗口关掉、新版没起来，完全不知道发生了什么
+    static int RunSilent(string dir, string logFile, int waitPid, bool runAfter) {
+        string dest = null;
         try {
-            string dest = string.IsNullOrEmpty(dir) ? Installer.DefaultDir() : dir;
+            dest = string.IsNullOrEmpty(dir) ? Installer.DefaultDir() : dir;
             Log(logFile, "安装目标: " + dest);
+            if (waitPid > 0) Log(logFile, "等待旧进程退出(" + waitPid + "): " + WaitForPid(waitPid));
             string err = Installer.CheckWritable(dest);
-            if (err != null) { Log(logFile, "预检失败: " + err); return 2; }
+            if (err != null) {
+                Log(logFile, "预检失败: " + err);
+                if (runAfter) FailBox(dest, err == Installer.NeedAdmin ? "目标目录没有写入权限。" : ("目标目录不可写：" + err));
+                return 2;
+            }
             Installer.Install(dest, delegate(int i, int n, string name) {
                 if (i == 1 || i == n || i % 20 == 0) Log(logFile, string.Format("  {0}/{1} {2}", i, n, name));
             });
@@ -93,11 +106,51 @@ static class Program {
             Log(logFile, "开始菜单快捷方式: " + Installer.CreateShortcuts(dest));
             Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(dest));
             Log(logFile, "安装完成: " + dest);
+            if (runAfter) Log(logFile, "启动新版: " + LaunchInstalled(dest));
             return 0;
         } catch (Exception ex) {
             Log(logFile, "安装失败: " + ex);
+            if (runAfter) FailBox(dest, ex.Message);
             return 1;
         }
+    }
+
+    // 主程序占着自己的文件，不等它退出就覆盖必失败。按 Id 精确等待，绝不按进程名杀 powershell；
+    // 超时不强杀——宁可让下面的覆盖步骤报错，也不冒险打断用户正在跑的优化
+    static string WaitForPid(int pid) {
+        try {
+            var p = Process.GetProcessById(pid);
+            if (p.WaitForExit(30000)) return "已退出";
+            return "等待超时（30 秒），仍继续尝试";
+        } catch (ArgumentException) {
+            return "进程已不存在";
+        } catch (Exception ex) { return "等待异常: " + ex.Message; }
+    }
+
+    static string LaunchInstalled(string dest) {
+        try {
+            string exe = Path.Combine(dest, "启动优化工具.exe");
+            if (!File.Exists(exe)) return "未找到 " + exe;
+            // 沙箱验证钩子（与 DFB_TEST_DESKTOP / DFB_TEST_DOWNLOADS 同类）：验证要走完
+            // 参数解析与时序，但绝不能真把主程序拉起来——它会自提权弹 UAC 打断验证
+            if (Environment.GetEnvironmentVariable("DFB_TEST_NOLAUNCH") == "1")
+                return "跳过启动（DFB_TEST_NOLAUNCH=1）: " + exe;
+            // 主程序退不干净时的兜底（只按主窗口标题精确匹配），防止新旧窗口并存
+            Installer.CloseRunningBooster();
+            Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true });
+            return "已启动";
+        } catch (Exception ex) { return "启动失败: " + ex.Message; }
+    }
+
+    static void FailBox(string dest, string reason) {
+        try {
+            WinForms.MessageBox.Show(
+                "更新安装失败：" + reason +
+                "\r\n\r\n安装位置：" + (dest ?? "(未确定)") +
+                "\r\n\r\n原来的版本没有被破坏，可以正常继续使用。请前往 https://df.ltz88.cn/ 下载安装包手动更新。",
+                "三角洲行动优化助手 · 更新失败",
+                WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
+        } catch (Exception) { }
     }
 
     static int RunCheck(string dir, string logFile) {

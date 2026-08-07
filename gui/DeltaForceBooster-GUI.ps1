@@ -1,53 +1,21 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.13
-  视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
-    近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
-    等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
-    + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
-  v0.13：实机反馈第五轮——①「主播设置参考」页更名「游戏内设置参考」，画质路径按实机
-        录像逐帧核对修正为「设置 → 视频」（此前写「画面」是错的），分组与设置项全量
-        对齐游戏内实际菜单（数据文件 schema 同步扩充，无数据的新项显示「—」不编造）；
-        ②felix 预设显示名改「主推全套」并加星标（Id 不变），启动即默认选中该方案，
-        套方案与启动默认勾选都跳过已就绪项；③新增「检查更新」按钮：手动立即查一次，
-        三种反馈（已最新/弹更新框/网络失败），手动检查无视「不再提醒此版本」；
-        ④全局深色 Chrome 资源字典：对话框是独立 Window 不继承主窗口资源，此前确认
-        执行框等对话框里的滚动条全是系统白色（实机反馈）——现在主窗口与五个对话框
-        共用同一份深色 ScrollBar（纵横双向）/ToolTip/右键菜单/文本选中色资源，
-        并去掉键盘焦点虚线框；⑤内置更新启动安装器后 [Environment]::Exit 兜底强制
-        退出——WPF 宿主里残留 runspace/嵌套模态帧时 Close 后进程未必真退，旧窗口
-        会与安装后新实例并存（实机反馈）。
-  v0.12：真机反馈四连修——①体检查出问题（VC++ 错乱/XMP 未开）不再只落纯文本日志：
-        执行后弹「体检发现问题」对话框，带逐步教程与可点击的官方下载按钮（链接是代码
-        硬编码常量、只放行 https，绝不下载执行），优化项行内也有「解决办法」直达入口；
-        ②优化项列表加三态全选框，只圈可执行项（已就绪项不重复执行），手动全选同样清空
-        方案选中态；③主播设置参考按游戏内「设置 → 画面」菜单分组（显示设置/战斗视角/
-        基础画质/高级画质/超分辨率），照表能逐菜单找到，老格式数据自动归入「其他」；
-        ④显卡指引顶部醒目标出检测到的显卡型号（双显卡说明以独显为准），并按型号标注
-        DLSS/FSR/XeSS/Reflex/Anti-Lag 的适用范围。
-  v0.11：内置更新——更新详情框新增「立即更新」：应用内下载安装包（进度条 + 可取消），
-        下载完成强制校验 SHA256 与大小（更新模块 v0.2，域名白名单 + 校验失败即删），
-        通过后提示并关闭本程序启动安装器；清单缺校验信息或下载/校验失败时退回
-        「跳浏览器打开下载页」的旧行为。更新检查从「仅启动时一次」改为运行期间每
-        30 分钟静默复查，运行中出了新版本标题栏入口也会亮起，无需重启软件。
-  v0.10：执行优化后若有需重启才完全生效的成功项，弹主题化「需要重启电脑」提醒
-        （列出等重启的项，「立即重启」须二次确认后才 shutdown /r /t 5，重启调用包在
-        Invoke-SystemReboot 里便于测试替换）；运行日志区新增一键复制小按钮（成功短暂
-        变「已复制」，剪贴板被占用时落日志引导手动复制）；还原结果展示引擎新增的
-        「跳过（无实际影响）」类别，不再与失败混在一起；窗口挂 gui\app.ico——
-        此前任务栏/Alt-Tab 显示的是宿主 powershell.exe 的图标（实机反馈）。
-  v0.9：还原设置改为逐项进度反馈（复用执行优化的进度面板，引擎 Invoke-Restore 新增
-        可选回调），结束弹主题化完成提示——此前同步跑完才刷新，界面卡一下就结束，
-        用户不知道还原有没有真的发生。
-  v0.8：全部原生 MessageBox 换成主题化对话框（确认执行/确认还原/确认删除/显卡指引）；
-        标题栏新增 Discord 式「有新版本」常驻入口（检测到更新才出现，点击弹主题化详情，
-        仍只允许浏览器打开 https 链接）；检测类项目结果改用金色「提示」语义不再计入失败；
-        修复主播设置参考页滚轮失灵（内层横向 ScrollViewer 吞掉 MouseWheel，改抛父级冒泡）。
-  v0.7：文案从军事黑话改回平实功能名；新增「优化 / 主播设置参考」标签页（参考数据来自
-        data\streamer-settings.json，纯展示不可应用）；执行优化改为逐项进度条 + 实时日志
-        + 完成度汇总，执行期间按钮全部禁用。
+  DeltaForceBooster 图形界面 — v0.15
+  视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
+  渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
+  + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
+
+  v0.15：①首次启动的免责声明门控（滚到底才能同意，同意状态与声明版本号存 config\，
+        版本号 +1 即可让所有人重新确认）；②「上传诊断报告」：报告本地组装 + 脱敏后
+        经用户确认才上传，返回取件码；③更新一键完成——校验通过直接静默安装并自启新版，
+        安装阶段转圈禁操作，失败给降级入口；④「检查更新」移到标题栏；⑤显卡指引改为
+        驱动层内容 + 控制面板一键入口（装了才给按钮）。
+  v0.14：VC++ 体检指引改用 aka.ms/vs/18；主推预设 Id 改为 main。
+  v0.13：「游戏内设置参考」页按实机菜单重排；启动默认选中主推方案；全局深色 Chrome
+        资源字典（对话框是独立 Window，不挂就是系统白滚动条）。
+  早期版本的变更见 git 历史；关键结论都已就地写在对应代码处的注释里。
+
   双击根目录「启动优化工具.exe」（或后备的 .bat）运行；本文件点源加载
-  scripts\delta-booster.ps1 作为引擎，scripts\updater.ps1 作为更新模块
-  （异步、静默失败；下载仅限白名单域名 + SHA256 校验，且必须用户点击触发）。
+  scripts\delta-booster.ps1 作为引擎，scripts\updater.ps1 作为更新模块。
 #>
 #requires -Version 5.1
 
@@ -64,7 +32,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.13'
+$script:GuiVersion = '0.15'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -418,7 +386,6 @@ $xaml = @'
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
     <!-- 顶栏：官网近黑微青 #0D1417 -->
@@ -433,12 +400,13 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.13 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.15 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
-        <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
-        <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
-                   HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,84,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
+               胶囊只在已发现新版时出现，这个按钮任何时候都能主动查一次 -->
+          <Button x:Name="CheckUpdBtn" Content="检查更新" Style="{StaticResource Ghost}"
+                  Height="24" FontSize="11" VerticalAlignment="Center" Margin="0,0,10,0"/>
           <!-- Discord 式更新入口：检测到新版本才出现的小绿胶囊，点击弹更新详情。
                图标用固定坐标小 Path（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
           <Button x:Name="UpdateBtn" Visibility="Collapsed" VerticalAlignment="Center" Margin="0,0,10,0"
@@ -467,12 +435,24 @@ $xaml = @'
       </Grid>
     </Border>
 
-    <!-- 标签页导航：优化 / 游戏内设置参考 -->
+    <!-- 标签页导航：优化 / 游戏内设置参考 / 运行日志 -->
     <Border Grid.Row="1" Background="{StaticResource TopBar}" BorderBrush="{StaticResource Line}"
             BorderThickness="0,0,0,1">
       <StackPanel Orientation="Horizontal" Margin="15,0,0,0">
         <Button x:Name="TabOptBtn" Content="优化" Style="{StaticResource TabBtn}" Tag="on"/>
         <Button x:Name="TabRefBtn" Content="游戏内设置参考" Style="{StaticResource TabBtn}" Tag=""/>
+        <Button x:Name="TabLogBtn" Style="{StaticResource TabBtn}" Tag="">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="运行日志" VerticalAlignment="Center"/>
+            <!-- 角标：日志挪到独立页后，出了失败/体检问题得有个「这里有东西该看」的信号。
+                 前景色写死，免得被标签页选中态的 Foreground 触发器染成绿色 -->
+            <Border x:Name="LogBadge" Visibility="Collapsed" Background="{StaticResource Danger}"
+                    CornerRadius="7" MinWidth="15" Height="15" Margin="7,0,0,0" VerticalAlignment="Center">
+              <TextBlock x:Name="LogBadgeTxt" Text="" Foreground="#FFFFFFFF" FontSize="9" FontWeight="Bold"
+                         Margin="5,0,5,0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+          </StackPanel>
+        </Button>
       </StackPanel>
     </Border>
 
@@ -661,6 +641,50 @@ $xaml = @'
       </ScrollViewer>
     </Grid>
 
+    <!-- 运行日志页：逐条文本记录。执行进度与结果汇总留在优化页，用户不必为看结果切页 -->
+    <Grid Grid.Row="2" x:Name="LogPage" Visibility="Collapsed" Margin="21,10,21,10">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <Grid Grid.Row="0" Margin="0,0,0,7">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0">
+          <TextBlock Text="运行日志" Style="{StaticResource HeadCn}"/>
+          <TextBlock Text="RUN LOG" Style="{StaticResource HeadEn}"/>
+          <Border Style="{StaticResource HeadBar}"/>
+        </StackPanel>
+        <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
+                VerticalAlignment="Bottom" Margin="12,0,12,4"/>
+        <!-- 一键复制：反馈问题时直接整段拷走，不用在小窗里手动拖选。
+             图标 Path 用固定坐标（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
+        <Button x:Name="CopyLogBtn" Grid.Column="2" Style="{StaticResource Ghost}" Height="24"
+                FontSize="11" VerticalAlignment="Bottom" ToolTip="复制全部日志到剪贴板">
+          <StackPanel Orientation="Horizontal">
+            <Path Data="M 0,3 L 0,11 L 6,11 L 6,3 Z M 3,0 L 9,0 L 9,8 L 6,8" Stroke="#FF00E884"
+                  StrokeThickness="1" Fill="Transparent" VerticalAlignment="Center"/>
+            <TextBlock x:Name="CopyLogTxt" Text="复制" Margin="5,0,0,0" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
+      </Grid>
+      <Border Grid.Row="1" Background="{StaticResource LogBg}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+        <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" BorderThickness="0" Background="Transparent"
+                 Foreground="#FF9AA5A0" FontFamily="Consolas" FontSize="11" Padding="10,7"/>
+      </Border>
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,9,0,0">
+        <!-- 把诊断信息打包发给作者排查；上传前列清单请用户确认，不会静默发送 -->
+        <Button x:Name="ReportBtn" Content="上传诊断报告" Style="{StaticResource Ghost}" Width="132"/>
+        <TextBlock Text="上传前会列出内容并请你确认，路径中的用户名会脱敏" Style="{StaticResource Mono}"
+                   Margin="12,0,0,0"/>
+      </StackPanel>
+    </Grid>
+
     <StackPanel Grid.Row="3" x:Name="ActionRow" Margin="29,6,29,8">
       <StackPanel Orientation="Horizontal">
         <!-- 主 CTA：绿色实底 + 深色字 + 左侧图标（官网下载按钮三要素） -->
@@ -674,58 +698,25 @@ $xaml = @'
         <Button x:Name="RestoreBtn" Content="还原设置" Style="{StaticResource Ghost}" Width="118" Margin="9,0,0,0"/>
         <Button x:Name="RefreshBtn" Content="重新检测" Style="{StaticResource Ghost}" Width="104" Margin="9,0,0,0"/>
         <Button x:Name="GuideBtn" Content="显卡指引" Style="{StaticResource Ghost}" Width="104" Margin="9,0,0,0"/>
-        <!-- 手动检查更新（实机诉求）：不再只等 30 分钟定时或下次启动，点击立刻查一次 -->
-        <Button x:Name="CheckUpdBtn" Content="检查更新" Style="{StaticResource Ghost}" Width="104" Margin="9,0,0,0"/>
       </StackPanel>
-      <!-- 执行进度：进度条 + 当前项 + n/m 计数；只在执行期间和结束后可见 -->
+      <!-- 执行进度留在优化页：日志挪走后，这里是执行期间唯一的实时反馈 -->
       <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Margin="0,9,0,0">
         <Border x:Name="ProgTrack" Height="6" Background="{StaticResource PanelDeep}"
                 BorderBrush="{StaticResource Line}" BorderThickness="1">
           <Border x:Name="ProgFill" Background="{StaticResource Green}" HorizontalAlignment="Left" Width="0"/>
         </Border>
         <Grid Margin="0,5,0,0">
+          <!-- 换行而不是截断：执行完成后这里要放下汇总 + 失败项名，截掉就等于没说 -->
           <TextBlock x:Name="ProgText" Style="{StaticResource Mono}" Foreground="{StaticResource TextSec}"
-                     Text="" TextTrimming="CharacterEllipsis" HorizontalAlignment="Left" Margin="0,0,120,0"/>
+                     Text="" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,120,0"/>
           <TextBlock x:Name="ProgCount" Style="{StaticResource Mono}" Foreground="{StaticResource Green}"
                      Text="" HorizontalAlignment="Right"/>
         </Grid>
       </StackPanel>
     </StackPanel>
 
-    <StackPanel Grid.Row="4" x:Name="LogRow" Margin="29,0,29,6">
-      <Grid Margin="0,0,0,5">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Grid.Column="0" Orientation="Horizontal">
-          <TextBlock Text="运行日志" Foreground="{StaticResource TextPri}" FontSize="12"
-                     FontWeight="Bold" VerticalAlignment="Center"/>
-          <TextBlock Text="RUN LOG" Style="{StaticResource Mono}" FontSize="8" Margin="8,2,0,0"/>
-        </StackPanel>
-        <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
-                VerticalAlignment="Center" Margin="12,0,12,0"/>
-        <!-- 一键复制：用户反馈问题时直接整段拷日志，不用在小窗里手动拖选。
-             图标 Path 用固定坐标（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
-        <Button x:Name="CopyLogBtn" Grid.Column="2" Style="{StaticResource Ghost}" Height="22"
-                FontSize="10" ToolTip="复制全部日志到剪贴板">
-          <StackPanel Orientation="Horizontal">
-            <Path Data="M 0,3 L 0,11 L 6,11 L 6,3 Z M 3,0 L 9,0 L 9,8 L 6,8" Stroke="#FF00E884"
-                  StrokeThickness="1" Fill="Transparent" VerticalAlignment="Center"/>
-            <TextBlock x:Name="CopyLogTxt" Text="复制" Margin="5,0,0,0" VerticalAlignment="Center"/>
-          </StackPanel>
-        </Button>
-      </Grid>
-      <Border Background="{StaticResource LogBg}" BorderBrush="{StaticResource Line}" BorderThickness="1">
-        <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" Height="58"
-                 VerticalScrollBarVisibility="Auto" BorderThickness="0" Background="Transparent"
-                 Foreground="#FF9AA5A0" FontFamily="Consolas" FontSize="11" Padding="9,6"/>
-      </Border>
-    </StackPanel>
-
     <!-- 页脚 HUD 线：等宽小字 + 金色短段 + 空心小方块 -->
-    <Grid Grid.Row="5" Margin="29,0,29,9" VerticalAlignment="Center">
+    <Grid Grid.Row="4" Margin="29,0,29,9" VerticalAlignment="Center">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
@@ -733,11 +724,17 @@ $xaml = @'
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <TextBlock Grid.Column="0" Text="DELTA FORCE · BOOSTER" Style="{StaticResource Mono}" FontSize="9"/>
+      <!-- 非官方声明常驻页脚：NOTICE.md 的核心一句，用户不会主动去翻文件 -->
+      <TextBlock Grid.Column="0" Text="非官方工具 · 与腾讯及《三角洲行动》官方无关" Style="{StaticResource Mono}" FontSize="9"/>
       <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
-      <TextBlock Grid.Column="4" Text="[ V0.13 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+      <StackPanel Grid.Column="4" Orientation="Horizontal">
+        <TextBlock Text="[ V0.15 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
+        <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
+                Margin="10,0,0,0" Content="免责声明"/>
+      </StackPanel>
     </Grid>
   </Grid>
 </Window>
@@ -753,12 +750,11 @@ try {
     $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $icoPath))
   }
 } catch {}
-# ---------- 全局深色 Chrome 资源字典（v0.13） ----------
-# 为什么要独立一份共享字典：确认执行等对话框是 XamlReader 另行 Parse 的独立 Window，
-# 不继承主窗口 Window.Resources——深色滚动条样式只挂主窗口时，对话框里的 ScrollViewer
-# 仍是系统白色滚动条（实机反馈）。这里把 WPF 默认浅色的零件（ScrollBar 纵横双向、
-# ToolTip、TextBox 右键菜单、文本选中色、键盘焦点虚线框）一次做成深色，主窗口与
-# 全部对话框 MergedDictionaries 引用同一份实例，谁也不会再漏。
+# ---------- 全局深色 Chrome 资源字典 ----------
+# 对话框是 XamlReader 另行 Parse 的独立 Window，不继承主窗口 Window.Resources——样式只挂
+# 主窗口时，对话框里的滚动条仍是系统白色（实机反馈）。这里把 WPF 默认浅色的零件
+# （ScrollBar 纵横双向、ToolTip、右键菜单、文本选中色、焦点虚线框）一次做成深色，
+# 主窗口与全部对话框引用同一份实例。
 $script:ThemeResXaml = @'
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
@@ -911,9 +907,11 @@ $window.Resources.MergedDictionaries.Add($script:ThemeRes)
 $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
                'SelAllChk',
-               'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','LogBox',
+               'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn',
+               'ReportBtn','DisclaimerBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
-               'TabOptBtn','TabRefBtn','OptPage','RefPage','RefPanel','ActionRow','LogRow',
+               'TabOptBtn','TabRefBtn','TabLogBtn','LogBadge','LogBadgeTxt',
+               'OptPage','RefPage','LogPage','RefPanel','ActionRow',
                'ProgressPanel','ProgTrack','ProgFill','ProgText','ProgCount','CopyLogBtn','CopyLogTxt') {
   $ui[$n] = $window.FindName($n)
 }
@@ -1090,9 +1088,8 @@ function Update-PresetList {
   $script:PresetList = @(Get-Presets)
   $ui.PresetBox.Items.Clear()
   foreach ($p in $script:PresetList) {
-    # 主推方案加星标突出（实机诉求）；只改显示，Id 仍是 felix——改 Id 会让
-    # 用户已存方案与文档里的 -Preset felix 命令失效
-    $star = $(if ($p.Id -eq 'felix') { '★ ' } else { '' })
+    # 主推方案加星标突出（实机诉求）；星标只是显示层修饰，判定用内置 Id
+    $star = $(if ($p.Id -eq 'main') { '★ ' } else { '' })
     $ui.PresetBox.Items.Add("$star$($p.Name)$(if (-not $p.Builtin) { '（自存）' })") | Out-Null
   }
 }
@@ -1100,8 +1097,13 @@ function Update-PresetList {
 function Write-Log([string]$Msg) {
   # 先算好整行再传入：方法括号内的逗号会被当成第二个方法参数，-f 拿不到 $Msg 导致 {1} 越界
   $line = "[{0:HH:mm:ss}] {1}" -f (Get-Date), $Msg
-  $ui.LogBox.AppendText("$line`r`n")
-  $ui.LogBox.ScrollToEnd()
+  # 追加前先判断用户是不是正贴着底部看：他手动上滚翻历史时不该被新日志拽回去。
+  # 余量 2px 容忍取整误差；内容还没撑满视口时 ExtentHeight<=ViewportHeight，照样算「在底部」
+  $box = $ui.LogBox
+  $atEnd = ($box.ExtentHeight -le $box.ViewportHeight + 2) -or
+           (($box.VerticalOffset + $box.ViewportHeight) -ge ($box.ExtentHeight - 2))
+  $box.AppendText("$line`r`n")
+  if ($atEnd) { $box.ScrollToEnd() }
 }
 
 # ---------- 体检问题的解决办法（教程 + 可点击的官方下载入口） ----------
@@ -1110,20 +1112,22 @@ function Write-Log([string]$Msg) {
 # 按钮只负责用浏览器打开微软官方地址，本工具自身绝不下载或执行任何安装包
 $script:CheckHelp = @{
   'vcredist-check' = @{
-    Title = 'VC++ 运行库版本错乱 / 缺失'
+    Title = 'VC++ v14 运行库缺失'
     Tutorial = @(
-      'VC++ 运行库是游戏底层依赖的微软组件，x64 与 x86 两套必须版本配对。某次安装只更新了其中一套时就会「版本错乱」——这正是 2026 年 7 月底游戏更新后掉帧（300 帧掉到 100）甚至闪退的高发原因。'
+      'VC++ 运行库是游戏和很多软件依赖的微软组件。x64 与 x86 是两套相互独立的运行库，各自服务对应位数的程序：缺失才是真问题（依赖它的程序无法启动）；两套版本不同步很常见、多数机器上无害，本工具只做中性提示，不算问题。'
       ''
       '修复步骤：'
-      '1. 点下方按钮下载 x64 与 x86 两个安装包（微软官方永久链接，浏览器打开）；'
+      '1. 点下方按钮下载 x64 与 x86 两个安装包（微软官方链接、当前最新的 vs/18 线，浏览器打开）；'
       '2. 依次双击安装——直接覆盖安装即可，不需要先卸载旧版本；'
-      '3. 若双击后看到的是「修复 / 卸载」而不是「安装」，说明系统里已有同版本或更高版本——这不是装不上，选「修复」即可；'
-      '4. 装完/修完重启电脑，回到本工具点「重新检测」，确认此项变成「正常」；'
-      '5. 修复后仍报版本不一致，再到「设置 → 应用 → 安装的应用」里只卸载对应架构的「Microsoft Visual C++ 2015-2022 Redistributable」然后重装。切勿把列表里其他年份的 VC++ 一并卸掉——很多软件还依赖它们。'
+      '3. 若双击后看到的是「修复 / 卸载」而不是「安装」，说明系统里已有同版本——选「修复」即可；'
+      '4. 若报错 0x80070666「无法安装此产品，因为已安装更新的版本」——说明你系统里的版本比安装包更新，这是正常的，不用处理，也不要为此去卸载；'
+      '5. 装完重启电脑，回到本工具点「重新检测」，确认此项变成「正常」；'
+      '6. 想统一 x64/x86 版本时，给两个架构装同一条最新线（下方 vs/18 链接）的包，不要装旧线；'
+      '7. 只有在缺失某架构、或确实反复闪退且已排除其他原因时，才考虑到「设置 → 应用 → 安装的应用」里只卸载对应架构的「Microsoft Visual C++ 2015-2022 Redistributable」然后重装。切勿把列表里其他年份的 VC++ 一并卸掉——2010/2012/2013 是各自独立的运行库，很多软件还依赖它们。'
     ) -join "`n"
     Links = @(
-      @{ Text = '下载 x64 运行库'; Url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe' }
-      @{ Text = '下载 x86 运行库'; Url = 'https://aka.ms/vs/17/release/vc_redist.x86.exe' }
+      @{ Text = '下载 x64 运行库'; Url = 'https://aka.ms/vs/18/release/vc_redist.x64.exe' }
+      @{ Text = '下载 x86 运行库'; Url = 'https://aka.ms/vs/18/release/vc_redist.x86.exe' }
     )
   }
   'xmp-check' = @{
@@ -1516,27 +1520,462 @@ function Update-StreamerPage {
   }
 }
 
+# ---------- 免责声明门控 ----------
+
+# 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
+# 老用户不会因为条款改了还停留在旧版本的「已同意」上
+$script:DisclaimerVersion = '1'
+$script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
+
+# 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
+function Get-DisclaimerConfigPath {
+  $d = Join-Path $script:RootDir 'config'
+  if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+  Join-Path $d 'disclaimer.json'
+}
+
+function Test-DisclaimerAccepted {
+  try {
+    $f = Get-DisclaimerConfigPath
+    if (-not (Test-Path -LiteralPath $f)) { return $false }
+    $j = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
+    return ("$($j.Version)" -eq $script:DisclaimerVersion)
+  } catch { return $false }
+}
+
+function Set-DisclaimerAccepted {
+  $o = @{ Version = $script:DisclaimerVersion; AcceptedAt = (Get-Date).ToString('s') }
+  [IO.File]::WriteAllText((Get-DisclaimerConfigPath), ($o | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
+}
+
+# 文件缺失（残缺包/被杀软删了）不能等于放行：退回内嵌短文本，门控照常拦
+function Get-DisclaimerText {
+  try {
+    if (Test-Path -LiteralPath $script:DisclaimerFile) {
+      $t = [IO.File]::ReadAllText($script:DisclaimerFile, [Text.Encoding]::UTF8)
+      if ("$t".Trim()) { return $t }
+    }
+  } catch {}
+  @(
+    '# 使用前必读'
+    ''
+    '未能读取完整声明文件（DISCLAIMER.md 缺失），以下是核心要点：'
+    ''
+    '- 个人开发的免费工具，**与腾讯公司及《三角洲行动》官方无任何关系**。'
+    '- 会修改注册表、电源计划、系统服务等系统级设置；改动前自动备份，可点「还原设置」回退，但还原不保证 100% 成功。'
+    '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
+    '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
+    '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
+    ''
+    '完整声明见项目根目录的 DISCLAIMER.md。'
+  ) -join "`n"
+}
+
+# 极简 Markdown 渲染：只处理标题/加粗/列表/分隔线四种，够用且不引第三方库
+function Add-MdInlines([Windows.Controls.TextBlock]$Block, [string]$Text) {
+  $parts = $Text -split '\*\*'
+  for ($i = 0; $i -lt $parts.Count; $i++) {
+    if (-not $parts[$i]) { continue }
+    $run = New-Object Windows.Documents.Run $parts[$i]
+    # 按 ** 切开后，奇数段就是被包起来的部分
+    if ($i % 2 -eq 1) { $run.FontWeight = 'Bold'; $run.Foreground = New-Brush $script:C.TextPri }
+    $Block.Inlines.Add($run)
+  }
+}
+
+function Build-MdPanel([string]$Md) {
+  $sp = New-Object Windows.Controls.StackPanel
+  foreach ($raw in ($Md -split "`r?`n")) {
+    $line = $raw.TrimEnd()
+    if ($line -match '^#\s+(.*)$') { continue }   # 一级标题即窗口标题，不重复显示
+    if ($line -match '^##\s+(.*)$') {
+      $t = New-Text $Matches[1] $script:C.Green 14
+      $t.FontWeight = 'Bold'
+      $t.Margin = New-Object Windows.Thickness 0, 14, 0, 5
+      $sp.Children.Add($t) | Out-Null
+      continue
+    }
+    if ($line -match '^---+$') {
+      $b = New-Object Windows.Controls.Border
+      $b.Height = 1
+      $b.Background = New-Brush $script:C.Line
+      $b.Margin = New-Object Windows.Thickness 0, 12, 0, 10
+      $sp.Children.Add($b) | Out-Null
+      continue
+    }
+    if (-not $line.Trim()) { continue }
+    $isLi = ($line -match '^[-*]\s+(.*)$')
+    $body = $(if ($isLi) { $Matches[1] } else { $line })
+    $t = New-WrapText '' $script:C.TextSec 12
+    $t.LineHeight = 20
+    if ($isLi) {
+      $t.Margin = New-Object Windows.Thickness 14, 2, 0, 2
+      $t.Inlines.Add((New-Object Windows.Documents.Run '· '))
+    } else {
+      $t.Margin = New-Object Windows.Thickness 0, 4, 0, 4
+    }
+    Add-MdInlines $t $body
+    $sp.Children.Add($t) | Out-Null
+  }
+  $sp
+}
+
+# 退出调用单独包一层：验证脚本可替换成 mock 走完「不同意」的完整链路而不真的退掉测试进程
+function Invoke-AppExit { [Environment]::Exit(0) }
+
+# 构建与弹出拆开：离屏渲染只需要构建结果，不必真的走模态
+function Build-DisclaimerDialog([bool]$ReadOnly) {
+  $dxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="620" Height="640" WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="True"
+        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <Border x:Name="DlgTitle" Grid.Row="0" Background="#FF0D1417" BorderBrush="#FF1B2E28"
+            BorderThickness="0,0,0,1" Padding="14,11">
+      <StackPanel Orientation="Horizontal">
+        <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF00E884" VerticalAlignment="Center"/>
+        <TextBlock Text="使用前必读" Foreground="#FFFFFFFF" FontSize="15" FontWeight="Bold"
+                   Margin="11,0,0,0" VerticalAlignment="Center"/>
+        <TextBlock Text="DISCLAIMER" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+                   VerticalAlignment="Center" Margin="10,3,0,0"/>
+      </StackPanel>
+    </Border>
+    <Border Grid.Row="1" Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,12,14,0">
+      <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto" Padding="16,12,16,14">
+        <StackPanel x:Name="Body"/>
+      </ScrollViewer>
+    </Border>
+    <TextBlock x:Name="HintTxt" Grid.Row="2" Text="请滚动到底部阅读完整内容后再选择。"
+               Foreground="#FFE5C46A" FontSize="11" Margin="16,8,16,0"/>
+    <Grid Grid.Row="3" Margin="14,10,14,14">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <Button x:Name="AgreeBtn" Grid.Column="1" MinWidth="126" Height="34" IsEnabled="False"
+              Foreground="#FF04241B" FontWeight="Bold">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+                    Data="M 0.05,0 L 1,0 L 1,0.8 L 0.95,1 L 0,1 L 0,0.2 Z"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bg" Property="Fill" Value="#FF33F09E"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Bg" Property="Fill" Value="#FF1E3A30"/>
+                <Setter Property="Foreground" Value="#FF6B7A73"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock x:Name="AgreeTxt" Text="同意并继续"/>
+      </Button>
+      <Button x:Name="DeclineBtn" Grid.Column="2" MinWidth="112" Height="34"
+              Foreground="#FF00E884" Margin="10,0,0,0">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock x:Name="DeclineTxt" Text="不同意，退出"/>
+      </Button>
+    </Grid>
+  </Grid>
+</Window>
+'@
+  $dlg = [Windows.Markup.XamlReader]::Parse($dxaml)
+  $dlg.Resources.MergedDictionaries.Add($script:ThemeRes)
+  $dlg.FindName('Body').Children.Add((Build-MdPanel (Get-DisclaimerText))) | Out-Null
+  # 重看模式没有「再同意一次」的语义：只留一个关闭按钮，且不需要滚到底
+  if ($ReadOnly) {
+    $dlg.FindName('AgreeBtn').Visibility = 'Collapsed'
+    $dlg.FindName('DeclineTxt').Text = '关闭'
+    $dlg.FindName('HintTxt').Visibility = 'Collapsed'
+  }
+  $dlg
+}
+
+# 构建 + 挂事件（不弹）：拆出来供离屏验证走完整交互，弹窗是 ShowDialog 那一步的事
+function Initialize-DisclaimerDialog([bool]$ReadOnly) {
+  $script:DcDlg = Build-DisclaimerDialog $ReadOnly
+  $script:DcUi = @{}
+  foreach ($n in 'DlgTitle','Scroller','AgreeBtn','HintTxt','DeclineBtn') { $script:DcUi[$n] = $script:DcDlg.FindName($n) }
+  $script:DcDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:DcDlg.DragMove() })
+  if (-not $ReadOnly) {
+    $script:DcUi.Scroller.Add_ScrollChanged({
+      # 内容比视口还短时永远滚不到「底」，此时直接放行；余量 4px 容忍取整误差
+      $sv = $script:DcUi.Scroller
+      if ($sv.ScrollableHeight -le 0 -or ($sv.VerticalOffset + $sv.ViewportHeight) -ge ($sv.ExtentHeight - 4)) {
+        $script:DcUi.AgreeBtn.IsEnabled = $true
+        $script:DcUi.HintTxt.Text = '已读完，可以选择了。'
+        $script:DcUi.HintTxt.Foreground = New-Brush $script:C.TextMut
+      }
+    })
+    $script:DcUi.AgreeBtn.Add_Click({ $script:DcDlg.DialogResult = $true })
+  }
+  $script:DcUi.DeclineBtn.Add_Click({ $script:DcDlg.DialogResult = $false })
+  $script:DcDlg
+}
+
+# 首次启动的门控：同意才返回 $true。滚到底才放开「同意」——目的是让人至少划一遍
+function Show-DisclaimerDialog([switch]$ReadOnly) {
+  $dlg = Initialize-DisclaimerDialog ([bool]$ReadOnly)
+  $ok = [bool]$dlg.ShowDialog()
+  if ($ReadOnly) { return $true }
+  if ($ok) { Set-DisclaimerAccepted }
+  $ok
+}
+
+# ---------- 诊断报告（本地组装 + 脱敏 + 用户确认后上传） ----------
+
+$script:ReportUploadUrl = 'https://df.ltz88.cn/report/upload'
+$script:ReportMaxBytes = 256KB
+
+# 脱敏：路径里的用户名、机器名、账户名一律替换。目录结构保留——排查问题要看得出
+# 游戏装在哪层目录，但没必要知道机器主人叫什么
+function Protect-ReportText([string]$Text) {
+  if (-not $Text) { return $Text }
+  $t = $Text -replace '(?i)([A-Za-z]:\\Users\\)[^\\\r\n"'']+', '${1}<user>'
+  $t = $t -replace '(?i)(\\Users\\)[^\\\r\n"'']+', '${1}<user>'
+  foreach ($pair in @(@($env:USERNAME, '<user>'), @($env:COMPUTERNAME, '<pc>'), @($env:USERDOMAIN, '<domain>'))) {
+    if ("$($pair[0])".Length -ge 2) { $t = $t -replace [regex]::Escape($pair[0]), $pair[1] }
+  }
+  $t
+}
+
+# 报告只放排查需要的：硬件 + 各优化项当前状态 + 运行日志 + 版本号 + 最近备份的项目名。
+# 绝不带备份 JSON 原文——那里面是注册表原值，外传没有意义
+function New-DiagnosticReport {
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add("DeltaForceBooster 诊断报告")
+  $lines.Add("生成时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+  $lines.Add("界面版本：v$script:GuiVersion")
+  $lines.Add('')
+
+  $lines.Add('== 硬件与系统 ==')
+  try {
+    $hw = Get-HardwareInfo
+    $lines.Add("系统：$($hw.OS)（Build $($hw.Build)）")
+    $lines.Add("CPU：$($hw.CPU)（$($hw.Cores) 核 $($hw.Threads) 线程）")
+    $lines.Add("内存：$($hw.RamGB) GB")
+    foreach ($g in $hw.Gpus) { $lines.Add("显卡：$($g.Name)（$($g.Vendor)，驱动 $($g.Driver)）") }
+    $lines.Add("机型：$(if ($hw.IsLaptop) { '笔记本' } else { '台式机' })")
+  } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
+  $lines.Add('')
+
+  $lines.Add('== 游戏路径 ==')
+  $lines.Add($(if ($script:TargetExe) { "$script:TargetExe" } else { '未定位' }))
+  $lines.Add('')
+
+  $lines.Add('== 优化项状态 ==')
+  try {
+    foreach ($it in @(Get-OptItems $script:TargetExe)) {
+      $st = Get-ItemState $it
+      $mark = $(if ($st.Optimized -eq $true) { '[√]' } elseif ($st.Optimized -eq $false) { '[×]' } else { '[?]' })
+      $lines.Add("$mark $($it.Id) — $($it.Name)")
+      $lines.Add("     当前：$($st.Current)")
+    }
+  } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
+  $lines.Add('')
+
+  $lines.Add('== 最近一次备份的项目 ==')
+  try {
+    $bak = Get-ChildItem (Join-Path $script:RootDir 'backup') -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue |
+           Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $bak) { $lines.Add('（无备份）') }
+    else {
+      # 只列项目名，不带任何原值
+      $b = Get-Content -LiteralPath $bak.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      $lines.Add("文件：$($bak.Name)（$(@($b.Ops).Count) 项，$($b.Time)）")
+      foreach ($op in @($b.Ops)) { $lines.Add("  - $(Get-RestoreOpLabel $op)") }
+    }
+  } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
+  $lines.Add('')
+
+  $lines.Add('== 运行日志 ==')
+  $lines.Add($(if ($ui.LogBox.Text) { $ui.LogBox.Text } else { '（空）' }))
+
+  $txt = Protect-ReportText (($lines -join "`r`n"))
+  # 上限按字节算：中文一个字三字节，按字符数截会超
+  $bytes = [Text.Encoding]::UTF8.GetBytes($txt)
+  if ($bytes.Length -gt $script:ReportMaxBytes) {
+    $keep = [Text.Encoding]::UTF8.GetString($bytes, 0, $script:ReportMaxBytes - 200)
+    $txt = $keep + "`r`n`r`n【注意】报告超过 256KB 上限，以上内容已被截断。"
+  }
+  $txt
+}
+
+# 真正发请求的唯一出口：验证时整体替换成桩，绝不往服务器发测试数据
+function Invoke-ReportUpload([string]$Body) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
+  $r = Invoke-WebRequest -Uri $script:ReportUploadUrl -Method Post -Body $bytes `
+        -ContentType 'text/plain; charset=utf-8' -TimeoutSec 30 -UseBasicParsing
+  ($r.Content | ConvertFrom-Json).code
+}
+
+# ---------- 显卡指引对话框（驱动层设置 + 控制面板入口） ----------
+
+# 启动控制面板的唯一出口。appx 没有可直接执行的 exe 路径，只能经 shell:appsFolder
+function Open-GpuPanel($App) {
+  if ($App.Kind -eq 'appx') { Start-Process 'explorer.exe' "shell:appsFolder\$($App.Target)" }
+  else { Start-Process -FilePath $App.Target }
+}
+
+function Build-GpuGuideDialog($Hw) {
+  $gxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="520" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <StackPanel Margin="0,0,0,14">
+    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+      <StackPanel Orientation="Horizontal">
+        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="显卡指引" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        </Border>
+        <TextBlock Text="GPU DRIVER GUIDE" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+                   VerticalAlignment="Center" Margin="9,0,0,0"/>
+      </StackPanel>
+    </Border>
+    <Border Background="#FF0E2A21" BorderBrush="#FF17603F" BorderThickness="1" Margin="14,12,14,0" Padding="10,7">
+      <TextBlock x:Name="BannerTxt" Text="" Foreground="#FF00E884" FontSize="12" FontWeight="Bold" TextWrapping="Wrap"/>
+    </Border>
+    <StackPanel x:Name="AppPanel" Margin="14,10,14,0"/>
+    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,10,14,12">
+      <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
+        <TextBlock x:Name="MsgTxt" Text="" Foreground="#FF9AA5A0" FontSize="12" LineHeight="19"
+                   TextWrapping="Wrap" Padding="12,9"/>
+      </ScrollViewer>
+    </Border>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
+      <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" IsCancel="True"
+              Foreground="#FF04241B" FontWeight="Bold">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+                    Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bg" Property="Fill" Value="#FF33F09E"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock Text="知道了"/>
+      </Button>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+  $dlg = [Windows.Markup.XamlReader]::Parse($gxaml)
+  $dlg.Resources.MergedDictionaries.Add($script:ThemeRes)
+  $banner = "检测到你的显卡：$($Hw.MainGpuName)"
+  if (@($Hw.Gpus).Count -gt 1) { $banner += "`n双显卡机型，以下按独显给出" }
+  $dlg.FindName('BannerTxt').Text = $banner
+  $dlg.FindName('MsgTxt').Text = Get-GpuGuideText $Hw.MainGpuVendor
+
+  $panel = $dlg.FindName('AppPanel')
+  foreach ($app in @(Get-GpuPanelApps $Hw.MainGpuVendor)) {
+    $row = New-Object Windows.Controls.StackPanel
+    $row.Orientation = 'Horizontal'
+    $row.Margin = New-Object Windows.Thickness 0, 0, 0, 6
+    if ($app.Installed) {
+      $b = New-Object Windows.Controls.Button
+      $b.Style = $window.FindResource('Ghost')
+      $b.Content = "打开 $($app.Name)"
+      $b.FontSize = 11
+      $b.Height = 26
+      $b.MinWidth = 168
+      # 循环里挂的处理器不能闭包引用循环变量，一律从 sender.Tag 取
+      $b.Tag = [pscustomobject]@{ Kind = $app.Kind; Target = $app.Target; Name = $app.Name }
+      $b.Add_Click({
+        try { Open-GpuPanel $this.Tag; Write-Log "已打开 $($this.Tag.Name)。" }
+        catch { Write-Log "打开 $($this.Tag.Name) 失败：$($_.Exception.Message)" }
+      })
+      $row.Children.Add($b) | Out-Null
+    } else {
+      # 没装就别放个点了没反应的按钮：说明情况 + 给官方下载页
+      $t = New-WrapText "未安装 $($app.Name)：$($app.Missing)" $script:C.TextMut 11
+      $t.MaxWidth = 300
+      $t.Margin = New-Object Windows.Thickness 0, 0, 8, 0
+      $row.Children.Add($t) | Out-Null
+      $b = New-Object Windows.Controls.Button
+      $b.Style = $window.FindResource('Ghost')
+      $b.Content = '前往官网下载'
+      $b.FontSize = 11
+      $b.Height = 26
+      $b.Tag = "$($app.Download)"
+      $b.Add_Click({ Open-HelpLink "$($this.Tag)" })
+      $row.Children.Add($b) | Out-Null
+    }
+    $panel.Children.Add($row) | Out-Null
+  }
+  $dlg
+}
+
+function Show-GpuGuideDialog($Hw) {
+  $script:GgDlg = Build-GpuGuideDialog $Hw
+  $script:GgDlg.Owner = $window
+  $script:GgDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:GgDlg.DragMove() })
+  $script:GgDlg.FindName('OkBtn').Add_Click({ $script:GgDlg.DialogResult = $true })
+  [void]$script:GgDlg.ShowDialog()
+}
+
 # ---------- 标签页切换与执行态 ----------
 
 $script:Busy = $false
 
 function Select-Tab([string]$Which) {
-  $opt = ($Which -eq 'opt')
-  $ui.TabOptBtn.Tag = $(if ($opt) { 'on' } else { '' })
-  $ui.TabRefBtn.Tag = $(if ($opt) { '' } else { 'on' })
-  $ui.OptPage.Visibility = $(if ($opt) { 'Visible' } else { 'Collapsed' })
-  $ui.RefPage.Visibility = $(if ($opt) { 'Collapsed' } else { 'Visible' })
-  # 执行按钮和日志只属于优化页，参考页收起以免让人误以为参考设置能「执行」
-  $ui.ActionRow.Visibility = $(if ($opt) { 'Visible' } else { 'Collapsed' })
-  $ui.LogRow.Visibility = $(if ($opt) { 'Visible' } else { 'Collapsed' })
+  foreach ($t in @(@('opt', 'TabOptBtn', 'OptPage'), @('ref', 'TabRefBtn', 'RefPage'), @('log', 'TabLogBtn', 'LogPage'))) {
+    $on = ($Which -eq $t[0])
+    $ui[$t[1]].Tag = $(if ($on) { 'on' } else { '' })
+    $ui[$t[2]].Visibility = $(if ($on) { 'Visible' } else { 'Collapsed' })
+  }
+  # 执行按钮只属于优化页，别让人以为参考设置或日志能「执行」
+  $ui.ActionRow.Visibility = $(if ($Which -eq 'opt') { 'Visible' } else { 'Collapsed' })
   # 每次切入都重建：数据文件可能是界面启动之后才生成的
-  if (-not $opt) { Update-StreamerPage }
+  if ($Which -eq 'ref') { Update-StreamerPage }
+  # 看过就不用再提示了
+  if ($Which -eq 'log') { Set-LogBadge 0 }
+}
+
+# 日志页角标：日志不在眼前了，出了失败/体检问题得有个信号。0 即清除
+function Set-LogBadge([int]$Count) {
+  $ui.LogBadgeTxt.Text = $(if ($Count -gt 99) { '99+' } else { "$Count" })
+  $ui.LogBadge.Visibility = $(if ($Count -gt 0) { 'Visible' } else { 'Collapsed' })
 }
 
 function Set-BusyState([bool]$On) {
   # 执行期间禁用一切入口防重复点击；窗口关闭在 CloseBtn 处单独拦截
   $script:Busy = $On
-  foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','BrowseBtn',
+  foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','ReportBtn','BrowseBtn',
                  'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn','UpdateBtn') {
     if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
   }
@@ -1841,6 +2280,36 @@ function Show-NameDialog {
   $null
 }
 
+# 安装器日志：静默安装出问题时这是唯一的现场（主程序此刻已经退了）
+$script:SetupLogPath = Join-Path $script:RootDir 'config\update-setup.log'
+
+# 真正启动安装器的唯一出口：验证时整体替换成桩，绝不真的覆盖自身。
+# /waitpid 让安装器等本进程退出后再覆盖文件，/runafter 让它装完自启新版；
+# 装回 $script:RootDir 而不是默认位置——用户可能把程序装在任意目录
+function Invoke-BoosterSetupRun([string]$SetupFile, [string]$TargetDir, [string]$LogFile) {
+  Start-Process -FilePath $SetupFile -PassThru -ArgumentList @(
+    '/silent', "/dir=`"$TargetDir`"", "/waitpid=$PID", '/runafter', "/log=`"$LogFile`"")
+}
+
+# 安装阶段的不确定进度：安装在另一个进程里跑，拿不到百分比，只能转圈
+function Start-UpdInstallSpinner {
+  $script:UpdUi.InstPanel.Visibility = 'Visible'
+  $anim = New-Object Windows.Media.Animation.DoubleAnimation 0, 360, ([TimeSpan]::FromSeconds(1.1))
+  $anim.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+  $script:UpdUi.SpinRot.BeginAnimation([Windows.Media.RotateTransform]::AngleProperty, $anim)
+  # 安装期间不许再点任何东西，也不许关窗——关了也停不下已经起来的安装器，只会让人困惑
+  foreach ($n in 'SkipChk','UpdBtn','GoBtn','LaterBtn','CancelDlBtn') { $script:UpdUi[$n].Visibility = 'Collapsed' }
+  $script:UpdInstalling = $true
+  Set-BusyState $true
+}
+
+function Stop-UpdInstallSpinner {
+  $script:UpdInstalling = $false
+  $script:UpdUi.SpinRot.BeginAnimation([Windows.Media.RotateTransform]::AngleProperty, $null)
+  $script:UpdUi.InstPanel.Visibility = 'Collapsed'
+  Set-BusyState $false
+}
+
 # 更新对话框的按钮态复位：取消下载 / 下载失败后回到可再次操作的状态。
 # 「立即更新」只在清单过了安检（CanInline）时出现，降级入口「前往下载」永远可用。
 function Reset-UpdDialogButtons {
@@ -1885,7 +2354,7 @@ function Show-UpdateDialog($UpdInfo) {
                    TextWrapping="Wrap" Padding="10,8"/>
       </ScrollViewer>
     </Border>
-    <!-- 内置更新说明：绿色版没有独立更新通道，也走安装器（覆盖安装保护会保住配置与备份） -->
+    <!-- 内置更新说明：走安装器覆盖升级，覆盖安装保护会保住配置与备份 -->
     <TextBlock x:Name="InlineNote" Text="" Foreground="#FF7A8580" FontSize="10"
                TextWrapping="Wrap" Margin="14,0,14,8"/>
     <!-- 下载进度区：点「立即更新」后展开；进度由轮询定时器在 UI 线程刷新 -->
@@ -1899,6 +2368,19 @@ function Show-UpdateDialog($UpdInfo) {
               BorderThickness="1" Margin="0,6,0,0">
         <Border x:Name="DlFill" Background="#FF00E884" HorizontalAlignment="Left" Width="0"/>
       </Border>
+    </StackPanel>
+    <!-- 安装阶段：进度不可知（安装器在另一个进程里跑），只给转圈 + 一句话 -->
+    <StackPanel x:Name="InstPanel" Visibility="Collapsed" Orientation="Horizontal" Margin="14,2,14,12">
+      <Grid Width="20" Height="20" RenderTransformOrigin="0.5,0.5" VerticalAlignment="Center">
+        <Grid.RenderTransform>
+          <RotateTransform x:Name="SpinRot" Angle="0"/>
+        </Grid.RenderTransform>
+        <Ellipse Stroke="#FF1B2E28" StrokeThickness="2.5" Width="18" Height="18"/>
+        <Path Stroke="#FF00E884" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+              Data="M 10,1 A 9,9 0 0 1 19,10"/>
+      </Grid>
+      <TextBlock x:Name="InstText" Text="正在安装，请稍候…" Foreground="#FF00E884" FontSize="12"
+                 VerticalAlignment="Center" Margin="11,0,0,0"/>
     </StackPanel>
     <!-- 失败区：下载/校验失败的明确报错，旁边的「前往下载」变身降级入口 -->
     <Border x:Name="ErrPanel" Visibility="Collapsed" Background="#FF1A0E10" BorderBrush="#FF7A3034"
@@ -2029,7 +2511,7 @@ function Show-UpdateDialog($UpdInfo) {
   $script:UpdDlg.Owner = $window
   $script:UpdUi = @{}
   foreach ($n in 'DlgTitle','VerText','CurText','NotesText','InlineNote','DlPanel','DlPhaseText','DlSizeText',
-                 'DlTrack','DlFill','ErrPanel','ErrText','SkipChk','UpdBtn','GoBtn','GoTxt',
+                 'DlTrack','DlFill','InstPanel','InstText','SpinRot','ErrPanel','ErrText','SkipChk','UpdBtn','GoBtn','GoTxt',
                  'CancelDlBtn','CancelDlTxt','LaterBtn') {
     $script:UpdUi[$n] = $script:UpdDlg.FindName($n)
   }
@@ -2038,9 +2520,7 @@ function Show-UpdateDialog($UpdInfo) {
   $notes = "$($UpdInfo.Notes)".Trim()
   $script:UpdUi.NotesText.Text = $(if ($notes) { $notes } else { '（本次更新没有附带说明）' })
   if ($UpdInfo.CanInline) {
-    # 绿色版没有独立的解压覆盖通道，统一走安装器：覆盖安装保护会保住 profiles/backup/config，
-    # 把安装位置选到现在的目录即可原地升级，在这里就把话说清楚
-    $script:UpdUi.InlineNote.Text = '「立即更新」将从官方源（df.ltz88.cn）下载安装包并校验完整性，随后关闭本程序运行安装器。绿色版用户把安装位置选到当前目录即可原地升级，自存方案 / 备份 / 运行状态不会被覆盖。'
+    $script:UpdUi.InlineNote.Text = '「立即更新」全程自动：从官方源（df.ltz88.cn）下载 → 校验完整性 → 原地安装到当前目录 → 自动打开新版本，中途不需要你再操作。自存方案 / 备份 / 运行状态不会被覆盖。'
   } else {
     # 清单缺 sha256/size 或 setupUrl 过不了白名单安检：内置更新不可用，退回旧行为并留痕
     $script:UpdUi.UpdBtn.Visibility = 'Collapsed'
@@ -2075,17 +2555,27 @@ function Show-UpdateDialog($UpdInfo) {
       if ($trackW -gt 0) { $script:UpdUi.DlFill.Width = $trackW }
       $script:UpdUi.CancelDlBtn.Visibility = 'Collapsed'
       Write-Log "更新包已下载并通过校验：$($st.File)"
-      Show-ConfirmDialog '准备安装' 'READY TO INSTALL' '校验通过，即将关闭本程序并启动安装程序。安装器会请你确认安装位置；覆盖安装不会丢失自存方案和备份。' '关闭并安装' -InfoOnly | Out-Null
+      # 用户点「立即更新」时就已经授权了整条链路，这里不再要求他确认第二次：
+      # 直接转圈 + 静默安装 + 自启新版（安装只在校验通过后发生，见 updater.ps1 的授权边界）
+      Start-UpdInstallSpinner
+      $script:UpdUi.DlPanel.Visibility = 'Collapsed'
       try {
-        # 先启动安装器再退出：本程序不退出会占住程序文件，安装器覆盖时必失败
-        Start-Process -FilePath $st.File
-        $script:UpdDlg.DialogResult = $false
+        # 安装器要覆盖本程序的文件，必须等本进程退出——把 /waitpid 交给它，
+        # 我们启动完立刻自退，等待逻辑放在安装器侧（这边退出后就没人能干活了）
+        $proc = Invoke-BoosterSetupRun $st.File $script:RootDir $script:SetupLogPath
+        if (-not $proc) { throw '安装程序未能启动' }
+        Write-Log "安装程序已启动（PID $($proc.Id)），本程序即将退出，安装完成后新版本会自动打开。"
+        # 交棒完成，放行关窗：拦截关窗的守卫是拦用户的，别把自己也拦在里面。
+        # 这里用 Close() 而不是设 DialogResult——非模态时后者会抛，且返回值此刻已无意义
+        $script:UpdInstalling = $false
+        $script:UpdDlg.Close()
         $window.Close()
         # Close 之后进程未必真退（实机反馈旧窗口残留、与安装后的新实例并存）：
         # WPF 宿主里还挂着更新检查的后台 runspace 和嵌套的模态/调度帧，powershell
         # 不会因为窗口关了就结束。安装器已经拉起，这里强制退出兜底
-        [Environment]::Exit(0)
+        Invoke-AppExit
       } catch {
+        Stop-UpdInstallSpinner
         $script:UpdUi.ErrText.Text = "启动安装程序失败：$($_.Exception.Message)"
         $script:UpdUi.ErrPanel.Visibility = 'Visible'
         $script:UpdUi.GoTxt.Text = '改为打开下载页'
@@ -2151,6 +2641,8 @@ function Show-UpdateDialog($UpdInfo) {
     $script:UpdDlg.DialogResult = $true
   })
   $script:UpdUi.LaterBtn.Add_Click({ $script:UpdDlg.DialogResult = $false })
+  # 安装已经起来了就不许关窗：关了也停不下安装器，只会让用户以为取消了
+  $script:UpdDlg.Add_Closing({ if ($script:UpdInstalling) { $_.Cancel = $true } })
   # 下载中途直接关掉对话框：请求后台取消，轮询定时器会等它清理完临时文件再回收
   $script:UpdDlg.Add_Closed({
     if ($script:DlState -and -not $script:DlState.Done) { $script:DlState.Cancel = $true }
@@ -2318,7 +2810,7 @@ $window.Add_ContentRendered({
     # 启动即默认选中主推方案（实机诉求「进去之后默认直接选择主推全套」）：
     # SelectionChanged 处理器会完成勾选，其中已就绪的项自动跳过不重复勾
     for ($fi = 0; $fi -lt $script:PresetList.Count; $fi++) {
-      if ($script:PresetList[$fi].Id -eq 'felix') { $ui.PresetBox.SelectedIndex = $fi; break }
+      if ($script:PresetList[$fi].Id -eq 'main') { $ui.PresetBox.SelectedIndex = $fi; break }
     }
     $ui.ScanState.Text = '检测完成'
     Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
@@ -2350,6 +2842,7 @@ $ui.CloseBtn.Add_Click({
 
 $ui.TabOptBtn.Add_Click({ Select-Tab 'opt' })
 $ui.TabRefBtn.Add_Click({ Select-Tab 'ref' })
+$ui.TabLogBtn.Add_Click({ Select-Tab 'log' })
 
 $ui.BrowseBtn.Add_Click({
   $dlg = New-Object Microsoft.Win32.OpenFileDialog
@@ -2411,12 +2904,44 @@ $ui.CopyLogBtn.Add_Click({
   }
 })
 
-$ui.GuideBtn.Add_Click({
-  $hw = Get-HardwareInfo
-  # 顶部醒目标出识别结果：此前用户看不出这份指引是按自己的显卡生成的（实机反馈）
-  $banner = "检测到你的显卡：$($hw.MainGpuName)"
-  if (@($hw.Gpus).Count -gt 1) { $banner += "`n双显卡机型（核显 + 独显），游戏以独显为准，以下指引按独显给出" }
-  Show-ConfirmDialog '显卡指引' 'GPU DRIVER GUIDE' (Get-GpuGuideText $hw.MainGpuVendor) '知道了' -InfoOnly -Banner $banner | Out-Null
+$ui.GuideBtn.Add_Click({ Show-GpuGuideDialog (Get-HardwareInfo) })
+
+$ui.DisclaimerBtn.Add_Click({ Show-DisclaimerDialog -ReadOnly | Out-Null })
+
+# 上传诊断报告：先组装（含脱敏）再让用户确认要发什么，确认后才上传。绝不静默发送
+$ui.ReportBtn.Add_Click({
+  try {
+    Write-Log '正在收集诊断信息…'
+    $report = New-DiagnosticReport
+    $kb = [math]::Round([Text.Encoding]::UTF8.GetByteCount($report) / 1KB, 1)
+    $msg = @(
+      "将把以下内容上传到作者的服务器（$script:ReportUploadUrl），仅用于排查你反馈的问题："
+      ''
+      '· 硬件型号与系统版本（CPU / 显卡 / 内存 / Windows 版本）'
+      '· 各优化项的当前状态'
+      '· 本次运行日志'
+      '· 最近一次备份的项目清单（只有项目名，不含注册表原值）'
+      '· 本工具的版本号'
+      ''
+      "路径中的用户名、机器名已替换为 <user> / <pc>。报告大小约 $kb KB。"
+      '上传成功后会给你一个取件码，发给开发者即可。'
+    ) -join "`n"
+    if (-not (Show-ConfirmDialog '上传诊断报告' 'UPLOAD REPORT' $msg '确认上传')) {
+      Write-Log '已取消上传诊断报告。'
+      return
+    }
+    Set-BusyState $true
+    Write-Log '正在上传诊断报告…'
+    $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+    $code = Invoke-ReportUpload $report
+    if (-not $code) { throw '服务器没有返回取件码' }
+    Write-Log "诊断报告上传成功，取件码：$code"
+    Show-ConfirmDialog '上传成功' 'UPLOAD OK' "取件码：$code`n`n把这个码发给开发者，他就能取到你这份报告。`n（取件码也已写进上面的运行日志，可用「复制」按钮一并带走）" '知道了' -InfoOnly | Out-Null
+  } catch {
+    # 失败绝不含糊：说清原因并引导走「复制日志」手工发送
+    Write-Log "诊断报告上传失败：$($_.Exception.Message)"
+    Show-ConfirmDialog '上传失败' 'UPLOAD FAILED' "上传失败：$($_.Exception.Message)`n`n可能是网络不通、服务暂时不可用，或短时间内上传次数过多。`n`n改用手工方式：点运行日志右侧的「复制」按钮，把日志粘贴发给开发者即可。" '知道了' -InfoOnly | Out-Null
+  } finally { Set-BusyState $false }
 })
 
 # ---------- 预设方案 ----------
@@ -2505,7 +3030,11 @@ $ui.ApplyBtn.Add_Click({
     $ui.ProgCount.Text = "共 $total 项"
     if ($r.Backup) { Write-Log "备份已保存：$($r.Backup)" }
     Write-Log "执行完成：共 $total 项 — $okN 成功、$($failList.Count) 失败、$($skipList.Count) 跳过$(if ($attList.Count -gt 0) { "、$($attList.Count) 项体检发现问题" })。"
+    # 日志在另一页了：有失败/体检问题就给标签打角标，提示那边有内容值得看
+    Set-LogBadge ($failList.Count + $attList.Count)
     if ($failList.Count -gt 0) {
+      # 失败明细也在优化页当场列出，用户不必为了看结果切页
+      $ui.ProgText.Text = "执行完成：$okN 成功 / $($failList.Count) 失败 / $($skipList.Count) 跳过$att —— 失败：$(@($failList | ForEach-Object { $_.Name }) -join '、')"
       Write-Log "以下 $($failList.Count) 项失败，请把日志原文反馈或运行 scripts\diagnose.ps1 排查："
       foreach ($x in $failList) { Write-Log "  [失败] $($x.Name) — $($x.Msg)" }
     }
@@ -2567,5 +3096,11 @@ $ui.RestoreBtn.Add_Click({
   } catch { Write-Log "还原失败：$($_.Exception.Message)" }
   finally { Set-BusyState $false }
 })
+
+# 免责声明门控放在主窗口之前：没同意就不该看到任何可点的优化按钮。
+# 读取/写入配置失败一律按「没同意」处理——宁可多问一次，也不能因为磁盘异常就放行
+if (-not (Test-DisclaimerAccepted)) {
+  if (-not (Show-DisclaimerDialog)) { Invoke-AppExit }
+}
 
 $window.ShowDialog() | Out-Null

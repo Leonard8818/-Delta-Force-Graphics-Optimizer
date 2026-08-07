@@ -1,32 +1,26 @@
 ﻿<#
-  DeltaForceBooster 更新检查模块 — v0.3
-  独立于优化引擎：负责「取清单 → 比版本 → 报告结果」，v0.2 起新增「带校验的内置下载」。
-  v0.3：Test-BoosterUpdate 新增 -IncludeSkipped 开关（供界面「检查更新」按钮用）：
-        用户手动点检查表示明确想看结果，此时无视「不再提醒此版本」的记录；
-        自动定时检查不带该开关，跳过语义不变。安全约定与校验逻辑一字未动。
+  DeltaForceBooster 更新检查模块 — v0.4
+  独立于优化引擎：负责「取清单 → 比版本 → 报告结果」+「带校验的内置下载」。
+  v0.4：更新改为一键完成——校验通过后直接静默安装并自启新版，用户不必再走安装向导。
   清单格式：{ "version", "notes", "url"(下载页), "setupUrl"(安装包), "sha256", "size" }
 
-  安全约定（v0.2 起从「绝不下载」放宽为「带校验的内置更新」，以下每条都是硬红线）：
+  安全约定（每条都是硬红线）：
     - 下载源域名白名单硬编码在本文件（$script:BoosterDownloadHosts）：setupUrl 必须是
       https 且主机在白名单内，否则拒绝下载——清单本身可能被篡改，绝不信任清单里的任意 URL。
     - 清单必须携带合法的 sha256 与 size，缺任何一个都视为不可信，界面层退化为
       「仅提示 + 跳浏览器」的旧行为；下载完成后强制校验哈希与大小，任一不匹配立即删除
       临时文件并终止，绝不执行。
-    - 下载与安装只能由用户点击触发，自动检查只负责提醒，永不静默安装。
+    - 授权边界：用户点「立即更新」即为授权，此后下载→校验→安装一气呵成，不必再点一次；
+      安装只发生在校验通过之后。自动检查永远只提醒，绝不自行下载或安装。
     - 局限要如实告知：SHA256 防的是传输途中被篡改；清单与安装包在同一台服务器上，
       服务器本身被攻破时两者可被同时替换，SHA256 无法防护（详见 build\README.md）。
     - 网络不可达、超时、JSON 坏掉一律静默返回 $null——检查更新不许影响主程序启动。
 #>
 #requires -Version 5.1
 
-# 清单地址：托管在自有服务器（/opt/df-booster，Caddy 站点 df.ltz88.cn）。
-# 之所以不用 GitHub Releases——仓库是私有的，私有仓库的 Release 附件外部无法匿名下载。
-# 若将来仓库转为公开，可改用永远指向最新版的固定资产链接：
-#   'https://github.com/Leonard8818/delta-force-display-utilizer/releases/latest/download/update-manifest.json'
-#
-# 清单格式：{ "version": "0.7.0", "notes": "更新说明", "url": "下载页地址" }
-# 发新版时同步更新服务器上的 update-manifest.json，客户端下次启动即可发现。
-# 本地测试用 Test-BoosterUpdate -ManifestUrl 'file:///C:/.../manifest.json' 临时覆盖。
+# 清单地址：托管在自有服务器（Caddy 站点 df.ltz88.cn）。发新版时覆盖服务器上的
+# update-manifest.json，客户端下次检查即可发现。
+# 本地测试用 Test-BoosterUpdate -ManifestUrl 'file:///...' 临时覆盖。
 $script:BoosterManifestUrl = 'https://df.ltz88.cn/update-manifest.json'
 
 # 下载源域名白名单（硬编码，不从任何配置/清单读取）：清单文件本身可能被篡改，
@@ -151,10 +145,10 @@ function Test-BoosterFileIntegrity([string]$Path, [string]$Sha256, [long]$Size) 
 }
 
 # 内置更新下载：URL 安检 → 流式下载（写进度、可取消）→ 完整性校验。
-# 设计成同步函数由界面层丢进后台 runspace 跑，进度经 Synchronized 哈希表回报——
-# PS 5.1 + WPF 下跨线程事件回调很脆，轮询共享状态是最稳的通路。
-# $State 键约定：Received/Total(字节)、Phase(downloading|done|failed|cancelled)、
-#                Error、File(校验通过后的成品路径)、Cancel(界面置 $true 请求中止)、Done
+# 同步函数，由界面层丢进后台 runspace 跑，进度经 Synchronized 哈希表回报——
+# PS 5.1 + WPF 下跨线程事件回调很脆，轮询共享状态最稳。
+# $State 键：Received/Total(字节)、Phase(downloading|done|failed|cancelled)、
+#            Error、File(校验通过后的成品路径)、Cancel(界面置 $true 请求中止)、Done
 function Invoke-BoosterSetupDownload {
   param(
     [Parameter(Mandatory)][string]$SetupUrl,

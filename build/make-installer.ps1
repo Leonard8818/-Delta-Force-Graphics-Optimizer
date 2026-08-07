@@ -1,18 +1,13 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.5
-  v0.5：构建完成后自动生成 build\update-manifest.json 清单模板（带 Setup.exe 的
-        sha256/size，version 取自 GUI 徽标，notes 留占位）——内置更新强制校验哈希，
-        每次发版手工算哈希迟早算错一次，让构建脚本代劳。
-  v0.4：卸载脚本同步清理桌面快捷方式与公共开始菜单目录（安装向导新增桌面快捷方式、
-        提权安装改写公共开始菜单后，卸载必须把这些落点全兜住）。
-  只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖：
-    build\DeltaForceBooster-Setup-vX.Y.exe   —— 图形安装向导（WPF，三角洲官网视觉）：
-                                                欢迎/自选安装位置/进度/完成四页，
-                                                payload.zip 以 /resource: 内嵌，真正单文件
-    build\DeltaForceBooster-Portable-vX.Y.zip —— 绿色版：解压即用，双击「启动优化工具.exe」
-  v0.3：弃用 IExpress——它的解压界面不可定制、安装位置只能硬编码；改为 csc 编译
-        build\setup-wizard.cs（WPF 向导，可自选位置 + 权限预检 + 覆盖安装保护），
-        编译路线与 make-launcher.ps1 相同（已验证可行）。
+  DeltaForceBooster 安装包构建脚本 — v0.6
+  只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖，只产出一个东西：
+    build\DeltaForceBooster-Setup-vX.Y.exe —— 图形安装向导（WPF，三角洲官网视觉）：
+      欢迎/自选安装位置/进度/完成四页，payload.zip 以 /resource: 内嵌，真正单文件
+
+  v0.6：不再产出绿色免安装版（用户决定只发安装版）；payload 里加入 DISCLAIMER.md——
+        免责声明门控要读它，不随包分发的话装完就只剩内嵌兜底文本了。
+  v0.5：构建完成后自动生成 build\update-manifest.json 清单模板（sha256/size 现算）——
+        内置更新强制校验哈希，手工算迟早算错一次。
 
   用法：powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
         （必须用 Windows PowerShell 5.1：WPF 程序集定位和 Compress-Archive 行为按 5.1 处理）
@@ -51,13 +46,18 @@ if (-not (Test-Path -LiteralPath $launcher)) {
 }
 # backup\ 是本机改动记录、build\ 是构建目录、config\ 是运行期状态，都不进包；
 # profiles\ 里的预设随包分发；.bat 保留为后备入口
-$parts = @('启动优化工具.exe', '启动优化工具.bat', 'README.md', 'SKILL.md', 'scripts', 'gui', 'tools', 'profiles', 'data')
+# LICENSE 必须随包分发：MIT 要求保留版权声明，这不是可选项。
+# DISCLAIMER.md 是免责声明门控的正文来源，NOTICE.md 是非官方声明与出处。
+# SECURITY.md / CONTRIBUTING.md 是给仓库看的，不进安装包。
+$parts = @('启动优化工具.exe', '启动优化工具.bat', 'README.md', 'SKILL.md',
+           'DISCLAIMER.md', 'LICENSE', 'NOTICE.md',
+           'scripts', 'gui', 'tools', 'profiles', 'data')
 foreach ($p in $parts) {
   $src = Join-Path $root $p
   if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $stage -Recurse }
 }
 
-# 卸载脚本随包落到安装目录（绿色版用户也可直接删目录）。
+# 卸载脚本随包落到安装目录。
 # 安装位置从 v0.3 起可自选，卸载目标以脚本自身所在目录为准，不再假定 %LOCALAPPDATA%。
 # 全程不用 WScript.Shell：它按系统 ANSI 代码页转字符串，非中文代码页（如 1252）的系统上
 # 中文全变 "?"。消息框走 .NET WinForms（原生 Unicode）。
@@ -209,15 +209,11 @@ $setupTmp = Join-Path $work "DeltaForceBooster-Setup-v$ver.exe"
   /resource:"$payload,DFB.Payload" @refArgs "$csFile"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $setupTmp)) { throw "csc 编译安装向导失败（退出码 $LASTEXITCODE）" }
 
-# ---------- 6. 绿色版 zip + 成品落位 ----------
-$portableTmp = Join-Path $work "DeltaForceBooster-Portable-v$ver.zip"
-Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $portableTmp -Force
-
-foreach ($f in @($setupTmp, $portableTmp)) {
-  $out = Join-Path $build (Split-Path -Leaf $f)
-  if (Test-Path $out) { Remove-Item $out -Force }
-  Move-Item $f $out
-}
+# ---------- 6. 成品落位 ----------
+# payload.zip 只作为安装器的内嵌资源存在，不再单独输出成发布物
+$setupOutTmp = Join-Path $build (Split-Path -Leaf $setupTmp)
+if (Test-Path $setupOutTmp) { Remove-Item $setupOutTmp -Force }
+Move-Item $setupTmp $setupOutTmp
 Remove-Item $work -Recurse -Force
 
 # ---------- 7. 更新清单模板（配合内置更新） ----------
@@ -239,6 +235,6 @@ $manifestObj = [ordered]@{
 [IO.File]::WriteAllText($manifestOut, ($manifestObj | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
 
 "构建完成（v$ver）："
-Get-ChildItem $build -File | Where-Object { $_.Extension -in '.exe', '.zip' } |
+Get-ChildItem $build -File -Filter '*.exe' |
   ForEach-Object { "  {0}  ({1:N0} KB)" -f $_.Name, ($_.Length / 1KB) }
 "  update-manifest.json  已生成（sha256/size 取自本次 Setup.exe，notes 待填写）"
