@@ -4,7 +4,11 @@
 // make-launcher.ps1 已验证「系统 csc 编译 + 内嵌图标/清单」这条零第三方依赖路线可行，这里沿用。
 // 为什么 payload 内嵌为程序集资源（/resource:）：真正单文件分发，运行时直接从自身程序集解流，
 // 不经过 IExpress 那种落盘自解压临时目录。
-// 为什么清单是 asInvoker 而非 requireAdministrator：默认装 %LOCALAPPDATA% 不需要管理员；
+// 为什么清单是 asInvoker 而非 requireAdministrator：默认装用户「下载」文件夹不需要管理员；
+// 下载文件夹取自 Known Folder API（FOLDERID_Downloads，可被用户移到任意盘，SpecialFolder
+// 枚举里没有它），取不到依次回退 %USERPROFILE%\Downloads → %LOCALAPPDATA%\DeltaForceBooster；
+// 位置在下载文件夹内时就地金色提示存储感知/手动清空风险（只提示不阻止）；
+// 沙箱重定向钩子 DFB_TEST_DOWNLOADS（Known Folder 不吃环境变量，与 DFB_TEST_DESKTOP 同类）。
 // 只有用户主动选了受保护目录（写入预检失败）才引导按需提权重启（/dir= 回传已选路径），
 // 避免对绝大多数用户弹无意义的 UAC。
 // 为什么快捷方式走 IShellLinkW COM：本机实测 ACP=1252 时 WScript.Shell 会把中文转成 "?"
@@ -132,11 +136,61 @@ static class Installer {
     public const string NeedAdmin = "NEED_ADMIN";
     static long _requiredBytes = -1;
 
-    // 读环境变量而不是 GetFolderPath：后者绕过环境变量，沙箱验证没法重定向
+    // 下载文件夹可被用户移动到任意盘，SpecialFolder 枚举里也没有 Downloads——
+    // 唯一可靠取法是 Known Folder API（FOLDERID_Downloads）
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHGetKnownFolderPath(ref Guid rfid, uint dwFlags, IntPtr hToken, out IntPtr ppszPath);
+
+    static string KnownDownloads() {
+        try {
+            var rfid = new Guid("374DE290-123F-4565-9164-39C4925E467B");
+            IntPtr p = IntPtr.Zero;
+            try {
+                if (SHGetKnownFolderPath(ref rfid, 0, IntPtr.Zero, out p) == 0 && p != IntPtr.Zero) {
+                    string s = Marshal.PtrToStringUni(p);
+                    if (!string.IsNullOrEmpty(s) && Directory.Exists(s)) return s;
+                }
+            } finally { if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p); }
+        } catch (Exception) { }
+        return null;
+    }
+
+    // 取不到时返回 null，由 DefaultDir 兜底——默认路径任何情况下都不能是空串
+    public static string DownloadsDir() {
+        // Known Folder API 不吃环境变量重定向，沙箱验证需要专用钩子（与 DFB_TEST_DESKTOP 同类）
+        string t = Environment.GetEnvironmentVariable("DFB_TEST_DOWNLOADS");
+        if (!string.IsNullOrEmpty(t)) return t;
+        string kf = KnownDownloads();
+        if (kf != null) return kf;
+        // 回退 ①：未重定向机器上的实际位置
+        string up = Environment.GetEnvironmentVariable("USERPROFILE");
+        if (!string.IsNullOrEmpty(up)) {
+            string dl = Path.Combine(up, "Downloads");
+            if (Directory.Exists(dl)) return dl;
+        }
+        return null;
+    }
+
+    // 默认装到「下载」文件夹（用户明确要求，找得到、无需管理员）；
+    // 位置页会就地提示存储感知/手动清空的风险，但不阻止
     public static string DefaultDir() {
+        string dl = DownloadsDir();
+        if (!string.IsNullOrEmpty(dl)) return Path.Combine(dl, "DeltaForceBooster");
+        // 回退 ②：沿用老默认值 %LOCALAPPDATA%，读环境变量优先以便沙箱重定向
         string la = Environment.GetEnvironmentVariable("LOCALAPPDATA");
         if (string.IsNullOrEmpty(la)) la = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         return Path.Combine(la, "DeltaForceBooster");
+    }
+
+    // 位置页的风险提示据此判断：当前输入路径是否位于下载文件夹之内
+    public static bool IsUnderDownloads(string path) {
+        try {
+            string dl = DownloadsDir();
+            if (string.IsNullOrEmpty(dl)) return false;
+            string full = Path.GetFullPath(path.Trim()).TrimEnd('\\') + "\\";
+            string root = Path.GetFullPath(dl).TrimEnd('\\') + "\\";
+            return full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        } catch (Exception) { return false; }
     }
 
     public static bool IsElevated() {
@@ -347,7 +401,7 @@ class SetupWindow : Window {
     Grid[] _pages;
     TextBlock[] _stepNums, _stepLabels;
     TextBox _pathBox;
-    TextBlock _spaceText, _warnText, _pctText, _cntText, _fileText, _destText, _hintText;
+    TextBlock _spaceText, _warnText, _dlWarnText, _pctText, _cntText, _fileText, _destText, _hintText;
     Border _barFill, _closeBtn;
     Grid _btnNext, _btnBack, _btnInstall, _btnFinish, _btnCancel;
     TextBlock _checkMark, _deskMark;
@@ -644,10 +698,17 @@ class SetupWindow : Window {
             Margin = new Thickness(0, 14, 0, 0)
         });
         sp.Children.Add(new TextBlock {
-            Text = "默认位置在用户目录，无需管理员权限；选择 Program Files 等受保护目录时，安装前会检测并引导提权。",
+            Text = "默认装到「下载」文件夹，无需管理员权限；选择 Program Files 等受保护目录时，安装前会检测并引导提权。",
             Foreground = Theme.TextFaint, FontSize = 11, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 10, 0, 0)
         });
+        // 下载目录的具体隐患要如实讲，但只提示不阻止——默认值就是用户点名要的
+        _dlWarnText = new TextBlock {
+            Text = "当前位置在「下载」文件夹内：Windows「存储感知」可配置为自动删除下载文件夹里长期未打开的文件，也有人定期手动清空这里——程序连同安装目录内 backup\\ 里的系统还原备份会一起丢失。长期使用建议换个位置；继续安装也没问题。",
+            Foreground = Theme.Gold, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
+            Margin = new Thickness(0, 12, 0, 0), Visibility = Visibility.Collapsed
+        };
+        sp.Children.Add(_dlWarnText);
         _warnText = new TextBlock {
             Foreground = Theme.Gold, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
             Margin = new Thickness(0, 12, 0, 0), Visibility = Visibility.Collapsed
@@ -803,7 +864,7 @@ class SetupWindow : Window {
         _closeBtn.Visibility   = (s == 2) ? Visibility.Hidden : Visibility.Visible;
         switch (s) {
             case 0: _hintText.Text = "安装过程只复制文件，不修改任何系统设置"; break;
-            case 1: _hintText.Text = "安装到用户目录无需管理员权限"; break;
+            case 1: _hintText.Text = "默认安装位置无需管理员权限"; break;
             case 2: _hintText.Text = "正在安装，请稍候…"; break;
             default: _hintText.Text = "遇到问题可随时通过开始菜单卸载"; break;
         }
@@ -824,6 +885,10 @@ class SetupWindow : Window {
             _spaceText.Foreground = Theme.Red;
         }
         if (_warnText != null) _warnText.Visibility = Visibility.Collapsed;
+        // 路径每次变化都重新判定是否在下载文件夹内，提示随之显隐
+        if (_dlWarnText != null)
+            _dlWarnText.Visibility = Installer.IsUnderDownloads(_pathBox.Text)
+                ? Visibility.Visible : Visibility.Collapsed;
     }
 
     void OnBrowseClick() {
@@ -855,7 +920,7 @@ class SetupWindow : Window {
         }
         if (err == Installer.NeedAdmin && !Installer.IsElevated()) {
             // 不能默默失败：明确告知需要提权，让用户选提权重启还是换位置
-            ShowWarn("该位置需要管理员权限。可以以管理员身份重新启动安装向导，或换一个位置（默认的用户目录不需要提权）。", false);
+            ShowWarn("该位置需要管理员权限。可以以管理员身份重新启动安装向导，或换一个位置（默认位置不需要提权）。", false);
             var r = MessageBox.Show(this,
                 "目标位置需要管理员权限：\n" + dest +
                 "\n\n是否以管理员身份重新启动安装向导？\n（选「否」则请更换安装位置）",
@@ -955,7 +1020,7 @@ class SetupWindow : Window {
                 ShowStep(1);
                 _pathBox.Text = "C:\\Program Files\\DeltaForceBooster";
                 UpdateSpaceInfo();
-                ShowWarn("该位置需要管理员权限。可以以管理员身份重新启动安装向导，或换一个位置（默认的用户目录不需要提权）。", false);
+                ShowWarn("该位置需要管理员权限。可以以管理员身份重新启动安装向导，或换一个位置（默认位置不需要提权）。", false);
                 break;
         }
     }
@@ -970,6 +1035,8 @@ class SetupWindow : Window {
         sb.AppendLine("默认路径=" + Installer.DefaultDir());
         sb.AppendLine("所需空间行=" + _spaceText.Text);
         sb.AppendLine("权限警告=" + _warnText.Text);
+        sb.AppendLine("下载目录提醒可见=" + (_dlWarnText.Visibility == Visibility.Visible));
+        sb.AppendLine("下载目录提醒=" + _dlWarnText.Text);
         return sb.ToString();
     }
 }

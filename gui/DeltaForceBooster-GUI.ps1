@@ -1,9 +1,17 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.11
+  DeltaForceBooster 图形界面 — v0.12
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼（用户提供截图）：
     近黑微青顶栏 #0D1417 + 页面青绿细渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 +
     等高线纹理）+ 金色分类标签 #E5C46A + 中英上下叠排分区标题（选中态绿色下划线）
     + 侧边刻度尺装饰 + 等宽技术标注 + 「— — 中 文 拉 字 距 — —」式装饰分隔线。
+  v0.12：真机反馈四连修——①体检查出问题（VC++ 错乱/XMP 未开）不再只落纯文本日志：
+        执行后弹「体检发现问题」对话框，带逐步教程与可点击的官方下载按钮（链接是代码
+        硬编码常量、只放行 https，绝不下载执行），优化项行内也有「解决办法」直达入口；
+        ②优化项列表加三态全选框，只圈可执行项（已就绪项不重复执行），手动全选同样清空
+        方案选中态；③主播设置参考按游戏内「设置 → 画面」菜单分组（显示设置/战斗视角/
+        基础画质/高级画质/超分辨率），照表能逐菜单找到，老格式数据自动归入「其他」；
+        ④显卡指引顶部醒目标出检测到的显卡型号（双显卡说明以独显为准），并按型号标注
+        DLSS/FSR/XeSS/Reflex/Anti-Lag 的适用范围。
   v0.11：内置更新——更新详情框新增「立即更新」：应用内下载安装包（进度条 + 可取消），
         下载完成强制校验 SHA256 与大小（更新模块 v0.2，域名白名单 + 校验失败即删），
         通过后提示并关闭本程序启动安装器；清单缺校验信息或下载/校验失败时退回
@@ -44,7 +52,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.11'
+$script:GuiVersion = '0.12'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -114,8 +122,15 @@ $xaml = @'
               <StackPanel Orientation="Horizontal">
                 <Border x:Name="Box" Width="13" Height="13" BorderBrush="#FF2C443B"
                         BorderThickness="1" Background="Transparent" VerticalAlignment="Center">
-                  <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="#FF04241B"
-                        StrokeThickness="2" Visibility="Collapsed"/>
+                  <Grid>
+                    <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="#FF04241B"
+                          StrokeThickness="2" Visibility="Collapsed"/>
+                    <!-- 第三态（部分选中）：绿色小方块。只有全选框会进入此态，
+                         普通项复选框永远只在勾/不勾之间切换 -->
+                    <Border x:Name="PartMark" Width="7" Height="7" Background="#FF00E884"
+                            HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Visibility="Collapsed"/>
+                  </Grid>
                 </Border>
                 <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center"/>
               </StackPanel>
@@ -125,6 +140,10 @@ $xaml = @'
                 <Setter TargetName="Box" Property="Background" Value="#FF00E884"/>
                 <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
                 <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="{x:Null}">
+                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="PartMark" Property="Visibility" Value="Visible"/>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
@@ -424,7 +443,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.11 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.12 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <!-- 等宽技术标注块：官网左上角同款装饰手法，文案用平实说法 -->
         <TextBlock Text="SYS-BOOST" Style="{StaticResource Mono}" FontSize="9"
@@ -599,7 +618,22 @@ $xaml = @'
                      TextTrimming="CharacterEllipsis" Margin="2,0,0,4"/>
 
           <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource PanelDeep}">
-            <StackPanel x:Name="ItemPanel"/>
+            <StackPanel>
+              <!-- 全选行（实机诉求）：三态仅作展示——部分选中显示第三态，点击只在
+                   全选/全不选之间切换；只圈「可执行」项，已就绪项重复执行只会撑大备份 -->
+              <Border Background="#FF0C1915" BorderBrush="{StaticResource LineSoft}"
+                      BorderThickness="0,0,0,1" Padding="10,3">
+                <Grid>
+                  <CheckBox x:Name="SelAllChk" Style="{StaticResource TacCheck}" VerticalAlignment="Center">
+                    <TextBlock Text="全选" Foreground="#FFFFFFFF" FontSize="12" FontWeight="Bold"/>
+                  </CheckBox>
+                  <TextBlock Text="只圈可执行项 · 已就绪的不重复执行" FontFamily="Consolas" FontSize="10"
+                             Foreground="{StaticResource TextMut}" HorizontalAlignment="Right"
+                             VerticalAlignment="Center"/>
+                </Grid>
+              </Border>
+              <StackPanel x:Name="ItemPanel"/>
+            </StackPanel>
           </Border>
 
           <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" Foreground="{StaticResource Danger}">
@@ -711,7 +745,7 @@ $xaml = @'
       <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
-      <TextBlock Grid.Column="4" Text="[ V0.10 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+      <TextBlock Grid.Column="4" Text="[ V0.12 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
     </Grid>
   </Grid>
 </Window>
@@ -729,6 +763,7 @@ try {
 } catch {}
 $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
+               'SelAllChk',
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
                'TabOptBtn','TabRefBtn','OptPage','RefPage','RefPanel','ActionRow','LogRow',
@@ -812,8 +847,18 @@ function New-Pill([string]$Text, [string]$Fg, [string]$Bg, [string]$Bd) {
 }
 
 function Update-Count {
-  $sel = @($ui.ItemPanel.Children | Where-Object { $_.Child.Children[0].IsChecked }).Count
-  $ui.CountText.Text = "已选 $sel / $($ui.ItemPanel.Children.Count)"
+  $rows = @($ui.ItemPanel.Children)
+  $sel = @($rows | Where-Object { $_.Child.Children[0].IsChecked }).Count
+  # 「可执行」= 未处于已就绪/正常态的项（行 Tag 存的是检测到的 Optimized 状态）
+  $oper = @($rows | Where-Object { $_.Tag -ne $true })
+  $ui.CountText.Text = "已选 $sel / $($rows.Count) · 可执行 $($oper.Count)"
+  # 全选框三态回显：程序赋值不触发 Click，不会与点击处理器互相递归
+  if ($ui.SelAllChk) {
+    $operLeft = @($oper | Where-Object { -not $_.Child.Children[0].IsChecked }).Count
+    $ui.SelAllChk.IsChecked = $(if ($sel -eq 0) { $false }
+                                elseif ($oper.Count -gt 0 -and $operLeft -eq 0) { $true }
+                                else { $null })
+  }
 }
 
 function New-ItemRow($Item, $State, [bool]$Last) {
@@ -823,6 +868,8 @@ function New-ItemRow($Item, $State, [bool]$Last) {
     $row.BorderThickness = New-Object Windows.Thickness 0, 0, 0, 1
   }
   $row.Padding = New-Object Windows.Thickness 10, 0, 10, 0
+  # 行 Tag 存检测状态：全选框据此只圈「可执行」的项（$true=已就绪，跳过）
+  $row.Tag = $State.Optimized
 
   $g = New-Object Windows.Controls.Grid
   foreach ($w in 'Auto', '*', 'Auto') {
@@ -867,8 +914,25 @@ function New-ItemRow($Item, $State, [bool]$Last) {
           elseif ($State.Optimized -eq $true) { New-Pill '已就绪' $script:C.GreenDark $script:C.Green $script:C.Green }
           elseif ($State.Optimized -eq $false) { New-Pill '待优化' $script:C.GoldDark $script:C.Gold $script:C.Gold }
           else { New-Pill '待定' $script:C.Gray '#00000000' $script:C.Line }
-  [Windows.Controls.Grid]::SetColumn($pill, 2)
-  $g.Children.Add($pill) | Out-Null
+  $tail = New-Object Windows.Controls.StackPanel
+  $tail.Orientation = 'Horizontal'
+  # 体检项查出问题时给行内直达入口：不执行优化也能看到教程和下载按钮，
+  # 不用等日志（纯文本链接没人会手抄——实机反馈）
+  if ($Item.Kind -eq 'check' -and $State.Optimized -eq $false -and $script:CheckHelp.ContainsKey($Item.Id)) {
+    $fix = New-Object Windows.Controls.Button
+    $fix.Style = $window.FindResource('Ghost')
+    $fix.Content = '解决办法'
+    $fix.FontSize = 10
+    $fix.Height = 20
+    $fix.Margin = New-Object Windows.Thickness 0, 0, 8, 0
+    $fix.Tag = [pscustomobject]@{ Id = $Item.Id; Name = $Item.Name; Msg = $State.Current }
+    # 循环里挂的处理器不能闭包引用循环变量，一律从 sender.Tag 取（与来源链接同一教训）
+    $fix.Add_Click({ Show-HealthDialog @($this.Tag) })
+    $tail.Children.Add($fix) | Out-Null
+  }
+  $tail.Children.Add($pill) | Out-Null
+  [Windows.Controls.Grid]::SetColumn($tail, 2)
+  $g.Children.Add($tail) | Out-Null
 
   $row.Child = $g
   $row
@@ -888,6 +952,150 @@ function Write-Log([string]$Msg) {
   $line = "[{0:HH:mm:ss}] {1}" -f (Get-Date), $Msg
   $ui.LogBox.AppendText("$line`r`n")
   $ui.LogBox.ScrollToEnd()
+}
+
+# ---------- 体检问题的解决办法（教程 + 可点击的官方下载入口） ----------
+
+# 红线：下载链接只能来自这里的硬编码常量，绝不从检测输出/数据文件/网络取——
+# 按钮只负责用浏览器打开微软官方地址，本工具自身绝不下载或执行任何安装包
+$script:CheckHelp = @{
+  'vcredist-check' = @{
+    Title = 'VC++ 运行库版本错乱 / 缺失'
+    Tutorial = @(
+      'VC++ 运行库是游戏底层依赖的微软组件，x64 与 x86 两套必须版本配对。某次安装只更新了其中一套时就会「版本错乱」——这正是 2026 年 7 月底游戏更新后掉帧（300 帧掉到 100）甚至闪退的高发原因。'
+      ''
+      '修复步骤：'
+      '1. 点下方按钮下载 x64 与 x86 两个安装包（微软官方永久链接，浏览器打开）；'
+      '2. 依次双击安装——直接覆盖安装即可，不需要先卸载旧版本；'
+      '3. 装完重启电脑；'
+      '4. 回到本工具点「重新检测」，确认此项变成「正常」。'
+    ) -join "`n"
+    Links = @(
+      @{ Text = '下载 x64 运行库'; Url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe' }
+      @{ Text = '下载 x86 运行库'; Url = 'https://aka.ms/vs/17/release/vc_redist.x86.exe' }
+    )
+  }
+  'xmp-check' = @{
+    Title = '内存 XMP/EXPO 未开启'
+    Tutorial = @(
+      'XMP（Intel 平台叫法）/ EXPO 或 DOCP（AMD 平台叫法）是内存条出厂标定的高频档位。不开启时内存跑在保守的 JEDEC 基准频率上，等于放着买好的频率不用；开启后帧数一般会有提升，幅度因 CPU/内存/游戏而异，无法承诺具体数字。'
+      ''
+      '开启步骤（BIOS 设置只能手动进，任何软件都改不了）：'
+      '1. 重启电脑，开机自检画面出现时反复按 Del 或 F2 进入 BIOS（部分品牌是 F1/F10）；'
+      '2. 找到内存/超频页面：Intel 主板找 XMP，AMD 主板找 EXPO 或 DOCP，选档位 1 开启；'
+      '3. 按 F10 保存并退出；'
+      '4. 万一开启后开不了机：多数主板会自动回退重启；不行就再进 BIOS 恢复默认设置（Load Optimized Defaults），恢复后与改动前完全一致，不会造成损坏。'
+    ) -join "`n"
+    Links = @()
+  }
+}
+
+# 打开外部链接的唯一出口：只放行 http/https 网页地址（与更新入口同一条红线）
+function Open-HelpLink([string]$Url) {
+  if ($Url -match '^https?://') { Start-Process $Url } else { Write-Log "已拦截非网页链接：$Url" }
+}
+
+# 「体检发现问题」对话框：日志里的纯文本链接等于没给（实机反馈用户不会手抄网址），
+# 这里逐条列问题 + 逐步教程 + 可点击的下载按钮。构建与弹出拆开便于离屏渲染验证
+function Build-HealthDialog($AttResults) {
+  $hxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="500" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <StackPanel Margin="0,0,0,14">
+    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+      <StackPanel Orientation="Horizontal">
+        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="体检发现问题" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        </Border>
+        <TextBlock Text="HEALTH CHECK" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+                   VerticalAlignment="Center" Margin="9,0,0,0"/>
+      </StackPanel>
+    </Border>
+    <TextBlock Text="以下问题本工具改不了，但按教程手动处理并不难：" Foreground="#FF9AA5A0"
+               FontSize="12" Margin="14,12,14,0"/>
+    <ScrollViewer MaxHeight="430" VerticalScrollBarVisibility="Auto" Margin="14,10,14,12">
+      <StackPanel x:Name="ListPanel"/>
+    </ScrollViewer>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
+      <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" IsCancel="True"
+              Foreground="#FF04241B" FontWeight="Bold">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+                    Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bg" Property="Fill" Value="#FF33F09E"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <TextBlock Text="知道了"/>
+      </Button>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+  $dlg = [Windows.Markup.XamlReader]::Parse($hxaml)
+  $panel = $dlg.FindName('ListPanel')
+  foreach ($r in @($AttResults)) {
+    $help = $script:CheckHelp["$($r.Id)"]
+    $card = New-Object Windows.Controls.Border
+    $card.Background = New-Brush $script:C.Panel
+    $card.BorderBrush = New-Brush $script:C.Line
+    $card.BorderThickness = New-Object Windows.Thickness 1
+    $card.Padding = New-Object Windows.Thickness 12, 9, 12, 10
+    $card.Margin = New-Object Windows.Thickness 0, 0, 0, 8
+    $csp = New-Object Windows.Controls.StackPanel
+    $tt = New-Text "$(if ($help -and $help.Title) { $help.Title } else { $r.Name })" $script:C.Gold 13
+    $tt.FontWeight = 'Bold'
+    $csp.Children.Add($tt) | Out-Null
+    $ms = New-WrapText "检测结果：$($r.Msg)" $script:C.TextSec 11
+    $ms.Margin = New-Object Windows.Thickness 0, 5, 0, 0
+    $csp.Children.Add($ms) | Out-Null
+    if ($help -and $help.Tutorial) {
+      $tu = New-WrapText $help.Tutorial $script:C.TextMut 11
+      $tu.LineHeight = 18
+      $tu.Margin = New-Object Windows.Thickness 0, 7, 0, 0
+      $csp.Children.Add($tu) | Out-Null
+    }
+    if ($help -and @($help.Links).Count -gt 0) {
+      $lr = New-Object Windows.Controls.StackPanel
+      $lr.Orientation = 'Horizontal'
+      $lr.Margin = New-Object Windows.Thickness 0, 9, 0, 0
+      foreach ($lk in @($help.Links)) {
+        $lb = New-Object Windows.Controls.Button
+        $lb.Style = $window.FindResource('Ghost')
+        $lb.Content = "$($lk.Text)"
+        $lb.FontSize = 11
+        $lb.Height = 26
+        $lb.Margin = New-Object Windows.Thickness 0, 0, 8, 0
+        $lb.Tag = "$($lk.Url)"
+        $lb.Add_Click({ Open-HelpLink "$($this.Tag)" })
+        $lr.Children.Add($lb) | Out-Null
+      }
+      $csp.Children.Add($lr) | Out-Null
+    }
+    $card.Child = $csp
+    $panel.Children.Add($card) | Out-Null
+  }
+  $dlg
+}
+
+function Show-HealthDialog($AttResults) {
+  # 事件处理器在模态期间回调，与其他对话框同理：对象放 script 作用域最稳
+  $script:HcDlg = Build-HealthDialog $AttResults
+  $script:HcDlg.Owner = $window
+  $script:HcDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:HcDlg.DragMove() })
+  $script:HcDlg.FindName('OkBtn').Add_Click({ $script:HcDlg.DialogResult = $true })
+  [void]$script:HcDlg.ShowDialog()
 }
 
 # ---------- 主播设置参考页（纯展示，数据来自 data\streamer-settings.json） ----------
@@ -961,9 +1169,19 @@ function Update-StreamerPage {
   $streamers = @($data.streamers | Where-Object { $_ })
   if ($streamers.Count -eq 0) { Add-RefNotice '数据尚未就绪' '数据文件里还没有主播条目。'; return }
 
-  # 行头顺序优先用数据声明的 settings_schema；缺失时按各主播设置键的出现顺序取并集
-  $schema = @($data.settings_schema | Where-Object { "$_" -ne '' })
+  # 行头顺序优先用数据声明的 settings_schema。v0.12 起 schema 项支持 { name, group }
+  # 对象——group 即游戏内「设置 → 画面」的菜单分组；老格式的纯字符串仍能读，
+  # 缺 group 的一律归入「其他」，数据文件与界面可以各自先后升级互不拖累
+  $schema = @()
+  foreach ($it in @($data.settings_schema | Where-Object { $_ })) {
+    if ($it -is [string]) {
+      if ("$it" -ne '') { $schema += [pscustomobject]@{ Name = "$it"; Group = '' } }
+    } elseif ("$($it.name)" -ne '') {
+      $schema += [pscustomobject]@{ Name = "$($it.name)"; Group = "$($it.group)" }
+    }
+  }
   if ($schema.Count -eq 0) {
+    # 数据没声明行头：按各主播设置键的出现顺序取并集
     $seen = New-Object System.Collections.Generic.List[string]
     foreach ($s in $streamers) {
       if ($s.settings) {
@@ -972,16 +1190,36 @@ function Update-StreamerPage {
         }
       }
     }
-    $schema = @($seen)
+    $schema = @($seen | ForEach-Object { [pscustomobject]@{ Name = $_; Group = '' } })
   }
+
+  # 分组顺序按 schema 首次出现的顺序；「其他」是兜底组不是游戏菜单，永远排最后
+  $groupNames = New-Object System.Collections.Generic.List[string]
+  foreach ($col in $schema) {
+    $g = $(if ("$($col.Group)" -ne '') { "$($col.Group)" } else { '其他' })
+    if (-not $groupNames.Contains($g)) { [void]$groupNames.Add($g) }
+  }
+  if ($groupNames.Contains('其他')) { [void]$groupNames.Remove('其他'); [void]$groupNames.Add('其他') }
 
   $meta = New-Text "数据更新：$(if ($data.updated) { $data.updated } else { '未知' })$(if ($data.note) { "　·　$($data.note)" })" $script:C.TextMut 10 -Mono
   $meta.Margin = New-Object Windows.Thickness 2, 8, 0, 8
   $meta.TextWrapping = 'Wrap'
   $ui.RefPanel.Children.Add($meta) | Out-Null
 
+  # 分组依据要如实交代（含「位置可能随版本变化」）：优先用数据文件里的 schema_note，
+  # 老数据没有分组信息时提示这是兜底展示
+  $srcNote = $(if ($data.schema_note) { "$($data.schema_note)" }
+               elseif (@($schema | Where-Object { "$($_.Group)" -ne '' }).Count -eq 0) {
+                 '当前数据文件未带菜单分组信息，设置项暂归入「其他」统一展示。' })
+  if ($srcNote) {
+    $sn = New-WrapText $srcNote $script:C.TextMut 10
+    $sn.Margin = New-Object Windows.Thickness 2, 0, 0, 8
+    $ui.RefPanel.Children.Add($sn) | Out-Null
+  }
+
   if ($schema.Count -gt 0) {
-    # 对照表：行=设置项、列=主播，逐格自绘（WPF 无深色现成表格控件）
+    # 对照表：行=设置项、列=主播，按游戏内菜单分组插入组标题行（实机反馈：扁平大表
+    # 拿进游戏找不到每项在哪个菜单下）。单一 Grid 保证各组列宽对齐、横向滚动只有一条
     $tbl = New-Object Windows.Controls.Grid
     $c0 = New-Object Windows.Controls.ColumnDefinition
     $c0.Width = [Windows.GridLength]::Auto
@@ -992,7 +1230,8 @@ function Update-StreamerPage {
       $c.MinWidth = 110
       $tbl.ColumnDefinitions.Add($c) | Out-Null
     }
-    for ($r = 0; $r -le $schema.Count; $r++) {
+    $totalRows = 1 + $groupNames.Count + $schema.Count
+    for ($r = 0; $r -lt $totalRows; $r++) {
       $rd = New-Object Windows.Controls.RowDefinition
       $rd.Height = [Windows.GridLength]::Auto
       $tbl.RowDefinitions.Add($rd) | Out-Null
@@ -1007,18 +1246,42 @@ function Update-StreamerPage {
       if ($s.platform) { $hs.Children.Add((New-Text "$($s.platform)" $script:C.TextMut 10 -Mono)) | Out-Null }
       New-RefCell $tbl 0 ($j + 1) $hs $true
     }
-    for ($i = 0; $i -lt $schema.Count; $i++) {
-      $key = "$($schema[$i])"
-      New-RefCell $tbl ($i + 1) 0 (New-Text $key $script:C.TextSec 11) $false
-      for ($j = 0; $j -lt $streamers.Count; $j++) {
-        $s = $streamers[$j]
-        $v = $null
-        if ($s.settings) {
-          $p = $s.settings.PSObject.Properties[$key]
-          if ($p -and "$($p.Value)" -ne '') { $v = "$($p.Value)" }
+    $rowIdx = 1
+    foreach ($gName in $groupNames) {
+      $inGroup = @($schema | Where-Object { $(if ("$($_.Group)" -ne '') { "$($_.Group)" } else { '其他' }) -eq $gName })
+      if ($inGroup.Count -eq 0) { continue }
+      # 组标题行：金色分类标签横贯整行（官网 chip 手法），提示进游戏后翻哪个菜单
+      $gb = New-Object Windows.Controls.Border
+      $gb.Background = New-Brush '#FF10201A'
+      $gb.BorderBrush = New-Brush $script:C.LineSoft
+      $gb.BorderThickness = New-Object Windows.Thickness 0, 0, 1, 1
+      $gb.Padding = New-Object Windows.Thickness 10, 5, 10, 5
+      $gsp = New-Object Windows.Controls.StackPanel
+      $gsp.Orientation = 'Horizontal'
+      $gsp.Children.Add((New-Pill $gName $script:C.GoldDark $script:C.Gold $script:C.Gold)) | Out-Null
+      $gh = New-Text $(if ($gName -eq '其他') { '未归入游戏菜单的项' } else { "游戏内「设置 → 画面 → $gName」" }) $script:C.TextMut 10 -Mono
+      $gh.Margin = New-Object Windows.Thickness 9, 0, 0, 0
+      $gsp.Children.Add($gh) | Out-Null
+      $gb.Child = $gsp
+      [Windows.Controls.Grid]::SetRow($gb, $rowIdx)
+      [Windows.Controls.Grid]::SetColumn($gb, 0)
+      [Windows.Controls.Grid]::SetColumnSpan($gb, $streamers.Count + 1)
+      $tbl.Children.Add($gb) | Out-Null
+      $rowIdx++
+      foreach ($col in $inGroup) {
+        $key = "$($col.Name)"
+        New-RefCell $tbl $rowIdx 0 (New-Text $key $script:C.TextSec 11) $false
+        for ($j = 0; $j -lt $streamers.Count; $j++) {
+          $s = $streamers[$j]
+          $v = $null
+          if ($s.settings) {
+            $p = $s.settings.PSObject.Properties[$key]
+            if ($p -and "$($p.Value)" -ne '') { $v = "$($p.Value)" }
+          }
+          $cell = New-Text $(if ($v) { $v } else { '—' }) $(if ($v) { $script:C.TextPri } else { $script:C.TextMut }) 11
+          New-RefCell $tbl $rowIdx ($j + 1) $cell $false
         }
-        $cell = New-Text $(if ($v) { $v } else { '—' }) $(if ($v) { $script:C.TextPri } else { $script:C.TextMut }) 11
-        New-RefCell $tbl ($i + 1) ($j + 1) $cell $false
+        $rowIdx++
       }
     }
     $tblWrap = New-Object Windows.Controls.Border
@@ -1156,7 +1419,7 @@ function Update-RestoreProgress($p) {
 # 全站确认（执行/还原/删除）和长文本指引统一走这里。正文放 ScrollViewer：
 # 执行清单可达 30 行、显卡指引更长，超高时内部滚动而不是把对话框撑出屏幕
 function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message,
-                            [string]$OkText = '确定', [switch]$InfoOnly) {
+                            [string]$OkText = '确定', [switch]$InfoOnly, [string]$Banner) {
   $cxaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -1173,6 +1436,13 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
         <TextBlock x:Name="EnTxt" Text="" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
+    </Border>
+    <!-- 醒目横幅（可选）：显卡指引用它标出「检测到你的显卡：xxx」，让用户一眼确认
+         这份指引就是按自己的硬件生成的（实机反馈感知不到） -->
+    <Border x:Name="BannerRow" Visibility="Collapsed" Background="#FF0E2A21" BorderBrush="#FF17603F"
+            BorderThickness="1" Margin="14,12,14,0" Padding="10,7">
+      <TextBlock x:Name="BannerTxt" Text="" Foreground="#FF00E884" FontSize="12" FontWeight="Bold"
+                 TextWrapping="Wrap"/>
     </Border>
     <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,12,14,12">
       <ScrollViewer MaxHeight="340" VerticalScrollBarVisibility="Auto">
@@ -1227,6 +1497,11 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
   $script:CfmDlg.FindName('OkTxt').Text = $OkText
   # 信息模式（如显卡指引）没有「取消」的语义，只留一个确认按钮
   if ($InfoOnly) { $script:CfmDlg.FindName('CancelBtn').Visibility = 'Collapsed' }
+  # 可选醒目横幅：显卡指引用它标出检测到的显卡型号
+  if ($Banner) {
+    $script:CfmDlg.FindName('BannerTxt').Text = $Banner
+    $script:CfmDlg.FindName('BannerRow').Visibility = 'Visible'
+  }
   $script:CfmDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:CfmDlg.DragMove() })
   $script:CfmDlg.FindName('OkBtn').Add_Click({ $script:CfmDlg.DialogResult = $true })
   $script:CfmDlg.FindName('CancelBtn').Add_Click({ $script:CfmDlg.DialogResult = $false })
@@ -1858,6 +2133,20 @@ $ui.BrowseBtn.Add_Click({
 
 $ui.RefreshBtn.Add_Click({ Update-ItemList; Write-Log '状态已刷新。' })
 
+# 全选/全不选（实机诉求）：勾选态只圈「可执行」的项——已就绪项重复执行只会撑大备份；
+# 全不选则一视同仁清空。这等同手动改勾选，方案选中态一并清掉（勾选已不再等于该方案）
+$ui.SelAllChk.Add_Click({
+  $on = ($ui.SelAllChk.IsChecked -eq $true)
+  foreach ($row in @($ui.ItemPanel.Children)) {
+    $row.Child.Children[0].IsChecked = $(if ($on) { $row.Tag -ne $true } else { $false })
+  }
+  Update-Count
+  if ($ui.PresetBox -and $ui.PresetBox.SelectedIndex -ge 0) {
+    $ui.PresetBox.SelectedIndex = -1
+    $ui.PresetNote.Text = ''
+  }
+})
+
 # 复制成功后按钮短暂变「已复制」再复原：给出即时反馈但不打断视线
 $script:CopyRevertTimer = New-Object Windows.Threading.DispatcherTimer
 $script:CopyRevertTimer.Interval = [TimeSpan]::FromSeconds(1.5)
@@ -1890,7 +2179,10 @@ $ui.CopyLogBtn.Add_Click({
 
 $ui.GuideBtn.Add_Click({
   $hw = Get-HardwareInfo
-  Show-ConfirmDialog '显卡指引' 'GPU DRIVER GUIDE' (Get-GpuGuideText $hw.MainGpuVendor) '知道了' -InfoOnly | Out-Null
+  # 顶部醒目标出识别结果：此前用户看不出这份指引是按自己的显卡生成的（实机反馈）
+  $banner = "检测到你的显卡：$($hw.MainGpuName)"
+  if (@($hw.Gpus).Count -gt 1) { $banner += "`n双显卡机型（核显 + 独显），游戏以独显为准，以下指引按独显给出" }
+  Show-ConfirmDialog '显卡指引' 'GPU DRIVER GUIDE' (Get-GpuGuideText $hw.MainGpuVendor) '知道了' -InfoOnly -Banner $banner | Out-Null
 })
 
 # ---------- 预设方案 ----------
@@ -1982,6 +2274,8 @@ $ui.ApplyBtn.Add_Click({
     if ($attList.Count -gt 0) {
       Write-Log "体检发现以下问题（工具改不了，需按提示手动处理）："
       foreach ($x in $attList) { Write-Log "  [提示] $($x.Name) — $($x.Msg)" }
+      # 日志里的纯文本链接没人会手抄（实机反馈）：弹对话框给逐步教程和可点击的下载按钮
+      Show-HealthDialog $attList
     }
     Update-ItemList
     # 醒目的重启提醒取代此前日志末尾的一行小字（实机反馈根本注意不到）：

@@ -1,6 +1,9 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.9
+  DeltaForceBooster 核心脚本 — v0.10
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
+  v0.10：显卡指引按显卡型号标注功能适用范围（实机反馈用户感知不到指引是给自己显卡的）：
+        DLSS 仅 RTX 系可用、Preset K 还需 40/50 系、GTX/A 卡/Intel 用通用的 FSR、
+        低延迟 N 卡走 Reflex / A 卡走 Anti-Lag、XeSS 是 Intel 自家算法收益最大。
   v0.9：修复「继承默认」电源隐藏项的还原（实机 i5-12600KF 踩实）：电源方案注册表键的
         ACL 只授权 SYSTEM 写入、管理员组只有读权限，直删设置子键必被拒——powercfg 能写
         是因为它经电源服务（SYSTEM）代写。现在删键被拒时退而用 powercfg 把该项写回
@@ -1084,9 +1087,13 @@ function Get-GpuGuideText([string]$Vendor) {
       '  6. 最大预渲染帧数 = 1'
       '【提示】「NVIDIA App 自动优化」已可由本工具的「关闭 NVIDIA App 自动优化游戏设置」项'
       '        一键关闭（它开着会自动覆写你游戏内调好的画质，等于白调），无需再手动进 App 关。'
-      '游戏内：开启 NVIDIA Reflex（开+加速）；帧数不够时开 DLSS（画质/平衡档）。'
-      '进阶：NVIDIA App → 图形 → 三角洲行动 → DLSS 模型预设 → 选 Preset K；'
-      '      或下载 NVIDIA Profile Inspector 放入本工具 tools\ 目录后一键导入。'
+      '【游戏内 · 因显卡型号而异的项】'
+      '  · NVIDIA Reflex 低延迟 = 开+加速（N 卡专属；A 卡的对应功能是驱动里的 Anti-Lag）'
+      '  · 帧数不够时开超分辨率：DLSS 仅 RTX 系列可用（选画质/平衡档）；GTX 系列没有'
+      '    DLSS，改选各家显卡通用的 FSR'
+      '  · DLSS 模型预设 Preset K 仅 RTX 40/50 系支持：NVIDIA App → 图形 → 三角洲行动 →'
+      '    DLSS 模型预设 → Preset K；RTX 20/30 系保持默认预设即可'
+      '进阶：下载 NVIDIA Profile Inspector 放入本工具 tools\ 目录后可一键导入驱动配置档。'
     ) -join "`n" }
     'AMD' { @(
       '【A 卡驱动设置 — 手动 2 分钟】'
@@ -1096,11 +1103,17 @@ function Get-GpuGuideText([string]$Vendor) {
       '  3. 等待垂直刷新 = 关闭，除非应用程序指定'
       '  4. 纹理过滤质量 = 性能'
       '  5. 表面格式优化 = 开'
-      '游戏内：帧数不够时开启 FSR（质量/平衡档）。'
+      '【游戏内 · 因显卡型号而异的项】'
+      '  · 帧数不够时开超分辨率：选各家显卡通用的 FSR；DLSS 是 N 卡专属、XeSS 主要为'
+      '    Intel 优化，A 卡都不适用'
+      '  · 低延迟用上面第 1 条的 Anti-Lag（驱动层）；游戏内的 NVIDIA Reflex 对 A 卡无效'
     ) -join "`n" }
     'Intel' { @(
-      '【Intel 显卡】性能上限有限，建议：游戏内画质预设调最低 + 开启 XeSS/FSR 超分，'
-      '并确认已安装最新 Intel Arc/核显驱动。'
+      '【Intel 显卡】性能上限有限，建议：游戏内画质预设调最低，并确认已安装最新'
+      'Intel Arc/核显驱动。'
+      '【游戏内 · 因显卡型号而异的项】'
+      '  · 超分辨率优先选 XeSS（Intel 自家算法，Arc 独显收益最大），也可用通用的 FSR；'
+      '    DLSS 与 NVIDIA Reflex 是 N 卡专属，Intel 显卡不可用'
     ) -join "`n" }
     default { '未识别到独立显卡，驱动层指引略过。' }
   }

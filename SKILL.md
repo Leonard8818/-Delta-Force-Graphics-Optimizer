@@ -49,7 +49,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   异常（引导查插槽/延长线）、VC++ v14 运行库版本错乱（引导手动重装，**不要代劳卸载**）、
   内存未开 XMP/EXPO（引导进 BIOS，软件改不了）。检测项查出问题时结果标 `Attention`
   归入「体检发现问题」，不计入失败。vcredist 的提示文案已带微软官方永久下载链接
-  （aka.ms/vs/17/release/vc_redist.x64.exe 与 .x86.exe），转述时直接给用户即可。
+  （aka.ms/vs/17/release/vc_redist.x64.exe 与 .x86.exe），转述时直接给用户即可；
+  转述教程要点：覆盖安装不需要先卸载、x64 与 x86 两个都要装、装完重启后再检测确认。
+  XMP/EXPO 转述要点：开机按 Del/F2 进 BIOS，Intel 叫 XMP、AMD 叫 EXPO/DOCP，收益因
+  硬件而异别承诺具体帧数，开完开不了机就进 BIOS 恢复默认设置即可。
 - **不要建议关闭引导虚拟化**：ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错进不去，
   该项已于 v0.6 移除。
 
@@ -90,7 +93,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 ### 第 4 步：显卡驱动部分（手动，念给用户听）
 
 驱动内 3D 设置无法安全脚本化。把第 1 步返回的 `GpuGuide` 清单展示给用户，
-指导其在 NVIDIA 控制面板 / AMD Adrenalin 中手动设置（约 2 分钟）。
+指导其在 NVIDIA 控制面板 / AMD Adrenalin 中手动设置（约 2 分钟）。清单已按显卡厂商
+标注了因型号而异的项（DLSS 仅 RTX 系、Preset K 还需 40/50 系、FSR 各家通用、XeSS 为
+Intel 优化、低延迟 N 卡走 Reflex / A 卡走 Anti-Lag），转述时先说明检测到的显卡型号
+（`Hardware.MainGpuName`，双显卡以独显为准），再给对应厂商的内容。
 
 进阶（可选）：`<root>\tools\` 已附带按费利克斯参数生成的 `DeltaForce-Felix.nip`
 （电源最高性能/超低延迟超高/垂直同步强制关/预渲染 1/着色器缓存无限制/线程优化开/
