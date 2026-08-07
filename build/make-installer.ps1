@@ -1,9 +1,13 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.6
+  DeltaForceBooster 安装包构建脚本 — v0.7
   只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖，只产出一个东西：
     build\DeltaForceBooster-Setup-vX.Y.exe —— 图形安装向导（WPF，三角洲官网视觉）：
       欢迎/自选安装位置/进度/完成四页，payload.zip 以 /resource: 内嵌，真正单文件
 
+  v0.7：重写内嵌卸载脚本——①卸载前可先按备份还原系统改动（默认是）；②无条件清理
+        PowerPlanLock 计划任务（SYSTEM 每分钟锁电源方案，残留后普通用户几乎停不掉）；
+        ③保留备份时 scripts\ 一并保留（没有引擎的备份 JSON 谁也读不懂）；④完成提示
+        如实交代还原了什么、系统里还剩什么。
   v0.6：不再产出绿色免安装版（用户决定只发安装版）；payload 里加入 DISCLAIMER.md——
         免责声明门控要读它，不随包分发的话装完就只剩内嵌兜底文本了。
   v0.5：构建完成后自动生成 build\update-manifest.json 清单模板（sha256/size 现算）——
@@ -62,12 +66,44 @@ foreach ($p in $parts) {
 # 全程不用 WScript.Shell：它按系统 ANSI 代码页转字符串，非中文代码页（如 1252）的系统上
 # 中文全变 "?"。消息框走 .NET WinForms（原生 Unicode）。
 $uninstallPs = @'
-# DeltaForceBooster 卸载：删快捷方式（开始菜单/桌面，含提权安装写入的公共位置）+
-# 安装目录；backup\ 是系统还原凭据，默认保留
+# DeltaForceBooster 卸载：①可选先按备份还原系统改动（卸载后工具就没了，这是最后机会）
+# ②无条件清理 PowerPlanLock 计划任务（SYSTEM 每分钟重设电源方案，残留后没人能停）
+# ③删快捷方式与安装目录；保留备份时 scripts\ 一并保留——备份 JSON 只有还原脚本读得懂
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 # 安装位置可自选，以脚本自身所在目录为卸载目标
 $dest = Split-Path -Parent $MyInvocation.MyCommand.Path
+$engine = Join-Path $dest 'scripts\delta-booster.ps1'
+# 脚本被单独拷到别处运行时绝不能误删所在目录：认准引擎文件才动手
+if (-not (Test-Path $engine)) {
+  [Windows.Forms.MessageBox]::Show('未在本目录找到优化工具，卸载已取消。', 'DeltaForceBooster 卸载', 'OK', 'Warning') | Out-Null
+  exit 1
+}
+# DFB_INSTALL_SILENT=1 供自动化验证：不弹框、不提权、不还原，按「保留备份」安全默认走；
+# DFB_TEST_ANSWERS（如 "Yes,No"）预注入弹框答案——沙箱验证钩子，与 DFB_TEST_DESKTOP 同类
+$silent = ($env:DFB_INSTALL_SILENT -eq '1')
+$script:TestAnswers = @($(if ($env:DFB_TEST_ANSWERS) { $env:DFB_TEST_ANSWERS -split ',' }))
+$script:AnswerIdx = 0
+$testMode = ($script:TestAnswers.Count -gt 0)
+function Ask-YesNo([string]$Msg) {
+  if ($script:TestAnswers.Count -gt 0) {
+    $a = $script:TestAnswers[[math]::Min($script:AnswerIdx, $script:TestAnswers.Count - 1)]
+    $script:AnswerIdx++
+    return ($a -ne 'No')
+  }
+  ([Windows.Forms.MessageBox]::Show($Msg, 'DeltaForceBooster 卸载', 'YesNo', 'Question') -ne 'No')
+}
+# 还原改动与删 SYSTEM 计划任务都需要管理员：非管理员整体提权重跑一次；
+# 用户拒绝提权则降级继续（能清多少清多少，结果如实汇报）
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $silent -and -not $testMode -and -not $isAdmin) {
+  try {
+    Start-Process powershell.exe -Verb RunAs -ErrorAction Stop -ArgumentList @(
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($MyInvocation.MyCommand.Path)`"")
+    exit
+  } catch { }
+}
 # 安装器行为：非提权装用户开始菜单，提权装公共开始菜单——卸载把两处都兜住；
 # 桌面快捷方式同理（DFB_TEST_DESKTOP 是沙箱验证的重定向钩子，与安装器一致）
 $menuDirs = @(
@@ -76,19 +112,28 @@ $menuDirs = @(
 $deskDirs = @($env:DFB_TEST_DESKTOP,
   [Environment]::GetFolderPath('DesktopDirectory'),
   [Environment]::GetFolderPath('CommonDesktopDirectory')) | Where-Object { $_ }
-# 脚本被单独拷到别处运行时绝不能误删所在目录：认准引擎文件才动手
-if (-not (Test-Path (Join-Path $dest 'scripts\delta-booster.ps1'))) {
-  [Windows.Forms.MessageBox]::Show('未在本目录找到优化工具，卸载已取消。', 'DeltaForceBooster 卸载', 'OK', 'Warning') | Out-Null
-  exit 1
+# ① 卸载前先还原系统改动（默认是）：有备份记录才问；$restoreDone 三态=成功/失败/没做
+$restoreDone = $null
+$hasBackup = [bool](Get-ChildItem (Join-Path $dest 'backup') -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue)
+if (-not $silent -and $hasBackup) {
+  if (Ask-YesNo "卸载前是否先还原本工具做过的系统改动？`n`n还没「还原设置」过的话请选「是」——卸载后工具就没了，这是最后一次自动还原的机会。") {
+    $p = Start-Process powershell.exe -Wait -PassThru -ArgumentList @(
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$engine`"", '-Restore')
+    $restoreDone = ($p -and $p.ExitCode -eq 0)
+  }
 }
-# DFB_INSTALL_SILENT=1 供自动化验证：不弹框、按「保留备份」的安全默认走
-$silent = ($env:DFB_INSTALL_SILENT -eq '1')
+# ② 计划任务无条件清理（存在才删，不存在不报错）：无论保不保留备份都必须做，
+#    否则它以 SYSTEM 身份每分钟重设电源方案，卸载后再无程序入口能停掉它
+$taskRemoved = $null
+& schtasks /Query /TN DeltaForceBooster-PowerPlanLock 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+  & schtasks /Delete /TN DeltaForceBooster-PowerPlanLock /F 2>&1 | Out-Null
+  $taskRemoved = ($LASTEXITCODE -eq 0)
+}
+# ③ 是否保留备份：保留时 scripts\ 必须一起留，光留一堆 JSON 没有任何程序能读
 $keep = $true
 if (-not $silent) {
-  $r = [Windows.Forms.MessageBox]::Show(
-    "是否保留优化备份（backup 目录）？`n`n还没「还原设置」过系统改动的话，请选「是」。",
-    'DeltaForceBooster 卸载', 'YesNo', 'Question')
-  $keep = ($r -ne 'No')
+  $keep = Ask-YesNo "是否保留优化备份？`n`n选「是」会同时保留 backup 与 scripts 两个目录，之后仍可用还原脚本回退系统改动。"
 }
 foreach ($m in $menuDirs) { if (Test-Path $m) { Remove-Item $m -Recurse -Force } }
 foreach ($d in $deskDirs) {
@@ -97,12 +142,26 @@ foreach ($d in $deskDirs) {
 }
 if (Test-Path $dest) {
   if ($keep) {
-    Get-ChildItem $dest -Force | Where-Object { $_.Name -ne 'backup' } | Remove-Item -Recurse -Force
+    Get-ChildItem $dest -Force | Where-Object { @('backup', 'scripts') -notcontains $_.Name } |
+      Remove-Item -Recurse -Force
   } else {
     Remove-Item $dest -Recurse -Force
   }
 }
-if (-not $silent) { [Windows.Forms.MessageBox]::Show('卸载完成。', 'DeltaForceBooster', 'OK', 'Information') | Out-Null }
+# ④ 完成提示如实交代：还原没还原、任务删没删、系统里还剩什么、之后怎么还原
+$sum = @('卸载完成。', '')
+$sum += $(if ($restoreDone -eq $true) { '· 系统改动已按备份还原。' }
+          elseif ($restoreDone -eq $false) { '· 还原未成功完成，部分系统改动可能仍留在系统里。' }
+          elseif ($hasBackup) { '· 未执行还原：电源方案、休眠、系统服务等已做过的改动仍留在系统里。' }
+          else { '· 未发现备份记录，未执行还原。' })
+if ($taskRemoved -eq $true) { $sum += '· 电源方案锁定计划任务已删除。' }
+elseif ($taskRemoved -eq $false) { $sum += '· 电源方案锁定计划任务删除失败，请在「任务计划程序」中手动删除 DeltaForceBooster-PowerPlanLock。' }
+if ($keep) {
+  $sum += '· 已保留备份与还原脚本，之后仍可还原：'
+  $sum += "  powershell -ExecutionPolicy Bypass -File `"$dest\scripts\delta-booster.ps1`" -Restore"
+}
+if ($testMode) { Write-Output ($sum -join "`n") }
+elseif (-not $silent) { [Windows.Forms.MessageBox]::Show(($sum -join "`n"), 'DeltaForceBooster', 'OK', 'Information') | Out-Null }
 '@
 $uninstallBat = @"
 @echo off

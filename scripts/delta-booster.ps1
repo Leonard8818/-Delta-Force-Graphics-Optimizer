@@ -1,7 +1,16 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.13
+  DeltaForceBooster 核心脚本 — v0.15
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.15：修复备份污染与还原语义：所有写入类操作（reg/pcfg/mmagent/kvstr/hib/bcd/power）
+        已达标就跳过、不写不备份（重复 Apply 不再把上一轮写入的目标值记成「原值」）；
+        -Restore 默认合并全部尚未消费的备份（新→旧，同一设置取最早原值），全部成功后
+        给备份打 .restored 后缀防重复消费，显式 -BackupFile 仍只还原一份；还原电源计划
+        改走 Invoke-SchemeActivate 回读校验，失败如实计入 Failed；pcfg/mmagent/hib/bcd
+        还原前统一查管理员；Save-UserPreset 拒绝 Windows 保留设备名。
+  v0.14：备份改为边执行边落盘：开工前先试写 backup-*.pending.json（写不进直接中止、
+        不做任何修改），每记录一条备份立即重写，全部完成后原子改名为正式备份；
+        中途断电/被杀留下的 pending 备份可被 -Restore 正常识别并还原（还原时明确提示来源）。
   v0.13：新增 risky 项 gpu-name-spoof（改独显上报型号，默认不勾、不进任何预设）；
         新增 Get-GpuPanelApps（显卡控制面板安装检测，供界面决定是否显示入口按钮）；
         显卡指引只保留驱动层内容（游戏内那部分已有独立页）。
@@ -1020,6 +1029,9 @@ function Save-UserPreset([string]$Name, [string[]]$ItemIds) {
   if (-not $Name) { throw '方案名不能为空' }
   $safe = ($Name -replace '[\\/:*?"<>|]', '_').Trim()
   if (-not $safe) { throw '方案名无效' }
+  # Windows 保留设备名（含带扩展名形态）做文件名时写入「成功」但永远读不出也删不掉，
+  # 必须在落盘前拒绝
+  if ($safe -match '^(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') { throw "方案名不能使用 Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）：$Name" }
   if (@(Get-BuiltinPresets | Where-Object { $_.Id -eq $safe -or $_.Name -eq $Name }).Count -gt 0) {
     throw "「$Name」与内置方案同名，请换一个名字"
   }
@@ -1215,6 +1227,12 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
         $newVal = $oldVal
         if ($newVal -notmatch 'DISABLEDXMAXIMIZEDWINDOWEDMODE') { $newVal = "$newVal DISABLEDXMAXIMIZEDWINDOWEDMODE" }
       }
+      # 已达标就不写不备份：重复 Apply 时照旧备份会把上一轮写入的目标值记成「原值」，
+      # 还原就回不到真正的优化前状态。值与类型都要相等（byte[]/string[] 经 "$()" 展开
+      # 后两侧同构可直接比对）；fso-off 合并写入后 flag 已在则 newVal 与 oldVal 相同，天然覆盖
+      if ($null -ne $oldKind -and "$oldKind" -eq "$($Op.Kind2)" -and "$oldVal" -eq "$newVal") {
+        return "无需修改：$(if ($Op.Label) { $Op.Label } else { $Op.Name }) 已是目标状态"
+      }
       Set-RegValue $Op.Path $Op.Name $newVal $Op.Kind2
       $BackupOps.Value += @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
                              Existed = ($null -ne $oldKind); OldValue = $oldVal; OldKind = "$oldKind" }
@@ -1230,6 +1248,11 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       # 方案不在 DefaultPowerSchemeValues 表里，连回落值都没有）。当前值只服务于备份，
       # 备份记 Existed=$false 即可，绝不能因为读不到就拒绝写入
       $old = Get-PowerSettingAcExplicit $act.Guid $Op.Sub $Op.Setting
+      # 已达标（显式值或继承的默认值已等于目标）就整段跳过——不解隐藏、不写入、不备份。
+      # 否则重复 Apply 会把上一轮写入的目标值备份成「原值」；且游戏切走活动方案后本项
+      # 会重新显示「待优化」，用户再点执行时也靠这道判断挡住污染
+      $eff = Get-PowerSettingAc $Op.Sub $Op.Setting
+      if ($null -ne $eff -and [int]$eff -eq [int]$Op.Value) { return "无需修改：$($Op.Label) 已是目标状态" }
       # 隐藏项必须先解除隐藏才能写入；原 Attributes 按普通注册表值备份，还原时自动改回
       $oldAttr = Show-PowerSetting $Op.Sub $Op.Setting
       if ($null -ne $oldAttr) {
@@ -1244,6 +1267,8 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
     'mmagent' {
       $old = Get-MMAgentState $Op.Feature
       if ($null -eq $old) { throw "无法读取 $($Op.Label) 当前状态" }
+      # 已是关闭态就跳过：再备份会把「已被上一轮关掉」记成原状态，还原时开不回去
+      if (-not $old) { return "无需修改：$($Op.Label) 已是目标状态" }
       Set-MMAgentState $Op.Feature $false
       $BackupOps.Value += @{ Kind = 'mmagent'; Feature = $Op.Feature; OldEnabled = $old }
     }
@@ -1251,18 +1276,24 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       # 整串备份、只改目标子键：这个值里还住着 AutoHDREnable 等别人的设置，整串覆盖会误伤
       $oldKind = Get-RegValueKind $Op.Path $Op.Name
       $oldRaw  = $(if ($null -ne $oldKind) { Get-RegValue $Op.Path $Op.Name } else { $null })
+      # 只比目标子键：整串里其余键值是别人的设置，不影响本项是否已达标
+      if ("$(Get-KvStringItem $oldRaw $Op.Key)" -eq "$($Op.Value)") { return "无需修改：$($Op.Label) 已是目标状态" }
       Set-RegValue $Op.Path $Op.Name (Set-KvStringItem $oldRaw $Op.Key $Op.Value) 'String'
       $BackupOps.Value += @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
                              Existed = ($null -ne $oldKind); OldValue = $oldRaw; OldKind = "$oldKind" }
     }
     'hib' {
       $old = Get-HibernateState
+      # 已关闭就跳过：再备份会把 OldEnabled 记成 $false，还原时休眠开不回去
+      if (-not $old) { return "无需修改：$($Op.Label) 已是目标状态" }
       Set-HibernateEnabled $false
       $BackupOps.Value += @{ Kind = 'hib'; OldEnabled = [bool]$old }
     }
     'bcd' {
       $old = Get-BcdValue $Op.Name
       if ($null -eq $old) { throw "无法读取引导配置（需要管理员权限）：$($Op.Label)" }
+      # 已达标就跳过（bcdedit 取值大小写不敏感）：避免把目标值当原值备份
+      if ("$old" -ieq "$($Op.Value)") { return "无需修改：$($Op.Label) 已是目标状态" }
       Set-BcdEntryValue $Op.Name $Op.Value
       # OldValue='absent' 表示原本未设置，还原时删除该值而不是写回字符串
       $BackupOps.Value += @{ Kind = 'bcd'; Name = $Op.Name; OldValue = $old }
@@ -1319,20 +1350,55 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   }
 
   $backupOps = @(); $results = @()
+
+  # 备份边执行边落盘：先写 *.pending.json、全部完成后原子改名为正式备份，中途断电/被杀
+  # 也能留下可还原的备份文件。开工前必须先试写一次——备份目录写不进去（OneDrive 同步锁、
+  # 只读、磁盘满）就直接中止，绝不能在「存不下备份」的状态下改系统
+  $applyTime = Get-Date
+  $pendingFile = Join-Path $script:BackupDir ("backup-{0:yyyyMMdd-HHmmss}.pending.json" -f $applyTime)
+  try {
+    if (-not (Test-Path -LiteralPath $script:BackupDir)) { New-Item -ItemType Directory -Path $script:BackupDir -Force | Out-Null }
+    @{ Time = $applyTime.ToString('s'); Ops = @() } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $pendingFile -Encoding UTF8
+  } catch {
+    throw "备份目录不可写（$script:BackupDir），已中止执行，未做任何修改。请先解除目录占用（OneDrive 同步、只读属性、磁盘空间）再重试。原因：$($_.Exception.Message)"
+  }
+  # 每记录一条备份就整文件重写 pending（备份体量小，重写代价可忽略）；写失败只记录不抛出，
+  # 由主循环立即止步——继续执行只会积累更多「改了但没记下」的项。用 . 号调用在当前作用域执行
+  $persisted = 0; $persistErr = $null
+  $persistBackup = {
+    if (-not $persistErr -and $backupOps.Count -gt $persisted) {
+      try {
+        @{ Time = $applyTime.ToString('s'); Ops = $backupOps } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $pendingFile -Encoding UTF8
+        $persisted = $backupOps.Count
+      } catch { $persistErr = $_.Exception.Message }
+    }
+  }
+
   $total = $sel.Count; $seq = 0
   foreach ($it in $sel) {
+    # 备份落不了盘就立即停手：后续改动将无法回滚
+    if ($persistErr) { break }
     $seq++
-    if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = $it.Name; Result = $null }) }
+    # 进度回调来自调用方（GUI），必须包进保护：回调抛异常不能把整轮执行拖死在半路
+    if ($Progress) { try { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = $it.Name; Result = $null }) } catch {} }
     try {
       if ($it.Kind -eq 'power') {
-        $old = (Get-ActiveScheme).Guid
-        $ps = Enable-UltimateScheme
-        # ToolCreated 进备份：还原逻辑据此区分「原本就存在的方案」与「本工具新建的方案」
-        $backupOps += @{ Kind = 'power'; Old = $old; ToolCreated = [bool]$ps.Created; NewGuid = $ps.Guid }
-        $msg = $(if ($ps.Created) { "已创建「$script:ToolSchemeName」并激活（还原后该方案会保留，可手动删除）" }
-                 else { '已切换到卓越性能方案' })
-        if ($ps.Note) { $msg += "；$($ps.Note)" }
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = $msg }
+        # 已是卓越性能类方案就不再切换也不备份（判定口径与 Get-ItemState 一致）：
+        # 否则重复执行会把「卓越性能」当原方案记进备份，还原时切不回真正的原方案
+        $act = Get-ActiveScheme
+        $toolGuid = Get-ToolSchemeGuid
+        if ($act -and ($act.Guid -eq $script:UltimateGuid -or ($toolGuid -and $act.Guid -eq $toolGuid) -or $act.Name -match '卓越|Ultimate')) {
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = "当前已是「$($act.Name)」，无需切换" }
+        } else {
+          $old = $act.Guid
+          $ps = Enable-UltimateScheme
+          # ToolCreated 进备份：还原逻辑据此区分「原本就存在的方案」与「本工具新建的方案」
+          $backupOps += @{ Kind = 'power'; Old = $old; ToolCreated = [bool]$ps.Created; NewGuid = $ps.Guid }
+          $msg = $(if ($ps.Created) { "已创建「$script:ToolSchemeName」并激活（还原后该方案会保留，可手动删除）" }
+                   else { '已切换到卓越性能方案' })
+          if ($ps.Note) { $msg += "；$($ps.Note)" }
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = $msg }
+        }
       }
       elseif ($it.Kind -eq 'sched') {
         $guid = (Get-ActiveScheme).Guid
@@ -1363,6 +1429,7 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
           # 不再拖垮整项，其余子操作照常执行，失败的逐条记录进结果
           $notes = @(); $errs = @()
           foreach ($op in $it.Ops) {
+            if ($persistErr) { break }
             try {
               $n = Invoke-ApplyOp $op $it.Id ([ref]$backupOps)
               if ($n) { $notes += $n }
@@ -1370,6 +1437,8 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
               $opLabel = $(if ($op.Label) { $op.Label } elseif ($op.Name) { $op.Name } else { $op.Kind })
               $errs += "$opLabel：$($_.Exception.Message)"
             }
+            # 每条子操作产生的备份立即落盘：断电/被杀最多丢最后一条记录
+            . $persistBackup
           }
           if ($errs.Count -eq 0) {
             $msg = $(if ($notes.Count -gt 0) { "已写入（$($notes -join '；')）" } else { '已写入' })
@@ -1386,7 +1455,9 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
     } catch {
       $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false; Msg = "失败：$($_.Exception.Message)" }
     }
-    if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = $it.Name; Result = $results[-1] }) }
+    # 兜底落盘：power/sched 等直接往 $backupOps 里加记录的分支也在每项结束时持久化
+    . $persistBackup
+    if ($Progress) { try { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = $it.Name; Result = $results[-1] }) } catch {} }
   }
 
   # 结构化标注「哪些成功项要等重启」：GUI 的重启提醒弹窗、CLI 的收尾文案都以此为准。
@@ -1396,13 +1467,29 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
     $x | Add-Member -NotePropertyName Reboot -NotePropertyValue ([bool]($x.Ok -and -not $x.Skipped -and -not $x.Attention -and ($rebootIds -contains $x.Id)))
   }
 
+  # 收尾三分支：正常完成→pending 原子改名为正式备份；中途写盘失败→保住已持久化的部分并
+  # 如实上报；全程没有产生备份（纯检测/全部跳过）→清掉预写的空壳文件
   $bf = $null
-  if ($backupOps.Count -gt 0) {
-    if (-not (Test-Path -LiteralPath $script:BackupDir)) { New-Item -ItemType Directory -Path $script:BackupDir | Out-Null }
-    $bf = Join-Path $script:BackupDir ("backup-{0:yyyyMMdd-HHmmss}.json" -f (Get-Date))
-    @{ Time = (Get-Date).ToString('s'); Ops = $backupOps } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $bf -Encoding UTF8
+  if ($persistErr) {
+    if ($persisted -gt 0) { $bf = $pendingFile }
+    else { Remove-Item -LiteralPath $pendingFile -Force -ErrorAction SilentlyContinue }
+  } elseif ($backupOps.Count -gt 0) {
+    $bf = $pendingFile -replace '\.pending\.json$', '.json'
+    # 改名失败不丢数据：还原逻辑同样识别 pending 文件，退回用它即可
+    try { [IO.File]::Move($pendingFile, $bf) } catch { $bf = $pendingFile }
+  } else {
+    Remove-Item -LiteralPath $pendingFile -Force -ErrorAction SilentlyContinue
   }
-  [pscustomobject]@{ Results = $results; Backup = $bf }
+  # 备份写盘失败时列出「已生效但备份可能没记全」的项名（排除跳过/纯检测项）：
+  # 这是用户手动还原的唯一线索，调用方（GUI/CLI）必须用最醒目的方式呈现
+  $unrecorded = @()
+  if ($persistErr) {
+    $unrecorded = @($results | Where-Object {
+      -not $_.Skipped -and -not $_.Attention -and $_.Msg -notlike '纯检测：*' -and
+      ($_.Ok -or $_.Msg -like '部分子项写入失败*')
+    } | ForEach-Object { $_.Name })
+  }
+  [pscustomobject]@{ Results = $results; Backup = $bf; BackupError = $persistErr; UnrecordedNames = $unrecorded }
 }
 
 # $Progress 为可选进度回调（与 Invoke-Apply 同一约定：不传时行为与旧版完全一致，
@@ -1423,23 +1510,76 @@ function Get-RestoreOpLabel($op) {
   }
 }
 
-function Invoke-Restore([string]$File, [scriptblock]$Progress) {
-  if (-not $File) {
-    $File = Get-ChildItem $script:BackupDir -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue |
-      Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+# 备份操作的去重键：同一目标在多份备份里都出现时，只有最早那份的 OldValue 是真正的
+# 优化前原值（后来那些可能记到的是已被本工具改过的值），合并还原据此只保留最早一条
+function Get-RestoreOpKey($op) {
+  switch ($op.Kind) {
+    'reg'     { "reg|$($op.Path)|$($op.Name)" }
+    'pcfg'    { "pcfg|$($op.SchemeGuid)|$($op.Sub)|$($op.Setting)" }
+    'mmagent' { "mmagent|$($op.Feature)" }
+    'bcd'     { "bcd|$($op.Name)" }
+    'hib'     { 'hib' }
+    'power'   { 'power' }
+    'sched'   { "sched|$($op.TaskName)" }
+    'file'    { "file|$($op.Path)" }
+    default   { $null }   # 未知类型不去重，逐条走还原并如实报错
   }
-  if (-not $File) { throw '未找到任何备份文件，无法还原' }
-  $b = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json
-  $ops = @($b.Ops); [array]::Reverse($ops)
-  $restored = 0; $failed = @(); $skippedOps = @(); $restoreNotes = @(); $seq = 0; $total = $ops.Count
+}
+
+function Invoke-Restore([string]$File, [scriptblock]$Progress) {
+  # 默认合并所有尚未消费过的备份：分多次执行优化会产生多份备份，只回退最新一份会把
+  # 更早那次的改动原封留在系统里，而界面却宣布「已回到优化前」。显式传 -BackupFile
+  # 仍只还原那一份（专家操作，CLI 契约不变）。全部成功后给备份文件打 .restored 后缀，
+  # 下次还原不再消费，避免把早已还原过的旧值再写回系统、覆盖用户此后的手动调整
+  $files = @()
+  if ($File) { $files = @($File) }
+  else {
+    $files = @(Get-ChildItem $script:BackupDir -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue |
+      Sort-Object Name -Descending | Select-Object -ExpandProperty FullName)
+  }
+  if ($files.Count -eq 0) { throw '未找到任何备份文件，无法还原' }
+  $restoreNotes = @()
+  # 按「新→旧」展开成一张操作表（每份内部仍逆序执行）
+  $flat = New-Object System.Collections.Generic.List[object]
+  foreach ($f in $files) {
+    $b = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
+    $cur = @($b.Ops); [array]::Reverse($cur)
+    foreach ($o in $cur) { [void]$flat.Add($o) }
+    # *.pending.json = 某次执行中途异常退出（断电/被杀/备份目录中途写失败）实时保留的备份：
+    # 内容有效、正常还原，但必须让用户知道它的来源——那次执行没有跑完
+    if ($f -like '*.pending.json') {
+      $restoreNotes += "备份「$(Split-Path -Leaf $f)」来自一次未完成的执行（中途异常退出时自动保留），已按其中已记录的改动还原"
+    }
+  }
+  # 同一目标只保留最后出现的那条：列表按新→旧排列，最后出现的正是最早备份里的记录
+  $lastIdx = @{}
+  for ($i = 0; $i -lt $flat.Count; $i++) {
+    $k = Get-RestoreOpKey $flat[$i]
+    if ($k) { $lastIdx[$k] = $i }
+  }
+  $ops = @()
+  for ($i = 0; $i -lt $flat.Count; $i++) {
+    $k = Get-RestoreOpKey $flat[$i]
+    if (-not $k -or $lastIdx[$k] -eq $i) { $ops += $flat[$i] }
+  }
+  $restored = 0; $failed = @(); $skippedOps = @(); $seq = 0; $total = $ops.Count
   foreach ($op in $ops) {
     $seq++
     if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $null }) }
     $opOk = $true
     try {
+      # 这些系统级项非管理员必失败：统一先给人话错误，而不是让底层命令各报各的
+      if (@('pcfg', 'mmagent', 'hib', 'bcd') -contains $op.Kind -and -not (Test-Admin)) { throw '需要管理员权限' }
       switch ($op.Kind) {
         'power'   {
-          if ($op.Old) { powercfg /setactive $op.Old | Out-Null; $restored++ }
+          # 复用 Apply 方向的 Invoke-SchemeActivate：powercfg /setactive 失败只写 stderr
+          # 不抛终止错误（实机踩过被静默当成成功），必须回读确认，失败如实计入 Failed
+          if ($op.Old) {
+            if (-not (Invoke-SchemeActivate "$($op.Old)")) {
+              throw "切回原电源方案失败$(if ($script:LastActivateOut) { "（powercfg 原话：$script:LastActivateOut）" } else { '' })"
+            }
+            $restored++
+          }
           # 工具自建的方案保留不删：用户可能已经在用它，静默删除是破坏性动作
           if ($op.ToolCreated) {
             $restoreNotes += "工具创建的电源计划「$script:ToolSchemeName」已保留，如不需要可在控制面板→电源选项里手动删除"
@@ -1508,7 +1648,17 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
     }
     if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $opOk }) }
   }
-  [pscustomobject]@{ File = $File; RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes }
+  # 全部成功才给消费过的备份打 .restored 后缀（不再匹配 backup-*.json）；有失败保留原名，
+  # 修复权限后可整体重试（重写旧值幂等无害）。改名失败不算还原失败，但必须提示：
+  # 不标记的话下次还原会把这些旧值再写回系统
+  if (@($failed).Count -eq 0) {
+    foreach ($f in $files) {
+      try { Rename-Item -LiteralPath $f -NewName ((Split-Path -Leaf $f) + '.restored') -ErrorAction Stop }
+      catch { $restoreNotes += "备份「$(Split-Path -Leaf $f)」已还原但标记失败（$($_.Exception.Message)），下次还原前请手动将其移出 backup 目录" }
+    }
+  }
+  [pscustomobject]@{ File = $files[0]; Files = $files; MergedCount = @($files).Count
+                     RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes }
 }
 
 # ---------- 输出 ----------
@@ -1602,6 +1752,14 @@ elseif ($Apply) {
     $failN = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention }).Count
     Write-Output "执行完成：共 $(@($r.Results).Count) 项 — $okN 成功、$failN 失败、$skipN 跳过$(if ($attN -gt 0) { "、$attN 项体检发现问题" })。"
     if ($r.Backup) { Write-Output "备份已保存：$($r.Backup)（用 -Restore 可一键还原）" }
+    # 备份写盘失败是最高级别的告警：系统已经改了、备份却没记全，必须当场把线索给全
+    if ($r.BackupError) {
+      Write-Output "！！严重警告：备份文件写入失败（$($r.BackupError)），剩余优化项已中止执行。"
+      if (@($r.UnrecordedNames).Count -gt 0) {
+        Write-Output "！！以下已生效的改动可能没有完整的备份记录，如需回退请按项名手动处理：$(@($r.UnrecordedNames) -join '、')"
+      }
+      if ($r.Backup) { Write-Output "！！已抢救出的部分备份：$($r.Backup)（-Restore 可还原其中已记录的部分）" }
+    }
     $rebootList = @($r.Results | Where-Object { $_.Reboot })
     if ($rebootList.Count -gt 0) {
       Write-Output "提示：以下 $($rebootList.Count) 个成功项需重启电脑后完全生效——$(@($rebootList | ForEach-Object { $_.Name }) -join '、')。"
@@ -1612,7 +1770,8 @@ elseif ($Restore) {
   $r = Invoke-Restore $BackupFile
   if ($Json) { $r | ConvertTo-Json -Depth 4 }
   else {
-    Write-Output "已按备份还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
+    if ($r.MergedCount -gt 1) { Write-Output "已合并 $($r.MergedCount) 份备份，共还原 $($r.RestoredOps) 项改动（同一设置以最早备份的原值为准）" }
+    else { Write-Output "已按备份还原 $($r.RestoredOps) 项改动（备份：$($r.File)）" }
     foreach ($f in $r.Failed) { Write-Output "  [还原失败] $f" }
     foreach ($s in $r.Skipped) { Write-Output "  [还原跳过] $s" }
     foreach ($n in $r.Notes) { Write-Output "  [提示] $n" }

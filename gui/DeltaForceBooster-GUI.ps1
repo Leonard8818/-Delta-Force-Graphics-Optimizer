@@ -1,9 +1,14 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.15
+  DeltaForceBooster 图形界面 — v0.16
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.16：①主窗口 Closing 忙碌守卫（WM_CLOSE/Alt+F4 不再能中断执行中的优化/还原）；
+        ②配合引擎的实时备份：备份写盘失败时日志+弹窗双通道警告并给出手动还原线索；
+        ③危险区域勾选真正生效——此前勾了也不执行、不提示；现在有独立的高风险二次
+        确认（逐项列名称与风险说明），确认后才带 AllowRisky 执行，自存方案里的
+        risky 项也因此在 GUI 里走得通。
   v0.15：①首次启动的免责声明门控（滚到底才能同意，同意状态与声明版本号存 config\，
         版本号 +1 即可让所有人重新确认）；②「上传诊断报告」：报告本地组装 + 脱敏后
         经用户确认才上传，返回取件码；③更新一键完成——校验通过直接静默安装并自启新版，
@@ -32,7 +37,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.15'
+$script:GuiVersion = '0.16'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -400,7 +405,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.15 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.16 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -730,7 +735,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.15 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.16 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1973,7 +1978,7 @@ function Set-LogBadge([int]$Count) {
 }
 
 function Set-BusyState([bool]$On) {
-  # 执行期间禁用一切入口防重复点击；窗口关闭在 CloseBtn 处单独拦截
+  # 执行期间禁用一切入口防重复点击；窗口关闭由 CloseBtn 与主窗口 Closing 双重拦截
   $script:Busy = $On
   foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','ReportBtn','BrowseBtn',
                  'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn','UpdateBtn') {
@@ -2834,7 +2839,15 @@ $ui.UpdateBtn.Add_Click({
   # 用户在详情框里勾了「不再提醒此版本」就把入口收起，和跳过语义保持一致
   if (Show-UpdateDialog $script:UpdateInfo) { $ui.UpdateBtn.Visibility = 'Collapsed' }
 })
-# 执行中途关窗会让备份文件写不出来（备份在全部执行完才落盘），必须拦下
+# 忙碌关窗守卫（真正的防线在 Closing 上）：CloseBtn 只拦自绘按钮，外部程序发的
+# WM_CLOSE（如安装器 CloseMainWindow）和 Alt+F4 都不经过它——执行/还原中途被关会
+# 留下写了一半的系统改动，必须在 Closing 事件里统一拦截
+$window.Add_Closing({
+  if ($script:Busy) {
+    $_.Cancel = $true
+    Write-Log '正在执行优化/还原，请等本轮结束后再关闭。'
+  }
+})
 $ui.CloseBtn.Add_Click({
   if ($script:Busy) { Write-Log '正在执行优化，请等本轮执行结束后再关闭。'; return }
   $window.Close()
@@ -3005,8 +3018,26 @@ $ui.ApplyBtn.Add_Click({
   try {
     $ids = @($ui.ItemPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
              ForEach-Object { $_.Child.Children[0].Tag })
-    if ($ids.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
-    $names = @(Get-OptItems $script:TargetExe | Where-Object { $ids -contains $_.Id } | ForEach-Object { $_.Name })
+    # 危险区域的勾选此前被整个忽略（勾了也不执行、不提示）：单独收集，走独立的
+    # 高风险二次确认，确认后才带 AllowRisky 交给引擎
+    $riskyIds = @($ui.RiskyPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
+                  ForEach-Object { $_.Child.Children[0].Tag })
+    if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
+    $optAll = @(Get-OptItems $script:TargetExe)
+    if ($riskyIds.Count -gt 0) {
+      $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
+      $rmsg = "以下 $($riskySel.Count) 项属于高风险改动，可能有副作用或降低系统安全性：`n`n" +
+              (@($riskySel | ForEach-Object { "· $($_.Name)`n  $(if ($_.Warn) { $_.Warn } else { $_.Note })" }) -join "`n`n") +
+              "`n`n确认后这些项将与其余勾选项一起执行（改动前自动备份，可一键还原）。"
+      if (Show-ConfirmDialog '高风险确认' 'RISKY CONFIRM' $rmsg '确认执行高风险项') {
+        $ids = @($ids + $riskyIds)
+      } else {
+        Write-Log "已取消 $($riskyIds.Count) 个高风险项，本次不执行它们。"
+        $riskyIds = @()
+        if ($ids.Count -eq 0) { Write-Log '取消高风险项后没有剩余可执行项。'; return }
+      }
+    }
+    $names = @($optAll | Where-Object { $ids -contains $_.Id } | ForEach-Object { $_.Name })
     $msg = "将执行以下 $($ids.Count) 项优化（改动前自动备份，可一键还原）：`n`n" +
            (@($names | ForEach-Object { "· $_" }) -join "`n")
     if (-not (Show-ConfirmDialog '确认执行' 'CONFIRM APPLY' $msg '执行优化')) { return }
@@ -3017,7 +3048,8 @@ $ui.ApplyBtn.Add_Click({
     $ui.ProgCount.Text = ''
     Write-Log "开始执行 $($ids.Count) 项优化…"
     # 进度回调逐项刷新界面并实时落日志，不再等全部跑完才一次性输出
-    $r = Invoke-Apply $ids $script:TargetExe $false ${function:Update-ApplyProgress}
+    # AllowRisky 只在用户刚通过高风险二次确认时才为真，绝不默认放行
+    $r = Invoke-Apply $ids $script:TargetExe ($riskyIds.Count -gt 0) ${function:Update-ApplyProgress}
     $okN = @($r.Results | Where-Object Ok).Count
     $attList = @($r.Results | Where-Object Attention)
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
@@ -3029,6 +3061,19 @@ $ui.ApplyBtn.Add_Click({
     $ui.ProgText.Text = "执行完成：$okN 成功 / $($failList.Count) 失败 / $($skipList.Count) 跳过$att"
     $ui.ProgCount.Text = "共 $total 项"
     if ($r.Backup) { Write-Log "备份已保存：$($r.Backup)" }
+    # 备份写盘失败 = 「系统改了、凭据没记全」，比任何一项优化失败都严重：
+    # 日志 + 弹窗双通道警告，并把已生效项名和抢救出的部分备份当场给到用户
+    if ($r.BackupError) {
+      $lost = @($r.UnrecordedNames)
+      Write-Log "！！严重：备份文件写入失败（$($r.BackupError)），剩余优化项已中止执行。"
+      if ($lost.Count -gt 0) { Write-Log "！！以下已生效的改动可能没有完整的备份记录：$($lost -join '、')" }
+      $warn = "备份文件写入失败，本轮执行已中止。`n`n以下改动已经生效、但可能没有完整的备份记录：`n" +
+              $(if ($lost.Count -gt 0) { @($lost | ForEach-Object { "· $_" }) -join "`n" } else { '（无）' }) +
+              "`n`n失败原因：$($r.BackupError)" +
+              $(if ($r.Backup) { "`n`n已抢救出部分备份：$(Split-Path -Leaf $r.Backup)，「还原设置」可还原其中已记录的部分。" }) +
+              "`n`n其余项如需回退，请按上面的项名手动处理，或点「上传诊断报告」联系开发者。"
+      Show-ConfirmDialog '备份写入失败' 'BACKUP WRITE FAILED' $warn '我已知晓' -InfoOnly | Out-Null
+    }
     Write-Log "执行完成：共 $total 项 — $okN 成功、$($failList.Count) 失败、$($skipList.Count) 跳过$(if ($attList.Count -gt 0) { "、$($attList.Count) 项体检发现问题" })。"
     # 日志在另一页了：有失败/体检问题就给标签打角标，提示那边有内容值得看
     Set-LogBadge ($failList.Count + $attList.Count)
@@ -3086,10 +3131,11 @@ $ui.RestoreBtn.Add_Click({
     foreach ($s in $r.Skipped) { Write-Log "[还原跳过] $s" }
     foreach ($n in $r.Notes) { Write-Log "[提示] $n" }
     Update-ItemList
-    # 成功与否都要有明确收尾：全成给定心丸，有失败的把数量点出来引导看日志
-    $sum = "已按备份「$bakName」还原 $($r.RestoredOps) 项改动。" +
+    # 成功与否都要有明确收尾：全成给定心丸，有失败的把数量点出来引导看日志。
+    # 引擎已合并还原全部未消费备份，「回到优化前」只在零失败时才是事实，失败时必须如实说
+    $sum = "已按$(if ($r.MergedCount -gt 1) { "合并的 $($r.MergedCount) 份备份" } else { "备份「$bakName」" })还原 $($r.RestoredOps) 项改动。" +
            $(if ($skipN -gt 0) { "`n`n$skipN 项跳过：工具自建电源方案里的残留设置，该方案已停用，无实际影响。" }) +
-           $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，明细见运行日志。" }
+           $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，对应改动仍留在系统中（备份已保留，可排查后重试还原），明细见运行日志。" }
              elseif ($skipN -gt 0) { "`n`n其余全部还原成功，各项已回到优化前的状态。" }
              else { "`n`n全部还原成功，各项已回到优化前的状态。" })
     Show-ConfirmDialog '还原完成' 'RESTORE DONE' $sum '知道了' -InfoOnly | Out-Null

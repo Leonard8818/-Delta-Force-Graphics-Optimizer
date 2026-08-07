@@ -18,12 +18,14 @@
 // 完成页默认勾选「创建桌面快捷方式」与「创建开始菜单快捷方式」（后者原先无条件创建，
 // 现同样交给勾选项控制），静默模式两者都创建。
 // 更新场景防双开（实机反馈）：旧版主程序可能没退干净，完成页勾了「立即运行」时先按
-// 主窗口标题精确匹配关掉旧实例再启动新的——绝不按进程名无差别杀 powershell。
+// 主窗口标题精确匹配礼貌请求旧实例关闭（WM_CLOSE）——绝不 Kill：旧实例可能正在执行
+// 优化/还原，强杀等于把系统改到一半且备份写不完整。拒绝退出就放弃自动启动并明示用户。
 //
 // 命令行（全部供自动化验证，普通用户双击即图形向导）：
 //   /dir=<路径>        预填安装位置（提权重启时回传用）
 //   /silent /log=<文件> 静默安装（一键更新与沙箱验证共用，读 LOCALAPPDATA/APPDATA 环境变量以便重定向）
-//   /waitpid=<进程Id>  静默安装前先等该进程退出（主程序占着自己的文件，不退就覆盖不了）
+//   /waitpid=<进程Id>  静默安装前先等该进程退出（主程序占着自己的文件；等待超时视为
+//                      「可能正在执行优化」，直接取消本次更新，绝不带伤覆盖）
 //   /runafter          静默安装完成后启动新版主程序；失败时弹框报错，绝不假装成功
 //   /checkdir=<路径>   只跑写入权限预检，结果写 /log 文件
 //   /render=<目录>     离屏渲染各页面为 PNG + 导出界面字符串（不弹窗，验证视觉与中文编码）
@@ -89,16 +91,29 @@ static class Program {
     // 否则用户看着窗口关掉、新版没起来，完全不知道发生了什么
     static int RunSilent(string dir, string logFile, int waitPid, bool runAfter) {
         string dest = null;
+        bool installStarted = false;   // Install 一旦动手就可能部分覆盖，失败文案必须据此说实话
         try {
             dest = string.IsNullOrEmpty(dir) ? Installer.DefaultDir() : dir;
             Log(logFile, "安装目标: " + dest);
-            if (waitPid > 0) Log(logFile, "等待旧进程退出(" + waitPid + "): " + WaitForPid(waitPid));
+            if (waitPid > 0) {
+                string waitDetail;
+                bool exited = WaitForPid(waitPid, out waitDetail);
+                Log(logFile, "等待旧进程退出(" + waitPid + "): " + waitDetail);
+                // 超时 = 旧版可能正在执行优化：此时覆盖文件等于打断一次系统级改动，
+                // 宁可取消本次更新——原版本一个字节都没动，用户随时可以重来
+                if (!exited) {
+                    Log(logFile, "更新已取消：旧版主程序未退出（可能正在执行优化）");
+                    if (runAfter) WarnBox("检测到旧版程序仍在运行（可能正在执行优化或还原）。\r\n\r\n本次更新已取消，原来的版本没有被改动。请等待优化完成并关闭程序后，再重新检查更新。");
+                    return 3;
+                }
+            }
             string err = Installer.CheckWritable(dest);
             if (err != null) {
                 Log(logFile, "预检失败: " + err);
-                if (runAfter) FailBox(dest, err == Installer.NeedAdmin ? "目标目录没有写入权限。" : ("目标目录不可写：" + err));
+                if (runAfter) FailBox(dest, err == Installer.NeedAdmin ? "目标目录没有写入权限。" : ("目标目录不可写：" + err), false);
                 return 2;
             }
+            installStarted = true;
             Installer.Install(dest, delegate(int i, int n, string name) {
                 if (i == 1 || i == n || i % 20 == 0) Log(logFile, string.Format("  {0}/{1} {2}", i, n, name));
             });
@@ -110,21 +125,24 @@ static class Program {
             return 0;
         } catch (Exception ex) {
             Log(logFile, "安装失败: " + ex);
-            if (runAfter) FailBox(dest, ex.Message);
+            if (runAfter) FailBox(dest, ex.Message, installStarted);
             return 1;
         }
     }
 
     // 主程序占着自己的文件，不等它退出就覆盖必失败。按 Id 精确等待，绝不按进程名杀 powershell；
-    // 超时不强杀——宁可让下面的覆盖步骤报错，也不冒险打断用户正在跑的优化
-    static string WaitForPid(int pid) {
+    // 超时不强杀也不硬闯：返回 false 让调用方取消本次更新（解包是顺序覆盖，中途报错会
+    // 留下新旧混杂的半套文件，比“更新失败”严重得多）
+    static bool WaitForPid(int pid, out string detail) {
         try {
             var p = Process.GetProcessById(pid);
-            if (p.WaitForExit(30000)) return "已退出";
-            return "等待超时（30 秒），仍继续尝试";
+            if (p.WaitForExit(30000)) { detail = "已退出"; return true; }
+            detail = "等待超时（30 秒）";
+            return false;
         } catch (ArgumentException) {
-            return "进程已不存在";
-        } catch (Exception ex) { return "等待异常: " + ex.Message; }
+            detail = "进程已不存在";
+            return true;
+        } catch (Exception ex) { detail = "等待异常: " + ex.Message; return true; }
     }
 
     static string LaunchInstalled(string dest) {
@@ -135,21 +153,38 @@ static class Program {
             // 参数解析与时序，但绝不能真把主程序拉起来——它会自提权弹 UAC 打断验证
             if (Environment.GetEnvironmentVariable("DFB_TEST_NOLAUNCH") == "1")
                 return "跳过启动（DFB_TEST_NOLAUNCH=1）: " + exe;
-            // 主程序退不干净时的兜底（只按主窗口标题精确匹配），防止新旧窗口并存
-            Installer.CloseRunningBooster();
+            // 主程序退不干净时的兜底（只按主窗口标题精确匹配请求关闭）：旧实例拒绝退出
+            // 多半是正在执行优化——绝不强杀，放弃自动启动并明确告诉用户怎么办
+            if (!Installer.CloseRunningBooster()) {
+                WarnBox("新版本已安装完成，但检测到旧版程序仍在运行（可能正在执行优化或还原）。\r\n\r\n已跳过自动启动。请等待旧版完成并关闭后，再手动打开新版本。");
+                return "旧版程序仍在运行（可能正在执行优化），已跳过自动启动";
+            }
             Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true });
             return "已启动";
         } catch (Exception ex) { return "启动失败: " + ex.Message; }
     }
 
-    static void FailBox(string dest, string reason) {
+    // partialInstall=true 表示解包已经动手：顺序覆盖中途失败会留下新旧混杂的半套文件，
+    // 此时绝不能再说“原来的版本没有被破坏”——那句话只在预检等未动手阶段成立
+    static void FailBox(string dest, string reason, bool partialInstall) {
+        string state = partialInstall
+            ? "安装可能已部分完成：部分文件也许已被新版本覆盖，原程序不一定能正常运行。请重新运行安装程序完成修复"
+            : "原来的版本没有被破坏，可以正常继续使用";
         try {
             WinForms.MessageBox.Show(
                 "更新安装失败：" + reason +
                 "\r\n\r\n安装位置：" + (dest ?? "(未确定)") +
-                "\r\n\r\n原来的版本没有被破坏，可以正常继续使用。请前往 https://df.ltz88.cn/ 下载安装包手动更新。",
+                "\r\n\r\n" + state + "。如需帮助请前往 https://df.ltz88.cn/ 下载安装包手动更新。",
                 "三角洲行动优化助手 · 更新失败",
                 WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
+        } catch (Exception) { }
+    }
+
+    // 与 FailBox 区分：更新被主动取消/部分收尾未完成，不是“失败”，用警告级弹框
+    static void WarnBox(string msg) {
+        try {
+            WinForms.MessageBox.Show(msg, "三角洲行动优化助手 · 更新未完成",
+                WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
         } catch (Exception) { }
     }
 
@@ -328,20 +363,24 @@ static class Installer {
     // 更新场景防双开（实机反馈「更新后新旧两个窗口并存」）：主程序在启动安装器后
     // 理应自退，但退不干净时这里兜底。只按主窗口标题精确匹配本程序的宿主进程——
     // 绝不按进程名杀 powershell（会误伤用户自己跑的其他脚本）。
-    public static void CloseRunningBooster() {
+    // 只发 WM_CLOSE 礼貌请求，绝不 Kill：旧实例可能正在执行优化/还原（其主窗口在忙碌时
+    // 会拒绝 Closing），强杀等于把系统改到一半且备份写不完整。
+    // 返回 false = 有实例拒绝退出，调用方必须放弃自动启动并明确告知用户。
+    public static bool CloseRunningBooster() {
         int self = Process.GetCurrentProcess().Id;
+        bool allClosed = true;
         try {
             foreach (var p in Process.GetProcesses()) {
                 try {
                     if (p.Id == self) continue;
                     string t = p.MainWindowTitle;
                     if (string.IsNullOrEmpty(t) || t != "三角洲行动 · 画面优化助手") continue;
-                    // 先礼后兵：WM_CLOSE 给它机会正常收尾，1.5 秒不退再强杀
                     p.CloseMainWindow();
-                    if (!p.WaitForExit(1500)) p.Kill();
+                    if (!p.WaitForExit(3000)) allClosed = false;
                 } catch (Exception) { }
             }
         } catch (Exception) { }
+        return allClosed;
     }
 
     // 开始菜单 Programs 目录的解析。教训（真机「装完找不到入口」）：安装器虽是 asInvoker，
@@ -1069,16 +1108,22 @@ class SetupWindow : Window {
             try { Installer.CreateDesktopShortcut(_installedDir); } catch (Exception) { }
         }
         if (_runChecked && _installedDir != null) {
-            // 覆盖更新时旧版主程序可能还开着：先关掉旧实例再启动，避免新旧两个窗口并存
-            // （只按主窗口标题精确匹配，不动用户其他 powershell 进程）
-            Installer.CloseRunningBooster();
-            string exe = Path.Combine(_installedDir, "启动优化工具.exe");
-            try {
-                Process.Start(new ProcessStartInfo {
-                    FileName = exe, WorkingDirectory = _installedDir, UseShellExecute = true
-                });
-            } catch (Exception) {
-                // 用户取消了主程序的 UAC：安装本身已完成，不拦着关窗口
+            // 覆盖更新时旧版主程序可能还开着：礼貌请求旧实例关闭再启动，避免新旧窗口并存
+            // （只按主窗口标题精确匹配，不动用户其他 powershell 进程）。拒绝退出多半是
+            // 正在执行优化——绝不强杀，跳过自动启动并明示用户，安装本身已完成
+            if (!Installer.CloseRunningBooster()) {
+                MessageBox.Show(this,
+                    "检测到旧版程序仍在运行（可能正在执行优化或还原），已跳过自动启动。\n\n请等待旧版完成并关闭后，再打开新版本。",
+                    "安装向导", MessageBoxButton.OK, MessageBoxImage.Warning);
+            } else {
+                string exe = Path.Combine(_installedDir, "启动优化工具.exe");
+                try {
+                    Process.Start(new ProcessStartInfo {
+                        FileName = exe, WorkingDirectory = _installedDir, UseShellExecute = true
+                    });
+                } catch (Exception) {
+                    // 用户取消了主程序的 UAC：安装本身已完成，不拦着关窗口
+                }
             }
         }
         Close();

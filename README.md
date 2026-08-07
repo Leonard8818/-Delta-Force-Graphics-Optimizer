@@ -66,17 +66,31 @@
 它会自己完成检测 → 解释每一项在改什么 → **征得你同意** → 执行 → 汇报结果。
 [SKILL.md](SKILL.md) 里写明了红线：未经你明确同意不得执行任何改动，也不得代你同意免责声明。
 
-### 已验证可用
+### 适用的 Agent
+
+判断标准只有一条：**能在你的 Windows 上执行 PowerShell 命令**。SKILL.md 不依赖任何特定工具的专有能力。
+
+国际：
 
 | Agent | 说明 |
 |---|---|
 | [Claude Code](https://claude.com/claude-code) | 也可把仓库放进 `~/.claude/skills/` 注册为常驻技能 |
 | [Codex CLI](https://openai.com/codex) | OpenAI 官方命令行 agent |
-| [Cursor](https://cursor.com) | 在 Agent 模式下贴上面那句即可 |
+| [Cursor](https://cursor.com) | 在 Agent 模式下贴上面那句 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google 官方命令行 agent |
 | [OpenCode](https://github.com/sst/opencode) | 开源，可接任意模型 |
 
-国内的豆包电脑版、通义灵码等只要**能在 Windows 上执行 PowerShell**，同样适用——SKILL.md 不依赖任何特定工具的能力。
+国内：
+
+| Agent | 说明 |
+|---|---|
+| [WorkBuddy](https://www.workbuddy.ai/) | 腾讯的桌面智能体，能操作本地文件与命令，与 CodeBuddy 同一套 Agent 架构 |
+| [CodeBuddy](https://www.codebuddy.cn/) | 腾讯云代码助手，有 CLI 端 |
+| [Trae](https://www.trae.cn/) | 字节，SOLO 智能体模式可自主执行多步任务 |
+| [通义灵码](https://lingma.aliyun.com/) | 阿里，IDE 插件形态 |
+| [文心快码 Comate](https://comate.baidu.com/) | 百度，IDE 插件形态 |
+
+> 表格是按"具备本地命令执行能力"筛的，**我没有在每一个上逐一实测**。IDE 插件形态的工具（通义灵码、文心快码等）不同版本对执行本地命令的支持差异较大，跑不通的话直接用界面点，或者照 [SKILL.md](SKILL.md) 里的命令自己敲。
 
 不带 agent 直接用命令行：
 
