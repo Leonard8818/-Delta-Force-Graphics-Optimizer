@@ -1,10 +1,70 @@
-﻿# DeltaForceBooster — 三角洲行动一键画面优化 v0.15
+<p align="center">
+  <img alt="Delta Force Graphics Optimizer" src="gui/app.ico" width="72">
+</p>
 
-网上那些一步步改 Windows 设置提帧率的教程，这个工具一键做完：
-检测硬件 → 勾选优化项 → 一键应用（自动备份）→ 随时一键还原。
+<h3 align="center">三角洲行动 · 画面优化助手</h3>
 
-> 首次运行需阅读并同意 [免责声明](DISCLAIMER.md)（滚动到底后才能确认）。
-> 本工具为非官方个人项目，与腾讯及《三角洲行动》官方无关，详见 [NOTICE.md](NOTICE.md)。
+<p align="center">
+  把网上那些一步步改设置的帧率教程，做成一次点完、随时能还原
+</p>
+
+<p align="center">
+  <a href="https://df.ltz88.cn/">下载</a> &bull;
+  <a href="DISCLAIMER.md">免责声明</a> &bull;
+  <a href="SKILL.md">给 AI 助手用</a> &bull;
+  <a href="CONTRIBUTING.md">参与贡献</a> &bull;
+  <a href="SECURITY.md">安全</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0A1512" alt="platform">
+  <img src="https://img.shields.io/badge/PowerShell-5.1-0A1512" alt="powershell">
+  <img src="https://img.shields.io/badge/license-MIT-00E884" alt="license">
+  <img src="https://img.shields.io/badge/%E9%9D%9E%E5%AE%98%E6%96%B9%E4%B8%AA%E4%BA%BA%E9%A1%B9%E7%9B%AE-E5C46A" alt="unofficial">
+</p>
+
+---
+
+网上那些"手动改 Windows 设置提帧率"的教程，几十个步骤散在各处，改错了还不知道怎么改回去。这个工具把它们整理成可批量执行、**改动前自动备份、随时一键还原**的形式。
+
+工具围绕三件事设计：
+
+- **改得了，也退得回。** 每一项在写入前把原值完整记录下来，包括"这个值原本不存在"这种状态——还原时会删除它而不是写个默认值。哪项没成功会明确报错并带上系统原始错误，不会假装成功。
+- **只碰 Windows，不碰游戏。** 改的全是系统层设置（注册表、电源计划、系统服务、启动配置），不进游戏目录、不注入进程、不与反作弊交互。
+- **该说的话不藏着。** 每一项都标注了它实际改什么、有什么副作用；效果有争议的项默认不勾选；查出来的硬件问题只提示不代劳。
+
+## 快速开始
+
+到 [下载页](https://df.ltz88.cn/) 拿安装包，双击装好后打开：
+
+1. 工具自动检测硬件、定位游戏、列出每一项的当前状态
+2. 默认选中「★ 主推全套」方案，也可以换方案或自己逐项勾
+3. 点「执行优化」，改动前自动备份
+4. 后悔了点「还原设置」
+
+需要管理员权限——电源计划、HAGS 这些是系统级设置。
+
+## 它做什么
+
+**30 多项系统优化**，按调试链路组织：电源计划深度定制（含 Windows 隐藏项）、进程与 IO 优先级、显卡中断绑核、系统精简、显卡层设置。三套预设方案，也可以存成自己的方案。
+
+**三项硬件体检**，只读不写：PCIe 链路带宽是否跑满、VC++ 运行库版本是否错乱、内存 XMP/EXPO 有没有开。这三样都实打实丢帧，而且软件改不了，只能告诉你去哪儿修。
+
+**游戏内设置参考**：头部主播的画质设置，按游戏里的菜单结构分组，照着能逐项找到。这一页纯参考——工具不会也无法修改游戏内设置。
+
+**驱动层指引**：认出你的显卡型号，只给这张卡用得上的设置，可以直接打开 NVIDIA 控制面板 / NVIDIA App。
+
+## 给 AI 助手用
+
+[SKILL.md](SKILL.md) 是一份与具体工具无关的技能说明——Claude Code、Codex、豆包等任何能在 Windows 上跑 PowerShell 的助手，读它就能驱动整套流程（检测 → 解释 → 征得同意 → 执行 → 汇报）。
+
+命令行直接用：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Detect
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Apply -Preset main
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Restore
+```
 
 ## 安装
 
@@ -16,37 +76,6 @@
 - **覆盖安装保护**：`profiles\`（自存方案）、`backup\`（还原备份）、`config\`（运行状态）
   不会被覆盖。
 - 完成页可勾选创建开始菜单/桌面快捷方式与立即运行，卸载时快捷方式一并清理。
-
-## 图形界面
-
-双击 **`启动优化工具.exe`**（会请求一次管理员权限——电源计划、HAGS 等是系统级设置）。
-exe 由系统自带编译器构建、无第三方依赖，不受 PowerShell 执行策略限制；
-`启动优化工具.bat` 是效果相同的后备入口。
-
-三个标签页：
-
-**优化** — 显示 CPU/显卡/内存与自动定位到的游戏路径（依次查找：运行中的游戏进程 →
-卸载注册表 → WeGame/Steam 目录 → 各盘符常见位置），逐项列出当前状态。启动即默认选中
-「★ 主推全套」方案，也可改选其他方案或手动勾选；顶部三态全选框一键勾上/清空全部
-**可执行**项（已就绪的不重复执行）。
-
-执行期间有进度条与 `第 n / 共 m 项`；结束后在本页给出完成度结论与失败项清单。
-纯检测项查出的问题按金色「提示」单列（不算失败），并弹出对话框给出逐步教程和
-**可点击的官方下载按钮**（链接是代码内硬编码常量、仅浏览器打开，工具自身绝不下载执行）。
-有需重启才生效的成功项时会弹提醒，可选立即重启（二次确认）或稍后自己重启。
-
-「还原设置」逐项反馈进度并给出结果汇总。「显卡指引」按你的显卡给出驱动层设置清单，
-并提供**一键打开控制面板**的按钮（NVIDIA 控制面板 / NVIDIA App / AMD Software /
-Intel 显卡控制中心）——检测到装了才显示按钮，没装则给出官方下载页入口。
-
-**游戏内设置参考** — 头部主播的游戏内画质设置对照表，按游戏内「设置 → 视频」的实际
-菜单分组展示。**纯参考，本工具不会也无法修改游戏内设置**。数据在
-`data\streamer-settings.json`，主播没公开的项显示「—」，不做推测填充。
-
-**运行日志** — 逐条运行记录，一键复制整段。有失败或体检问题时标签上会出现角标。
-本页还有「上传诊断报告」：把硬件信息、优化项状态、运行日志和最近备份的**项目名**
-（不含注册表原值）打包发给作者排查，**上传前会列出内容并请你确认**，路径中的用户名与
-机器名会替换成 `<user>` / `<pc>`。上传成功后给一个取件码，发给开发者即可。
 
 ## 更新
 
@@ -80,51 +109,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose.ps1
 一份并命名为**「三角洲优化 · 卓越性能」**（GUID 记在 `config\`，重复执行只复用不堆积）。
 「还原设置」会把活动方案切回原来的，但**保留**这份方案（你可能已在用）；不需要就在
 控制面板→电源选项里手动删。
-
-## 命令行 / AI 助手
-
-把整个文件夹指给任意 AI 助手，让它按 `SKILL.md` 的流程执行。
-
-```
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Detect
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Apply
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Restore
-```
-
-## 预设方案
-
-| 方案 | 内容 | 适合 |
-|---|---|---|
-| `main` ★ 主推全套 | 30 项，按依赖顺序：电源→优先级→中断绑核→系统精简→显卡层。代价：鼠标手感变直、休眠/快速启动没了、系统搜索变慢、待机功耗升高。界面默认选中 | 愿意整套抄作业 |
-| `balanced` 均衡推荐 | 20 项，收益明确、副作用小：不改外观和手感、不禁服务、不动休眠 | 绝大多数人 |
-| `safe-only` 保守 | 7 项，只改当前用户设置，不需重启 | 公司电脑 |
-
-自定义搭配：`-SavePreset "我的方案" -Items dvr-off,wer-off`，存进 `profiles\`，
-之后 `-Apply -Preset 我的方案` 套用。高风险项不进任何预设。
-
-## 优化内容
-
-- **① 电源**：卓越性能计划、隐藏项深度调优（USB3 链路省电关闭、性能时间检查间隔
-  5000ms、大小核强制走高性能核、关电源节流）、锁定电源计划防游戏篡改
-- **② 调度/优先级**：Win32PrioritySeparation=40、游戏进程 CPU/IO 优先级提「高」、
-  MMCSS 响应度=0、MMCSS 游戏档位拉满、解除多媒体网络限流、内核代码常驻内存
-- **③ 中断绑核**：独显中断固定到最后一个 P 核（避开 CPU0，走微软官方 Affinity Policy，
-  不依赖第三方工具；读不到核拓扑时自动不可用）
-- **④ 系统精简**：关 Xbox 录制/错误报告/透明特效、关内存压缩（32G 以上才默认）、
-  禁用 MPO、禁用 SysMain 与 Windows Search、关休眠与快速启动、禁用动态计时器
-- **⑤ 显卡层**：HAGS、禁用全屏优化、强制独显运行、锁 P-State、关闭 NVIDIA App
-  「自动优化游戏设置」（它会把 NVIDIA 认为"最佳"的画质写进游戏、覆盖你手调的参数）
-- **纯检测（只读不写）**：PCIe 通道体检、VC++ v14 运行库体检（缺失才报问题，
-  x64/x86 版本不同步是中性提示）、内存 XMP/EXPO 体检
-- **可选不默认**（副作用或结论有争议）：视觉效果最佳性能、关闭鼠标指针精确度、
-  关闭「窗口化游戏优化」、虚拟内存固定为内存×1.5~×2
-- **高风险区**（默认不勾、不进任何预设、需二次确认）：修改显卡上报型号——把独显名改成
-  低端型号让游戏走低配渲染路径。**已有实测反例：有人改完帧数不升反降**；重装或更新
-  显卡驱动后失效；系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。
-
-显卡驱动层（半自动）：按显卡生成手动设置清单。`tools\` 附带推荐参数的
-`DeltaForce-Recommended.nip`，把 NVIDIA Profile Inspector 放进 `tools\` 即可一键导入
-（导入前请先在 Inspector 里导出备份）。
 
 ## 安全说明
 
