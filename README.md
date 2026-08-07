@@ -56,9 +56,29 @@
 
 ## 给 AI 助手用
 
-[SKILL.md](SKILL.md) 是一份与具体工具无关的技能说明——Claude Code、Codex、豆包等任何能在 Windows 上跑 PowerShell 的助手，读它就能驱动整套流程（检测 → 解释 → 征得同意 → 执行 → 汇报）。
+不想自己点界面，可以让 AI 助手代劳。**把下面这句直接发给你的 agent**：
 
-命令行直接用：
+```
+读取 https://raw.githubusercontent.com/Leonard8818/-Delta-Force-Graphics-Optimizer/main/SKILL.md
+并按其中的流程帮我优化《三角洲行动》的帧率
+```
+
+它会自己完成检测 → 解释每一项在改什么 → **征得你同意** → 执行 → 汇报结果。
+[SKILL.md](SKILL.md) 里写明了红线：未经你明确同意不得执行任何改动，也不得代你同意免责声明。
+
+### 已验证可用
+
+| Agent | 说明 |
+|---|---|
+| [Claude Code](https://claude.com/claude-code) | 也可把仓库放进 `~/.claude/skills/` 注册为常驻技能 |
+| [Codex CLI](https://openai.com/codex) | OpenAI 官方命令行 agent |
+| [Cursor](https://cursor.com) | 在 Agent 模式下贴上面那句即可 |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google 官方命令行 agent |
+| [OpenCode](https://github.com/sst/opencode) | 开源，可接任意模型 |
+
+国内的豆包电脑版、通义灵码等只要**能在 Windows 上执行 PowerShell**，同样适用——SKILL.md 不依赖任何特定工具的能力。
+
+不带 agent 直接用命令行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\delta-booster.ps1 -Detect
