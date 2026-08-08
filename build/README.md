@@ -17,7 +17,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 | 产物 | 用途 |
 |---|---|
 | `DeltaForceBooster-Setup-vX.Y.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/自选安装位置/进度/完成四页；完成页三个勾选项均默认勾选——创建开始菜单快捷方式（「三角洲行动优化助手」「卸载优化助手」）、创建桌面快捷方式、立即运行（启动前会按主窗口标题关掉残留的旧版实例，防止新旧窗口并存）；静默安装两种快捷方式都创建 |
-| `update-manifest.json` | 更新清单模板：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 徽标，`notes` 留占位待发布时填写 |
+| `update-manifest.json` | 更新清单模板：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 的 `$script:GuiVersion`（构建期与界面徽标交叉校验，不一致直接构建失败），`notes` 留占位待发布时填写 |
 
 **只发安装版**：绿色免安装 zip 已于 v0.15 停产（服务器上的下载入口也已移除）。
 payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`NOTICE.md`、

@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.7.1
+  DeltaForceBooster 安装包构建脚本 — v0.7.2
   只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖，只产出一个东西：
     build\DeltaForceBooster-Setup-vX.Y.exe —— 图形安装向导（WPF，三角洲官网视觉）：
       欢迎/自选安装位置/进度/完成四页，payload.zip 以 /resource: 内嵌，真正单文件
 
+  v0.7.2：profiles\ 不再进包——那里只有用户自存方案，v0.16.1 的安装包因此把构建者
+        本机的方案发给了所有下载者。
   v0.7.1：版本号改以 $script:GuiVersion 为准并与界面徽标交叉校验（漏改一处就构建失败）；
         程序集四段版本号按位补齐，三段版本（0.16.1）不再拼出五段导致 csc 报错。
   v0.7：重写内嵌卸载脚本——①卸载前可先按备份还原系统改动（默认是）；②无条件清理
@@ -56,13 +58,15 @@ if (-not (Test-Path -LiteralPath $launcher)) {
   if (-not (Test-Path -LiteralPath $launcher)) { throw '启动器 exe 缺失且现场编译失败，先运行 build\make-launcher.ps1 排查' }
 }
 # backup\ 是本机改动记录、build\ 是构建目录、config\ 是运行期状态，都不进包；
-# profiles\ 里的预设随包分发；.bat 保留为后备入口
+# profiles\ 同样不进包——内置三套方案定义在 Get-BuiltinPresets 里，profiles\ 只存
+# 用户自存方案，打进包等于把构建者本机的方案发给每一个下载者（v0.16.1 已发生过）；
+# .bat 保留为后备入口
 # LICENSE 必须随包分发：MIT 要求保留版权声明，这不是可选项。
 # DISCLAIMER.md 是免责声明门控的正文来源，NOTICE.md 是非官方声明与出处。
 # SECURITY.md / CONTRIBUTING.md 是给仓库看的，不进安装包。
 $parts = @('启动优化工具.exe', '启动优化工具.bat', 'README.md', 'SKILL.md',
            'DISCLAIMER.md', 'LICENSE', 'NOTICE.md',
-           'scripts', 'gui', 'tools', 'profiles', 'data')
+           'scripts', 'gui', 'tools', 'data')
 foreach ($p in $parts) {
   $src = Join-Path $root $p
   if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $stage -Recurse }
