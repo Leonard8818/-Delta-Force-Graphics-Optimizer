@@ -1,7 +1,9 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.15
+  DeltaForceBooster 核心脚本 — v0.15.1
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.15.1：pcfg 还原兜底改按「残留是否在还原后最终生效的方案里」判定（原先只认工具
+        自建方案，名字匹配来的卓越性能方案会误报还原失败）；真失败时给人话错误并带项名。
   v0.15：修复备份污染与还原语义：所有写入类操作（reg/pcfg/mmagent/kvstr/hib/bcd/power）
         已达标就跳过、不写不备份（重复 Apply 不再把上一轮写入的目标值记成「原值」）；
         -Restore 默认合并全部尚未消费的备份（新→旧，同一设置取最早原值），全部成功后
@@ -1498,8 +1500,9 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
 function Get-RestoreOpLabel($op) {
   switch ($op.Kind) {
     'power'   { '电源计划（切回原方案）' }
-    # v0.9 起备份带 Label；旧备份没有该字段时保持泛称，不能显示成空白
-    'pcfg'    { if ($op.PSObject.Properties['Label'] -and $op.Label) { "电源隐藏项「$($op.Label)」" } else { '电源计划隐藏项' } }
+    # v0.9 起备份带 Label；旧备份没有该字段时带上 Sub\Setting GUID——实机出过 4 条
+    # 失败全显示泛称「电源计划隐藏项」，用户完全分不清是哪几项
+    'pcfg'    { if ($op.PSObject.Properties['Label'] -and $op.Label) { "电源隐藏项「$($op.Label)」" } else { "电源计划隐藏项（$($op.Sub)\$($op.Setting)）" } }
     'mmagent' { "内存管理（$(if ($op.Feature -eq 'mc') { '内存压缩' } else { '页面合并' })）" }
     'sched'   { "计划任务 $($op.TaskName)" }
     'hib'     { '休眠状态' }
@@ -1562,6 +1565,13 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
     $k = Get-RestoreOpKey $flat[$i]
     if (-not $k -or $lastIdx[$k] -eq $i) { $ops += $flat[$i] }
   }
+  # 先算出「还原全部完成后最终生效的方案」：pcfg 残留有没有实际影响只取决于它，而不是
+  # 方案是否为工具自建。还原是逆序执行的——pcfg 项执行时活动方案还没切回去（卓越性能
+  # 仍是活动方案），所以绝不能在循环里用「当前是否活动」判断。合并去重后 power 项至多
+  # 一条且取自最早备份，其 Old 就是优化前的真原方案；没有 power 项则维持当前活动方案
+  $finalSchemeGuid = $null
+  foreach ($o in $ops) { if ($o.Kind -eq 'power' -and $o.Old) { $finalSchemeGuid = "$($o.Old)"; break } }
+  if (-not $finalSchemeGuid) { $a = Get-ActiveScheme; if ($a) { $finalSchemeGuid = $a.Guid } }
   $restored = 0; $failed = @(); $skippedOps = @(); $seq = 0; $total = $ops.Count
   foreach ($op in $ops) {
     $seq++
@@ -1605,13 +1615,17 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
                 Set-PowerSettingAc $op.Sub $op.Setting ([int]$def) $guid
                 $restored++
               } else {
-                # 默认表里只有三个内置方案 GUID，duplicatescheme 出来的方案（含工具自建的
-                # 卓越性能）读不到默认值。方案是工具自建的就明说「无影响」：还原时活动方案
-                # 已切回原方案，停用方案里的残留显式值不参与任何生效设置，不该吓唬用户
-                $toolGuid = Get-ToolSchemeGuid
-                if ($toolGuid -and ($guid -ieq "$toolGuid")) {
-                  $skippedOps += "$(Get-RestoreOpLabel $op)：跳过（工具自建方案内的残留设置，该方案已停用，无实际影响）"
-                } else { throw }
+                # 默认表里只有三个内置方案 GUID，duplicatescheme 出来的方案（含工具自建、
+                # 也含用户/别的工具复制出来的卓越性能）都读不到默认值。残留显式值有没有
+                # 实际影响只看它是否留在最终生效方案里——实机踩过「按名字匹配激活的卓越
+                # 方案」被原先的工具自建判定漏掉、误报还原失败；最终方案判定天然覆盖工具
+                # 自建方案。真留在生效方案里才如实报错，且必须给人话（OpenSubKey 的原始
+                # 异常「不允许所请求的注册表访问权」用户完全无法定位）
+                if ($finalSchemeGuid -and ($guid -ine $finalSchemeGuid)) {
+                  $skippedOps += "$(Get-RestoreOpLabel $op)：跳过（残留设置在还原后不生效的方案里，对当前无影响；若以后手动切回该方案会重新用上这些值，不需要可在控制面板→电源选项里删除该方案）"
+                } else {
+                  throw "无法清除该方案里的残留显式值（此注册表键仅系统账户可写，且该方案查不到默认值），该值仍留在还原后生效的方案（$guid）中"
+                }
               }
             }
           } else {

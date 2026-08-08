@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.7
+  DeltaForceBooster 安装包构建脚本 — v0.7.1
   只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖，只产出一个东西：
     build\DeltaForceBooster-Setup-vX.Y.exe —— 图形安装向导（WPF，三角洲官网视觉）：
       欢迎/自选安装位置/进度/完成四页，payload.zip 以 /resource: 内嵌，真正单文件
 
+  v0.7.1：版本号改以 $script:GuiVersion 为准并与界面徽标交叉校验（漏改一处就构建失败）；
+        程序集四段版本号按位补齐，三段版本（0.16.1）不再拼出五段导致 csc 报错。
   v0.7：重写内嵌卸载脚本——①卸载前可先按备份还原系统改动（默认是）；②无条件清理
         PowerPlanLock 计划任务（SYSTEM 每分钟锁电源方案，残留后普通用户几乎停不掉）；
         ③保留备份时 scripts\ 一并保留（没有引擎的备份 JSON 谁也读不懂）；④完成提示
@@ -28,11 +30,16 @@ $ErrorActionPreference = 'Stop'
 $root  = Split-Path -Parent $PSScriptRoot
 $build = $PSScriptRoot
 
-# 版本号以 GUI 文件头部徽标为准，构建产物文件名跟着走
+# 版本号以 $script:GuiVersion 为准：更新检查拿它跟服务器清单比版本，界面徽标只是显示。
+# 两者曾经各写各的，漏改一处就会发出「版本号自称 0.16 的 0.16.1 包」，构建期直接卡住
 $guiText = [IO.File]::ReadAllText((Join-Path $root 'gui\DeltaForceBooster-GUI.ps1'), [Text.Encoding]::UTF8)
-if ($guiText -notmatch '\[ v([\d.]+) \]') { throw '无法从 GUI 文件解析版本号' }
+if ($guiText -notmatch '\$script:GuiVersion\s*=\s*''([\d.]+)''') { throw '无法从 GUI 文件解析 $script:GuiVersion' }
 $ver  = $Matches[1]
-$ver4 = "$ver.0.0"
+if ($guiText -notmatch '\[ v([\d.]+) \]') { throw '无法从 GUI 文件解析版本徽标' }
+if ($Matches[1] -ne $ver) { throw "版本号不一致：`$script:GuiVersion=$ver 但徽标写的是 $($Matches[1])，先改成一致再构建" }
+# 程序集版本号必须正好四段，多一段少一段 csc 都会报错
+$seg  = @($ver -split '\.') + @('0', '0', '0', '0')
+$ver4 = ($seg[0..3]) -join '.'
 
 # 中间产物放 ASCII 路径的临时目录：仓库路径含「桌面」，非中文代码页（本机 ACP=1252）下
 # 命令行工具处理中文路径容易翻车，成品最后再移回 build\
@@ -283,7 +290,9 @@ Remove-Item $work -Recurse -Force
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestObj = [ordered]@{
-  version  = "$ver.0"
+  # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
+  # 「已是最新」和「有新版本」的判定跟着版本号写法漂
+  version  = "$ver"
   notes    = '（发布前把这里换成真实的更新说明，支持 \n 换行）'
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'
