@@ -1,8 +1,8 @@
 {
-  "version": "0.16.2",
-  "notes": "打包修正：v0.16.1 的安装包误把构建者本机的自存方案打了进去，装完会凭空多出一个不属于你的方案。\\n本版已移除，功能与 v0.16.1 完全一致。",
-  "url": "https://df.ltz88.cn/",
-  "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-  "sha256": "37cbbbbe677ce4fc77516ac5ef3b2441cdaeaeedf13b9223f1c2cf7ece929e42",
-  "size": 172544
+    "version":  "0.17.0",
+    "notes":  "显卡型号伪装改版：RTX 30 系默认 GTX 705 Ti，RTX 40/50 系默认 GTX 1050 Ti，并支持手动切换。\\n修复内置更新覆盖 gui\\app.ico 时被旧窗口占用的问题，并增强重复窗口与短暂文件锁处理。",
+    "url":  "https://df.ltz88.cn/",
+    "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
+    "sha256":  "259228826370ff83c03e5611c0fe32be9626baf28239a4c115325fc786e896eb",
+    "size":  174080
 }

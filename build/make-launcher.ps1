@@ -1,5 +1,6 @@
 ﻿<#
-  DeltaForceBooster 启动器构建脚本 — v0.2
+  DeltaForceBooster 启动器构建脚本 — v0.3
+  v0.3：程序集版本号按位补齐到四段，三段 GUI 版本不再拼成五段导致 csc 编译失败。
   v0.2：ICO 除内嵌进 exe 外，另落一份 gui\app.ico 随包分发——WPF 窗口不设 Icon 时
         任务栏/Alt-Tab 显示宿主 powershell.exe 的图标（实机反馈），GUI 启动时读它。
   用系统自带的 .NET Framework csc.exe 编译出根目录「启动优化工具.exe」，零第三方依赖：
@@ -23,7 +24,8 @@ New-Item -ItemType Directory -Path $work | Out-Null
 $guiText = [IO.File]::ReadAllText((Join-Path $root 'gui\DeltaForceBooster-GUI.ps1'), [Text.Encoding]::UTF8)
 if ($guiText -notmatch '\[ v([\d.]+) \]') { throw '无法从 GUI 文件解析版本号' }
 $ver = $Matches[1]
-$ver4 = "$ver.0.0"
+$verParts = @($ver -split '\.') + @('0', '0', '0', '0')
+$ver4 = ($verParts[0..3]) -join '.'
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
@@ -105,7 +107,7 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("DeltaForceBooster 启动器（以管理员权限打开优化界面）")]
 [assembly: AssemblyProduct("DeltaForceBooster")]
 [assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
-[assembly: AssemblyCopyright("本地运行，不采集任何数据")]
+[assembly: AssemblyCopyright("DeltaForceBooster MIT 开源项目")]
 [assembly: AssemblyVersion("$ver4")]
 [assembly: AssemblyFileVersion("$ver4")]
 

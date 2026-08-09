@@ -20,6 +20,7 @@
 // 更新场景防双开（实机反馈）：旧版主程序可能没退干净，完成页勾了「立即运行」时先按
 // 主窗口标题精确匹配礼貌请求旧实例关闭（WM_CLOSE）——绝不 Kill：旧实例可能正在执行
 // 优化/还原，强杀等于把系统改到一半且备份写不完整。拒绝退出就放弃自动启动并明示用户。
+// 静默更新覆盖前也检查其余旧窗口，并对杀毒/索引器造成的短暂文件共享冲突有限重试。
 //
 // 命令行（全部供自动化验证，普通用户双击即图形向导）：
 //   /dir=<路径>        预填安装位置（提权重启时回传用）
@@ -51,7 +52,7 @@ using WinForms = System.Windows.Forms;
 [assembly: AssemblyDescription("DeltaForceBooster 安装向导（可自选安装位置）")]
 [assembly: AssemblyProduct("DeltaForceBooster")]
 [assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
-[assembly: AssemblyCopyright("本地运行，不采集任何数据")]
+[assembly: AssemblyCopyright("DeltaForceBooster MIT 开源项目")]
 [assembly: AssemblyVersion("__VER4__")]
 [assembly: AssemblyFileVersion("__VER4__")]
 
@@ -106,6 +107,13 @@ static class Program {
                     if (runAfter) WarnBox("检测到旧版程序仍在运行（可能正在执行优化或还原）。\r\n\r\n本次更新已取消，原来的版本没有被改动。请等待优化完成并关闭程序后，再重新检查更新。");
                     return 3;
                 }
+            }
+            // 用户可能重复打开了多个旧版窗口。/waitpid 只覆盖发起更新的那个进程；其余
+            // 实例同样可能占用 app.ico。安装前统一礼貌请求关闭，忙碌实例拒绝时取消更新。
+            if (!Installer.CloseRunningBooster()) {
+                Log(logFile, "更新已取消：仍有旧版主程序拒绝退出");
+                if (runAfter) WarnBox("检测到另一个旧版窗口仍在执行优化或还原。\r\n\r\n本次更新已取消，原来的版本没有被改动。请等待所有旧版窗口完成并关闭后，再重新检查更新。");
+                return 3;
             }
             string err = Installer.CheckWritable(dest);
             if (err != null) {
@@ -350,12 +358,25 @@ static class Installer {
                     continue;
                 }
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
-                e.ExtractToFile(target, true);
+                ExtractToFileWithRetry(e, target);
                 if (onProgress != null) onProgress(i, total, rel);
             }
         }
         // 开始菜单快捷方式不再在这里无条件创建：完成页勾选项控制（默认勾选），
         // 静默模式由 RunSilent 显式创建，行为与默认勾选一致
+    }
+
+    // Defender、索引器等进程可能在旧程序退出的一瞬间短暂扫描文件。给共享冲突一个很短的
+    // 自愈窗口；持续占用仍抛出原异常，由静默更新弹框明确报告，不会假装安装成功。
+    static void ExtractToFileWithRetry(ZipArchiveEntry entry, string target) {
+        const int attempts = 12;
+        for (int n = 1; ; n++) {
+            try { entry.ExtractToFile(target, true); return; }
+            catch (IOException) {
+                if (n >= attempts) throw;
+                Thread.Sleep(250);
+            }
+        }
     }
 
     public static string LastMenuDir;
@@ -764,7 +785,7 @@ class SetupWindow : Window {
             Margin = new Thickness(0, 16, 0, 0)
         });
         sp.Children.Add(new TextBlock {
-            Text = "全部本地运行，不采集、不上传任何数据。",
+            Text = "系统优化在本地执行；联网功能包括检查更新和用户主动上传诊断报告。",
             Foreground = Theme.TextFaint, Margin = new Thickness(0, 12, 0, 0)
         });
         page.Children.Add(sp);

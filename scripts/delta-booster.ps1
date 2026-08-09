@@ -1,7 +1,9 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.15.1
+  DeltaForceBooster 核心脚本 — v0.16
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.16：显卡型号伪装按代际给默认值（RTX 30 系 → GTX 705 Ti，RTX 40/50 系 →
+        GTX 1050 Ti），并新增 -GpuSpoofModel 供 GUI/CLI 明确选择目标型号。
   v0.15.1：pcfg 还原兜底改按「残留是否在还原后最终生效的方案里」判定（原先只认工具
         自建方案，名字匹配来的卓越性能方案会误报还原失败）；真失败时给人话错误并带项名。
   v0.15：修复备份污染与还原语义：所有写入类操作（reg/pcfg/mmagent/kvstr/hib/bcd/power）
@@ -24,7 +26,7 @@
   用法（任意 AI 助手或用户均可直接调用）：
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Detect [-Json]
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Preview
-    powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Apply [-Items id1,id2] [-GamePath "游戏exe路径"] [-Risky]
+    powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Apply [-Items id1,id2] [-GamePath "游戏exe路径"] [-GpuSpoofModel "NVIDIA GeForce GTX 1050 Ti"] [-Risky]
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Restore [-BackupFile 备份文件]
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListItems
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListPresets
@@ -52,6 +54,8 @@ param(
   [string[]]$Items,
   [string]$GamePath,
   [string]$BackupFile,
+  [ValidateSet('NVIDIA GeForce GTX 705 Ti', 'NVIDIA GeForce GTX 1050 Ti')]
+  [string]$GpuSpoofModel,
   [switch]$Risky,
   [switch]$Json
 )
@@ -748,7 +752,20 @@ function Find-GamePath {
 $script:SubUsb  = '2a737441-1930-4402-8d77-b2bebba308a3'
 $script:SubProc = '54533251-82be-4824-96c1-47b60b740d00'
 
-function Get-OptItems([string]$GamePath) {
+function Get-GpuSpoofModels {
+  @('NVIDIA GeForce GTX 705 Ti', 'NVIDIA GeForce GTX 1050 Ti')
+}
+
+function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop) {
+  # 按用户实机经验做代际映射：RTX 30 系默认伪装为 705 Ti，40/50 系默认 1050 Ti。
+  # 其他型号保留原先的机型兜底逻辑，界面仍允许用户手动切换两种目标型号。
+  if ("$GpuName" -match '(?i)RTX\s*30\d{2}') { return 'NVIDIA GeForce GTX 705 Ti' }
+  if ("$GpuName" -match '(?i)RTX\s*(?:40|50)\d{2}') { return 'NVIDIA GeForce GTX 1050 Ti' }
+  if ($IsLaptop) { return 'NVIDIA GeForce GTX 1050 Ti' }
+  'NVIDIA GeForce GTX 705 Ti'
+}
+
+function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   $items = @()
   $hw = $null
   try { $hw = Get-HardwareInfo } catch {}
@@ -951,8 +968,10 @@ function Get-OptItems([string]$GamePath) {
   # FullControl，直接写即可，无需 takeown 或改 ACL；写入即时生效（WMI 立刻改口径），
   # 写回原字符串后逐字节一致、WMI 同步复原——所以备份/还原走通用 reg 通路就够。
   $nvEnum = Get-NvidiaGpuEnumPath
-  $fakeGpu = $(if ($hw -and $hw.IsLaptop) { 'NVIDIA GeForce GTX 1050 Ti' } else { 'NVIDIA GeForce GTX 750 Ti' })
-  $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = "把显卡型号改成「$fakeGpu」"; Admin = $true; Default = $false; Kind = 'multi'
+  $spoofModels = @(Get-GpuSpoofModels)
+  $fakeGpu = $(if ($GpuSpoofModel -and $spoofModels -contains $GpuSpoofModel) { $GpuSpoofModel }
+               else { Get-DefaultGpuSpoofModel $(if ($hw) { $hw.MainGpuName } else { '' }) $(if ($hw) { $hw.IsLaptop } else { $false }) })
+  $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = '显卡型号伪装'; SpoofModel = $fakeGpu; Admin = $true; Default = $false; Kind = 'multi'
                Ops = $(if ($nvEnum) { @(@{ Kind = 'reg'; Path = $nvEnum; Name = 'DeviceDesc'; Value = $fakeGpu
                                            Kind2 = 'String'; Label = '显卡型号' }) })
                Note = '让游戏以为你是低端卡从而走低配渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。仅 N 卡可用，备份原值可完整还原。' }
@@ -1329,11 +1348,12 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
 # $Progress 为可选进度回调（不传时行为与旧版完全一致，CLI 与 SKILL.md 契约不受影响）：
 # 每项开始时以 Stage='start' 调用一次（带 Index/Total/Name），完成时以 Stage='done'
 # 再调一次（额外带该项的 Result），GUI 靠它做进度条与实时日志
-function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, [scriptblock]$Progress) {
+function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, [scriptblock]$Progress,
+                      [string]$GpuSpoofModel) {
   # powershell -File 不会把 "a,b" 解析成数组，整串会当成单个元素传进来，这里统一拆开
   $ItemIds = @($ItemIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   if (-not $GamePath) { $GamePath = Find-GamePath }
-  $items = Get-OptItems $GamePath
+  $items = Get-OptItems $GamePath $GpuSpoofModel
   # 不传 -Items 时只取 safe 档默认项：risky 永远不会被"一键默认"带上
   if (-not $ItemIds -or $ItemIds.Count -eq 0) {
     $ItemIds = @($items | Where-Object { $_.Default -and $_.Tier -eq 'safe' } | ForEach-Object { $_.Id })
@@ -1756,7 +1776,7 @@ elseif ($DeletePreset) {
 elseif ($Apply) {
   # -Preset 与 -Items 二选一；同时给出时以 -Preset 为准
   if ($Preset) { $Items = Resolve-PresetItems $Preset $GamePath }
-  $r = Invoke-Apply $Items $GamePath ([bool]$Risky)
+  $r = Invoke-Apply $Items $GamePath ([bool]$Risky) $null $GpuSpoofModel
   if ($Json) { $r | ConvertTo-Json -Depth 5 }
   else {
     foreach ($x in $r.Results) { Write-Output "  $(if ($x.Attention) { '[提示]' } elseif ($x.Ok) { '[成功]' } elseif ($x.Skipped) { '[跳过]' } else { '[失败]' }) $($x.Name) — $($x.Msg)" }

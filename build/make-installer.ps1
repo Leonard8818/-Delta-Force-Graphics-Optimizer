@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 安装包构建脚本 — v0.7.2
+  DeltaForceBooster 安装包构建脚本 — v0.8
   只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖，只产出一个东西：
     build\DeltaForceBooster-Setup-vX.Y.exe —— 图形安装向导（WPF，三角洲官网视觉）：
       欢迎/自选安装位置/进度/完成四页，payload.zip 以 /resource: 内嵌，真正单文件
 
+  v0.8：静默更新覆盖前关闭其余旧窗口，并为短暂文件共享冲突增加有限重试，修复
+        gui\app.ico 偶发被占用导致安装中途失败。
   v0.7.2：profiles\ 不再进包——那里只有用户自存方案，v0.16.1 的安装包因此把构建者
         本机的方案发给了所有下载者。
   v0.7.1：版本号改以 $script:GuiVersion 为准并与界面徽标交叉校验（漏改一处就构建失败）；

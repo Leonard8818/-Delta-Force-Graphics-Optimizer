@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.16.2
+  DeltaForceBooster 图形界面 — v0.17.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.17：①「危险区域」改为中性的「显卡型号伪装」，RTX 30 系默认 705 Ti、40/50 系默认
+        1050 Ti，并可在界面手动切换；②修复内置更新覆盖 app.ico 时可能被旧窗口占用。
   v0.16.2：打包修正版——v0.16.1 的安装包误将构建者本机的自存方案（profiles\）打了进去，
         装完会凭空多出别人的方案。界面与引擎均无改动，仅版本号跟随。
   v0.16.1：随引擎 v0.15.1 发版——修复「电源计划隐藏项」还原被误报失败（残留值留在还原后
@@ -41,7 +43,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.16.2'
+$script:GuiVersion = '0.17.0'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -409,7 +411,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.16.2 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.17.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -615,14 +617,14 @@ $xaml = @'
             </StackPanel>
           </Border>
 
-          <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" Foreground="{StaticResource Danger}">
+          <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" Foreground="{StaticResource TextPri}">
             <Expander.Header>
               <StackPanel Orientation="Horizontal">
-                <TextBlock Text="危险区域" Foreground="{StaticResource Danger}" FontSize="12"/>
-                <TextBlock Text="降低系统安全性，需二次确认" Style="{StaticResource Mono}" Margin="10,0,0,0"/>
+                <TextBlock Text="显卡型号伪装" Foreground="{StaticResource TextPri}" FontSize="12"/>
+                <TextBlock Text="按显卡代际推荐 · 可手动选择目标型号" Style="{StaticResource Mono}" Margin="10,0,0,0"/>
               </StackPanel>
             </Expander.Header>
-            <Border BorderBrush="#FF4A2420" BorderThickness="1" Background="#FF17100F" Margin="0,6,0,0">
+            <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource PanelDeep}" Margin="0,6,0,0">
               <StackPanel x:Name="RiskyPanel"/>
             </Border>
           </Expander>
@@ -739,7 +741,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.16.2 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.17.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -756,7 +758,18 @@ $window = [Windows.Markup.XamlReader]::Parse($xaml)
 try {
   $icoPath = Join-Path $PSScriptRoot 'app.ico'
   if (Test-Path -LiteralPath $icoPath) {
-    $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $icoPath))
+    # 直接用文件 Uri 会让 WPF 的解码器长期持有 app.ico，覆盖更新时安装器因此报“正由另
+    # 一进程使用”。OnLoad 把图标完整读进内存并立即释放文件句柄，窗口生命周期不再锁文件。
+    $icoStream = [IO.File]::Open($icoPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+      $ico = New-Object Windows.Media.Imaging.BitmapImage
+      $ico.BeginInit()
+      $ico.CacheOption = [Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+      $ico.StreamSource = $icoStream
+      $ico.EndInit()
+      $ico.Freeze()
+      $window.Icon = $ico
+    } finally { $icoStream.Dispose() }
   }
 } catch {}
 # ---------- 全局深色 Chrome 资源字典 ----------
@@ -1070,6 +1083,23 @@ function New-ItemRow($Item, $State, [bool]$Last) {
           else { New-Pill '待定' $script:C.Gray '#00000000' $script:C.Line }
   $tail = New-Object Windows.Controls.StackPanel
   $tail.Orientation = 'Horizontal'
+  if ($Item.Id -eq 'gpu-name-spoof') {
+    $modelBox = New-Object Windows.Controls.ComboBox
+    $modelBox.Style = $window.FindResource('TacCombo')
+    $modelBox.Width = 220
+    $modelBox.Margin = New-Object Windows.Thickness 0, 0, 8, 0
+    foreach ($model in @(Get-GpuSpoofModels)) { [void]$modelBox.Items.Add($model) }
+    $selectedModel = $(if ($script:GpuSpoofModel -and $modelBox.Items.Contains($script:GpuSpoofModel)) {
+                         $script:GpuSpoofModel
+                       } else { $Item.SpoofModel })
+    $modelBox.SelectedItem = $selectedModel
+    $script:GpuSpoofModel = "$selectedModel"
+    $modelBox.ToolTip = '选择要向系统和游戏上报的显卡型号'
+    $modelBox.Add_SelectionChanged({
+      if ($this.SelectedItem) { $script:GpuSpoofModel = "$($this.SelectedItem)" }
+    })
+    $tail.Children.Add($modelBox) | Out-Null
+  }
   # 体检项查出问题时给行内直达入口：不执行优化也能看到教程和下载按钮，
   # 不用等日志（纯文本链接没人会手抄——实机反馈）
   if ($Item.Kind -eq 'check' -and $State.Optimized -eq $false -and $script:CheckHelp.ContainsKey($Item.Id)) {
@@ -1800,7 +1830,7 @@ function New-DiagnosticReport {
 
   $lines.Add('== 优化项状态 ==')
   try {
-    foreach ($it in @(Get-OptItems $script:TargetExe)) {
+    foreach ($it in @(Get-OptItems $script:TargetExe $script:GpuSpoofModel)) {
       $st = Get-ItemState $it
       $mark = $(if ($st.Optimized -eq $true) { '[√]' } elseif ($st.Optimized -eq $false) { '[×]' } else { '[?]' })
       $lines.Add("$mark $($it.Id) — $($it.Name)")
@@ -2526,7 +2556,9 @@ function Show-UpdateDialog($UpdInfo) {
   }
   $script:UpdUi.VerText.Text = "新版本 v$($UpdInfo.Version)"
   $script:UpdUi.CurText.Text = "当前 v$($UpdInfo.Current)"
-  $notes = "$($UpdInfo.Notes)".Trim()
+  # 清单由发布脚本写成单行 JSON 时常用字面量 \n 表示换行；显示前统一还原，避免更新
+  # 说明里直接露出“\n”字符。
+  $notes = ("$($UpdInfo.Notes)" -replace '\\n', "`n").Trim()
   $script:UpdUi.NotesText.Text = $(if ($notes) { $notes } else { '（本次更新没有附带说明）' })
   if ($UpdInfo.CanInline) {
     $script:UpdUi.InlineNote.Text = '「立即更新」全程自动：从官方源（df.ltz88.cn）下载 → 校验完整性 → 原地安装到当前目录 → 自动打开新版本，中途不需要你再操作。自存方案 / 备份 / 运行状态不会被覆盖。'
@@ -2671,7 +2703,7 @@ function Update-ItemList {
   $ui.ItemPanel.Children.Clear()
   $ui.RiskyPanel.Children.Clear()
   # 变量名不能用 $items：引擎被点源进同一作用域，其 [string[]]$Items 参数会把哈希表强制转成字符串
-  $optItems = @(Get-OptItems $script:TargetExe)
+  $optItems = @(Get-OptItems $script:TargetExe $script:GpuSpoofModel)
   $safe  = @($optItems | Where-Object { $_.Tier -ne 'risky' })
   $risky = @($optItems | Where-Object { $_.Tier -eq 'risky' })
 
@@ -2792,6 +2824,7 @@ function Start-ManualUpdateCheck {
 $script:TargetExe = $null
 $script:PresetList = @()
 $script:ApplyingPreset = $false
+$script:GpuSpoofModel = $null
 $script:UpdateInfo = $null
 
 $window.Add_ContentRendered({
@@ -3027,13 +3060,13 @@ $ui.ApplyBtn.Add_Click({
     $riskyIds = @($ui.RiskyPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
                   ForEach-Object { $_.Child.Children[0].Tag })
     if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
-    $optAll = @(Get-OptItems $script:TargetExe)
+    $optAll = @(Get-OptItems $script:TargetExe $script:GpuSpoofModel)
     if ($riskyIds.Count -gt 0) {
       $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
-      $rmsg = "以下 $($riskySel.Count) 项属于高风险改动，可能有副作用或降低系统安全性：`n`n" +
+      $rmsg = "将执行以下显卡型号伪装设置：`n`n" +
               (@($riskySel | ForEach-Object { "· $($_.Name)`n  $(if ($_.Warn) { $_.Warn } else { $_.Note })" }) -join "`n`n") +
-              "`n`n确认后这些项将与其余勾选项一起执行（改动前自动备份，可一键还原）。"
-      if (Show-ConfirmDialog '高风险确认' 'RISKY CONFIRM' $rmsg '确认执行高风险项') {
+              "`n`n目标型号：$script:GpuSpoofModel`n`n确认后将与其余勾选项一起执行（改动前自动备份，可一键还原）。"
+      if (Show-ConfirmDialog '显卡型号伪装' 'GPU MODEL SPOOF' $rmsg '确认执行') {
         $ids = @($ids + $riskyIds)
       } else {
         Write-Log "已取消 $($riskyIds.Count) 个高风险项，本次不执行它们。"
@@ -3053,7 +3086,7 @@ $ui.ApplyBtn.Add_Click({
     Write-Log "开始执行 $($ids.Count) 项优化…"
     # 进度回调逐项刷新界面并实时落日志，不再等全部跑完才一次性输出
     # AllowRisky 只在用户刚通过高风险二次确认时才为真，绝不默认放行
-    $r = Invoke-Apply $ids $script:TargetExe ($riskyIds.Count -gt 0) ${function:Update-ApplyProgress}
+    $r = Invoke-Apply $ids $script:TargetExe ($riskyIds.Count -gt 0) ${function:Update-ApplyProgress} $script:GpuSpoofModel
     $okN = @($r.Results | Where-Object Ok).Count
     $attList = @($r.Results | Where-Object Attention)
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
