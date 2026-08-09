@@ -29,6 +29,9 @@
   .kpi { padding:17px 18px 15px; min-height:112px; }
   .kpi .label { color:var(--tx2); font-size:11px; letter-spacing:.06em; }
   .kpi .value { margin-top:10px; font:700 29px/1 Consolas,monospace; color:var(--tx); }
+  .kpi .value.increase { color:var(--green); }
+  .kpi .value.decrease { color:var(--danger); }
+  .kpi .value.unchanged { color:var(--gold); }
   .kpi .hint { margin-top:10px; color:#5E7A6C; font-size:10px; }
   .grid { display:grid; grid-template-columns:1.55fr 1fr; gap:12px; margin-top:12px; }
   .split { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
@@ -104,11 +107,11 @@
 
   <section class="kpis perf-kpis" aria-label="优化前后平均变化">
     <article class="kpi"><div class="label">配对配置组</div><div class="value" id="matchedComparisons">—</div><div class="hint" id="matchedClients">同设备、同显卡的前后样本</div></article>
-    <article class="kpi"><div class="label">平均 FPS 变化</div><div class="value" id="fpsDelta">—</div><div class="hint">优化后 − 优化前</div></article>
-    <article class="kpi"><div class="label">平均 1% Low 变化</div><div class="value" id="fps1LowDelta">—</div><div class="hint">优化后 − 优化前</div></article>
-    <article class="kpi"><div class="label">GPU 占用变化</div><div class="value" id="gpuUtilDelta">—</div><div class="hint">百分点</div></article>
-    <article class="kpi"><div class="label">GPU 温度变化</div><div class="value" id="gpuTempDelta">—</div><div class="hint">负数代表更低</div></article>
-    <article class="kpi"><div class="label">GPU 功耗变化</div><div class="value" id="gpuPowerDelta">—</div><div class="hint">负数代表更低</div></article>
+    <article class="kpi"><div class="label">平均 FPS 变化</div><div class="value" id="fpsDelta">—</div><div class="hint">优化后 − 优化前 · 正绿负红</div></article>
+    <article class="kpi"><div class="label">平均 1% Low 变化</div><div class="value" id="fps1LowDelta">—</div><div class="hint">优化后 − 优化前 · 正绿负红</div></article>
+    <article class="kpi"><div class="label">GPU 占用变化</div><div class="value" id="gpuUtilDelta">—</div><div class="hint">百分点 · 正绿负红</div></article>
+    <article class="kpi"><div class="label">GPU 温度变化</div><div class="value" id="gpuTempDelta">—</div><div class="hint">优化后 − 优化前 · 正绿负红</div></article>
+    <article class="kpi"><div class="label">GPU 功耗变化</div><div class="value" id="gpuPowerDelta">—</div><div class="hint">优化后 − 优化前 · 正绿负红</div></article>
   </section>
 
   <section class="grid" style="grid-template-columns:1fr">
@@ -172,6 +175,13 @@
     if (!Number.isFinite(number)) return '—';
     return (number>0?'+':'')+number.toFixed(1)+suffix;
   };
+  const setDirectionalMetric = (id, value, suffix='') => {
+    const node=byId(id), number=Number(value);
+    node.classList.remove('increase','decrease','unchanged');
+    if (value===null || value===undefined || value==='' || !Number.isFinite(number)) { node.textContent='—'; return; }
+    node.textContent=signedMetric(number,suffix);
+    node.classList.add(number>0?'increase':number<0?'decrease':'unchanged');
+  };
 
   function renderBars(id, rows) {
     const host = byId(id); host.replaceChildren();
@@ -229,14 +239,14 @@
     });
   }
 
-  function appendConfigMetric(row, valueKey, deltaKey, suffix='', lowerIsBetter=false, neutral=false) {
+  function appendConfigMetric(row, valueKey, deltaKey, suffix='') {
     const td=document.createElement('td'), value=document.createElement('strong'), delta=document.createElement('small');
     value.textContent=metric(row[valueKey],suffix); delta.className='delta';
     if (Number(row.comparisons)>0) {
       const change=Number(row[deltaKey]||0);
       delta.textContent='较基线 '+signedMetric(change,suffix);
-      if (change===0 || neutral) delta.classList.add('neutral');
-      else if ((change>0 && !lowerIsBetter) || (change<0 && lowerIsBetter)) delta.classList.add('good');
+      if (change===0) delta.classList.add('neutral');
+      else if (change>0) delta.classList.add('good');
       else delta.classList.add('bad');
     } else { delta.textContent='较基线 —'; }
     td.append(value,delta); return td;
@@ -252,11 +262,11 @@
       const label=document.createElement('td'); label.textContent=String(row.label||row.tier||'未知');
       const samples=document.createElement('td'); samples.textContent=fmt(row.sessions)+' / '+fmt(row.clients); samples.title='性能会话 / 匿名设备';
       tr.append(label,samples,
-        appendConfigMetric(row,'avgFps','fpsDelta'),
-        appendConfigMetric(row,'fps1Low','fps1LowDelta'),
-        appendConfigMetric(row,'gpuUtil','gpuUtilDelta','%',false,true),
-        appendConfigMetric(row,'gpuTemp','gpuTempDelta','°C',true),
-        appendConfigMetric(row,'gpuPower','gpuPowerDelta','W',true));
+        appendConfigMetric(row,'avgFps','fpsDelta',' FPS'),
+        appendConfigMetric(row,'fps1Low','fps1LowDelta',' FPS'),
+        appendConfigMetric(row,'gpuUtil','gpuUtilDelta','%'),
+        appendConfigMetric(row,'gpuTemp','gpuTempDelta','°C'),
+        appendConfigMetric(row,'gpuPower','gpuPowerDelta','W'));
       body.appendChild(tr);
     });
   }
@@ -273,8 +283,11 @@
     set('gpuUtil',metric(perf.gpuUtil,'%')); set('gpuTemp',metric(perf.gpuTemp,'°C')); set('gpuPower',metric(perf.gpuPower,'W'));
     const hasPairs=Number(improvement.comparisons)>0;
     set('matchedComparisons',fmt(improvement.comparisons)); set('matchedClients','匹配匿名设备 '+fmt(improvement.matchedClients));
-    set('fpsDelta',hasPairs?signedMetric(improvement.fpsDelta):'—'); set('fps1LowDelta',hasPairs?signedMetric(improvement.fps1LowDelta):'—');
-    set('gpuUtilDelta',hasPairs?signedMetric(improvement.gpuUtilDelta,'%'):'—'); set('gpuTempDelta',hasPairs?signedMetric(improvement.gpuTempDelta,'°C'):'—'); set('gpuPowerDelta',hasPairs?signedMetric(improvement.gpuPowerDelta,'W'):'—');
+    setDirectionalMetric('fpsDelta',hasPairs?improvement.fpsDelta:null,' FPS');
+    setDirectionalMetric('fps1LowDelta',hasPairs?improvement.fps1LowDelta:null,' FPS');
+    setDirectionalMetric('gpuUtilDelta',hasPairs?improvement.gpuUtilDelta:null,'%');
+    setDirectionalMetric('gpuTempDelta',hasPairs?improvement.gpuTempDelta:null,'°C');
+    setDirectionalMetric('gpuPowerDelta',hasPairs?improvement.gpuPowerDelta:null,'W');
     renderPerformanceConfigRows(data.performanceByConfig);
     renderPerformanceRows(data.performanceByGpu);
     renderTrend(data.daily); renderBars('versions',data.versions); renderBars('gpus',data.gpus);
