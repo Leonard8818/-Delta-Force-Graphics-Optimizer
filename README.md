@@ -161,6 +161,11 @@ SHA256 可以校验下载文件是否与版本清单一致，但无法防止官�
 
 新增优化项必须满足一个硬性条件：能够准确检测当前状态、在写入前完整备份，并可靠恢复到原始状态。提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [SECURITY.md](SECURITY.md)。
 
+### Contributors
+
+- [@Leonard8818](https://github.com/Leonard8818) — 项目作者与维护者
+- [@codex](https://github.com/codex) — OpenAI 编程协作助手
+
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
