@@ -1,8 +1,8 @@
 {
-    "version":  "0.18.1",
-    "notes":  "修复更新后程序启动时直接退出的问题。",
+    "version":  "0.18.2",
+    "notes":  "修复双显卡笔记本误把 AMD / Intel 核显用于显卡指引的问题，现在优先识别独显。\\nNVIDIA 笔记本显卡指引增加 Game Ready 驱动选择说明。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "e0586d56be3ae25b20fabeae4c68a2e7889890c2aa2aa66d4e5eb2811fe42e11",
-    "size":  175616
+    "sha256":  "f515e7a37536a5611203e2f771435e429ae978ad386870493e19ad99b97f66b9",
+    "size":  176128
 }

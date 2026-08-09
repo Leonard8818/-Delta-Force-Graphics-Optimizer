@@ -1,7 +1,9 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.16
+  DeltaForceBooster 核心脚本 — v0.16.1
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.16.1：双显卡按独显性能优先级选择主显卡，不再因 WMI 返回顺序误把 AMD/Intel
+        核显用于显卡指引；NVIDIA 笔记本指引补充 Game Ready 驱动选择说明。
   v0.16：显卡型号伪装按代际给默认值（RTX 30 系 → GTX 705 Ti，RTX 40/50 系 →
         GTX 1050 Ti），并新增 -GpuSpoofModel 供 GUI/CLI 明确选择目标型号。
   v0.15.1：pcfg 还原兜底改按「残留是否在还原后最终生效的方案里」判定（原先只认工具
@@ -632,6 +634,32 @@ function Get-GpuVendor([string]$Pnp, [string]$Name) {
   else   { 'Unknown' }
 }
 
+# Win32_VideoController 的返回顺序没有「独显优先」保证，AMD 核显经常排在 NVIDIA
+# 独显前面。用型号特征做稳定排序：NVIDIA GeForce、AMD RX/Pro、Intel Arc 视为独显，
+# 其余 Radeon Graphics / Intel UHD / Iris 作为核显兜底。
+function Get-GpuPreferenceScore($Gpu) {
+  $name = "$($Gpu.Name)"
+  switch ("$($Gpu.Vendor)") {
+    'NVIDIA' { return 400 }
+    'AMD' {
+      if ($name -match '(?i)\bRadeon\s+(?:RX|Pro)\b|\bFirePro\b') { return 300 }
+      return 150
+    }
+    'Intel' {
+      if ($name -match '(?i)\bArc\b') { return 280 }
+      return 100
+    }
+    default { return 0 }
+  }
+}
+
+function Select-MainGpu($Gpus) {
+  @($Gpus | Where-Object { $_ } |
+    Sort-Object @{ Expression = { Get-GpuPreferenceScore $_ }; Descending = $true },
+                @{ Expression = { "$($_.Name)" }; Descending = $false } |
+    Select-Object -First 1)[0]
+}
+
 function Get-HardwareInfo {
   $os   = Get-CimInstance Win32_OperatingSystem
   $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
@@ -644,9 +672,8 @@ function Get-HardwareInfo {
       Pnp    = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
     }
   })
-  # 双显卡（核显+独显）机器以独显为主，驱动指引按独显给
-  $main = ($gpus | Where-Object { $_.Vendor -in 'NVIDIA','AMD' } | Select-Object -First 1)
-  if (-not $main) { $main = $gpus | Select-Object -First 1 }
+  # 双显卡（核显+独显）机器以独显为主，不能依赖 WMI 的未定义返回顺序
+  $main = Select-MainGpu $gpus
 
   # 笔记本判定：有电池即笔记本。部分优化项（电源计划 DC 档、显卡型号）取值按机型区分
   $isLaptop = [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
@@ -1178,9 +1205,15 @@ function Get-ItemState($Item) {
 # ---------- 显卡驱动指引 ----------
 
 # 只讲驱动层设置：游戏内那部分已有独立的「游戏内设置参考」页，重复写只会让人两头对不上
-function Get-GpuGuideText([string]$Vendor) {
+function Get-GpuGuideText([string]$Vendor, [string]$GpuName, [bool]$IsLaptop) {
   switch ($Vendor) {
     'NVIDIA' { @(
+      $(if ($IsLaptop) {
+        "驱动选择：$GpuName 使用 NVIDIA GeForce Game Ready Driver（Notebook / DCH / WHQL）。玩游戏优先 Game Ready，不要下载同名桌面显卡驱动；可直接通过 NVIDIA App 更新。"
+      } else {
+        '驱动选择：玩游戏优先安装最新 NVIDIA GeForce Game Ready Driver（DCH / WHQL），可直接通过 NVIDIA App 更新。'
+      })
+      ''
       'NVIDIA 控制面板 → 管理 3D 设置 → 程序设置 → 添加「三角洲行动」：'
       '  1. 电源管理模式 = 最高性能优先'
       '  2. 低延迟模式 = 超高'
@@ -1233,7 +1266,7 @@ function Invoke-DetectReport([string]$GamePath) {
     Hardware = $hw
     GamePath = $GamePath
     Items    = $states
-    GpuGuide = Get-GpuGuideText $hw.MainGpuVendor
+    GpuGuide = Get-GpuGuideText $hw.MainGpuVendor $hw.MainGpuName $hw.IsLaptop
   }
 }
 
