@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.18.3
+  DeltaForceBooster 图形界面 — v0.18.4
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.18.4：显卡软件缺失时明确指引点击官方下载按钮；自动检测到新版本时直接弹出
+        更新详情，不再只显示标题栏入口。
   v0.18.3：主推全套加入显卡型号伪装，仍保留独立二次确认和手动目标型号选择。
   v0.18.2：修复双显卡笔记本误把 AMD/Intel 核显用于显卡指引，改为稳定选择独显；
         NVIDIA 笔记本补充 Game Ready 驱动选择说明。
@@ -47,7 +49,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.18.3'
+$script:GuiVersion = '0.18.4'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -415,7 +417,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.18.3 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.18.4 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -745,7 +747,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.18.3 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.18.4 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2034,17 +2036,18 @@ function Build-GpuGuideDialog($Hw) {
       })
       $row.Children.Add($b) | Out-Null
     } else {
-      # 没装就别放个点了没反应的按钮：说明情况 + 给官方下载页
-      $t = New-WrapText "未安装 $($app.Name)：$($app.Missing)" $script:C.TextMut 11
+      # 缺失时明确告诉用户下一步点哪里；按钮直接打开对应厂商的官方下载页
+      $t = New-WrapText "未检测到 $($app.Name)：$($app.Missing)。请点击右侧「下载 $($app.Name)」打开官网，安装完成后重新打开本工具。" $script:C.TextMut 11
       $t.MaxWidth = 300
       $t.Margin = New-Object Windows.Thickness 0, 0, 8, 0
       $row.Children.Add($t) | Out-Null
       $b = New-Object Windows.Controls.Button
       $b.Style = $window.FindResource('Ghost')
-      $b.Content = '前往官网下载'
+      $b.Content = "下载 $($app.Name)"
       $b.FontSize = 11
       $b.Height = 26
       $b.Tag = "$($app.Download)"
+      $b.ToolTip = "$($app.Download)"
       $b.Add_Click({ Open-HelpLink "$($this.Tag)" })
       $row.Children.Add($b) | Out-Null
     }
@@ -2091,6 +2094,11 @@ function Set-BusyState([bool]$On) {
   foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','ReportBtn','BrowseBtn',
                  'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn','UpdateBtn') {
     if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
+  }
+  # 更新恰好在执行优化/还原时被检测到：先不打断系统修改，收尾后立即补弹详情
+  if (-not $On -and $script:UpdateInfo -and
+      "$script:UpdatePromptedVersion" -ne "$($script:UpdateInfo.Version)") {
+    [void]$window.Dispatcher.BeginInvoke([action]{ Show-DetectedUpdateDialog })
   }
 }
 
@@ -2773,6 +2781,21 @@ function Show-UpdateDialog($UpdInfo) {
   $false
 }
 
+# 自动检查发现新版时的统一弹窗出口。同一版本每次程序运行只自动弹一次；用户选了
+# 「稍后再说」仍可点标题栏入口重看，勾「不再提醒」则后续启动也不再自动提示。
+function Show-DetectedUpdateDialog {
+  if (-not $script:UpdateInfo -or $script:Busy -or $script:UpdateDialogOpen) { return }
+  $ver = "$($script:UpdateInfo.Version)"
+  if (-not $ver -or "$script:UpdatePromptedVersion" -eq $ver) { return }
+  $script:UpdatePromptedVersion = $ver
+  $script:UpdateDialogOpen = $true
+  try {
+    if (Show-UpdateDialog $script:UpdateInfo) { $ui.UpdateBtn.Visibility = 'Collapsed' }
+  } finally {
+    $script:UpdateDialogOpen = $false
+  }
+}
+
 function Update-ItemList {
   $ui.ItemPanel.Children.Clear()
   $ui.RiskyPanel.Children.Clear()
@@ -2798,7 +2821,7 @@ $script:UpdateCheckIntervalMinutes = 30
 
 # 异步检查更新：网络请求放后台运行空间，界面渲染不等它；任何失败静默吞掉。
 # 启动时查一次，此后由定时器每 $script:UpdateCheckIntervalMinutes 分钟复查——
-# 用户长期挂着软件也能等到标题栏入口亮起，不必重启软件才发现新版（实机诉求）。
+# 检测到新版会直接弹详情，同时保留标题栏常驻入口供稍后重看。
 function Start-UpdateCheck {
   if (-not (Get-Command Test-BoosterUpdate -ErrorAction SilentlyContinue)) { return }
   # 上一轮检查还没回来就跳过本轮：慢网络下 30 分钟间隔也可能追尾
@@ -2821,13 +2844,15 @@ function Start-UpdateCheck {
         $r = @($script:UpdateJob.EndInvoke($script:UpdateAsync))
         $found = $r | Where-Object { $_ } | Select-Object -First 1
         if ($found) {
-          # 不再启动即弹框打断用户：只点亮标题栏的常驻入口（Discord 手法），详情由用户点开。
-          # 定时复查发现同一版本时只静默刷新信息，日志不重复刷屏
+          # 新版本第一次出现就直接弹详情；同一版本本次运行只自动弹一次，标题栏入口常驻
           $isNew = ("$($found.Version)" -ne "$(if ($script:UpdateInfo) { $script:UpdateInfo.Version })")
           $script:UpdateInfo = $found
           $ui.UpdateBtn.ToolTip = "新版本 v$($found.Version) 可用（当前 v$($found.Current)），点击查看详情"
           $ui.UpdateBtn.Visibility = 'Visible'
-          if ($isNew) { Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)），点右上角「有新版本」查看详情。" }
+          if ($isNew) {
+            Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)），正在显示更新详情。"
+            Show-DetectedUpdateDialog
+          }
         }
       } catch {} finally { $script:UpdateJob.Dispose(); $script:UpdateCheckBusy = $false }
     })
@@ -2900,6 +2925,8 @@ $script:PresetList = @()
 $script:ApplyingPreset = $false
 $script:SelectedGpuSpoofModel = $null
 $script:UpdateInfo = $null
+$script:UpdatePromptedVersion = $null
+$script:UpdateDialogOpen = $false
 $script:HardwareInfo = $null
 
 $window.Add_ContentRendered({

@@ -1,8 +1,8 @@
 {
-    "version":  "0.18.3",
-    "notes":  "主推全套加入显卡型号伪装；执行前仍会单独二次确认，并允许手动选择目标型号。",
+    "version":  "0.18.4",
+    "notes":  "未检测到显卡控制软件时，明确指引点击对应厂商的官方下载按钮。\\n自动检测到新版本后直接弹出更新详情，同时保留标题栏入口供稍后重看。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "edf17baf07b2533e1270416606af7d1731cb25a1acaf16e17689d0ce6d331548",
+    "sha256":  "78cf03f49dbb94e61c948d82248a532afa68d5d6f5662719cfe293e56eee9e79",
     "size":  176640
 }
