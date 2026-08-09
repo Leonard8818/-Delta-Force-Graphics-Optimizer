@@ -87,6 +87,7 @@ def _init_db():
                 cpu_model TEXT NOT NULL DEFAULT '',
                 gpu_vendor TEXT NOT NULL DEFAULT '',
                 gpu_model TEXT NOT NULL DEFAULT '',
+                gpu_model_verified INTEGER NOT NULL DEFAULT 0,
                 ram_gb REAL NOT NULL DEFAULT 0,
                 device_type TEXT NOT NULL DEFAULT ''
             );
@@ -104,8 +105,32 @@ def _init_db():
             CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON clients(last_seen);
             CREATE INDEX IF NOT EXISTS idx_clients_first_seen ON clients(first_seen);
             CREATE INDEX IF NOT EXISTS idx_daily_day ON daily_usage(day);
+            CREATE TABLE IF NOT EXISTS performance_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_hash TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                app_version TEXT NOT NULL DEFAULT '',
+                gpu_model TEXT NOT NULL DEFAULT '',
+                duration_sec INTEGER NOT NULL DEFAULT 0,
+                avg_fps REAL NOT NULL DEFAULT 0,
+                fps_1_low REAL NOT NULL DEFAULT 0,
+                gpu_util_avg REAL NOT NULL DEFAULT 0,
+                gpu_util_max REAL NOT NULL DEFAULT 0,
+                gpu_temp_avg REAL NOT NULL DEFAULT 0,
+                gpu_temp_max REAL NOT NULL DEFAULT 0,
+                gpu_power_avg REAL NOT NULL DEFAULT 0,
+                gpu_power_max REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_performance_day ON performance_sessions(day);
+            CREATE INDEX IF NOT EXISTS idx_performance_client ON performance_sessions(client_hash, recorded_at);
             """
             )
+            # v0.19.0 以前的库没有“真实型号已验证”标记。旧的 GTX 1050 Ti/705 Ti
+            # 可能是伪装值，只有新版客户端通过 NVML 验证后才进入显卡型号榜。
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(clients)")}
+            if "gpu_model_verified" not in columns:
+                conn.execute("ALTER TABLE clients ADD COLUMN gpu_model_verified INTEGER NOT NULL DEFAULT 0")
     finally:
         conn.close()
 
@@ -137,7 +162,7 @@ def _normalize_telemetry(payload):
     event = _text(payload.get("event"), 16).lower()
     if not _install_id_re.fullmatch(install_id):
         raise ValueError("bad install id")
-    if event not in ("launch", "apply", "restore"):
+    if event not in ("launch", "apply", "restore", "performance"):
         raise ValueError("bad event")
     return {
         "install_id": install_id.lower(),
@@ -148,10 +173,20 @@ def _normalize_telemetry(payload):
         "cpu_model": _text(payload.get("cpu"), 160),
         "gpu_vendor": _text(payload.get("gpuVendor"), 32),
         "gpu_model": _text(payload.get("gpuModel"), 160),
+        "gpu_model_verified": 1 if payload.get("gpuModelVerified") is True else 0,
         "ram_gb": _bounded_float(payload.get("ramGb")),
         "device_type": _text(payload.get("deviceType"), 24),
         "ok": _bounded_int(payload.get("ok")),
         "failed": _bounded_int(payload.get("failed")),
+        "duration_sec": _bounded_int(payload.get("durationSec"), 600),
+        "avg_fps": _bounded_float(payload.get("avgFps"), 2000),
+        "fps_1_low": _bounded_float(payload.get("fps1Low"), 2000),
+        "gpu_util_avg": _bounded_float(payload.get("gpuUtilAvg"), 100),
+        "gpu_util_max": _bounded_float(payload.get("gpuUtilMax"), 100),
+        "gpu_temp_avg": _bounded_float(payload.get("gpuTempAvg"), 150),
+        "gpu_temp_max": _bounded_float(payload.get("gpuTempMax"), 150),
+        "gpu_power_avg": _bounded_float(payload.get("gpuPowerAvg"), 2000),
+        "gpu_power_max": _bounded_float(payload.get("gpuPowerMax"), 2000),
     }
 
 
@@ -182,8 +217,8 @@ def _record_telemetry(payload, now=None):
             """
             INSERT INTO clients (
                 client_hash, first_seen, last_seen, app_version, os_name, os_build,
-                cpu_model, gpu_vendor, gpu_model, ram_gb, device_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cpu_model, gpu_vendor, gpu_model, gpu_model_verified, ram_gb, device_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(client_hash) DO UPDATE SET
                 last_seen=excluded.last_seen,
                 app_version=CASE WHEN excluded.app_version<>'' THEN excluded.app_version ELSE clients.app_version END,
@@ -191,16 +226,39 @@ def _record_telemetry(payload, now=None):
                 os_build=CASE WHEN excluded.os_build<>'' THEN excluded.os_build ELSE clients.os_build END,
                 cpu_model=CASE WHEN excluded.cpu_model<>'' THEN excluded.cpu_model ELSE clients.cpu_model END,
                 gpu_vendor=CASE WHEN excluded.gpu_vendor<>'' THEN excluded.gpu_vendor ELSE clients.gpu_vendor END,
-                gpu_model=CASE WHEN excluded.gpu_model<>'' THEN excluded.gpu_model ELSE clients.gpu_model END,
+                gpu_model=CASE
+                    WHEN excluded.gpu_model<>'' AND (excluded.gpu_model_verified=1 OR clients.gpu_model_verified=0)
+                    THEN excluded.gpu_model ELSE clients.gpu_model END,
+                gpu_model_verified=CASE WHEN excluded.gpu_model_verified=1 THEN 1 ELSE clients.gpu_model_verified END,
                 ram_gb=CASE WHEN excluded.ram_gb>0 THEN excluded.ram_gb ELSE clients.ram_gb END,
                 device_type=CASE WHEN excluded.device_type<>'' THEN excluded.device_type ELSE clients.device_type END
             """,
             (
                 client_hash, now, now, item["app_version"], item["os_name"], item["os_build"],
-                item["cpu_model"], item["gpu_vendor"], item["gpu_model"], item["ram_gb"],
-                item["device_type"],
+                item["cpu_model"], item["gpu_vendor"], item["gpu_model"],
+                item["gpu_model_verified"], item["ram_gb"], item["device_type"],
             ),
         )
+            if event == "performance" and item["gpu_model_verified"] == 1 and item["duration_sec"] > 0 and (
+                item["avg_fps"] > 0 or item["gpu_util_avg"] > 0
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO performance_sessions (
+                        client_hash, recorded_at, day, app_version, gpu_model, duration_sec,
+                        avg_fps, fps_1_low, gpu_util_avg, gpu_util_max, gpu_temp_avg,
+                        gpu_temp_max, gpu_power_avg, gpu_power_max
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        client_hash, now, day, item["app_version"], item["gpu_model"],
+                        item["duration_sec"], item["avg_fps"], item["fps_1_low"],
+                        item["gpu_util_avg"], item["gpu_util_max"], item["gpu_temp_avg"],
+                        item["gpu_temp_max"], item["gpu_power_avg"], item["gpu_power_max"],
+                    ),
+                )
+                # 只保留 90 天汇总；客户端逐帧 CSV 从不上传。
+                conn.execute("DELETE FROM performance_sessions WHERE recorded_at<?", (now - 90 * 86400,))
             conn.execute(
             """
             INSERT INTO daily_usage (
@@ -277,11 +335,33 @@ def _build_stats(now=None, days=30):
             (int(dt.datetime.combine(start_day, dt.time.min, tzinfo=dt.timezone.utc).timestamp()),),
         )}
         versions = _rows(conn, "SELECT app_version label, COUNT(*) value FROM clients WHERE app_version<>'' GROUP BY app_version ORDER BY value DESC, label DESC LIMIT 12")
-        gpus = _rows(conn, "SELECT gpu_model label, COUNT(*) value FROM clients WHERE gpu_model<>'' GROUP BY gpu_model ORDER BY value DESC, label LIMIT 12")
+        gpus = _rows(conn, "SELECT gpu_model label, COUNT(*) value FROM clients WHERE gpu_model<>'' AND gpu_model_verified=1 GROUP BY gpu_model ORDER BY value DESC, label LIMIT 12")
         vendors = _rows(conn, "SELECT gpu_vendor label, COUNT(*) value FROM clients WHERE gpu_vendor<>'' GROUP BY gpu_vendor ORDER BY value DESC, label LIMIT 8")
         systems = _rows(conn, "SELECT (os_name || CASE WHEN os_build<>'' THEN ' · ' || os_build ELSE '' END) label, COUNT(*) value FROM clients WHERE os_name<>'' GROUP BY label ORDER BY value DESC, label LIMIT 12")
         devices = _rows(conn, "SELECT device_type label, COUNT(*) value FROM clients WHERE device_type<>'' GROUP BY device_type ORDER BY value DESC, label")
         ram_values = [row[0] for row in conn.execute("SELECT ram_gb FROM clients WHERE ram_gb>0")]
+        performance = dict(conn.execute(
+            """SELECT COUNT(*) sessions,
+                      AVG(NULLIF(avg_fps,0)) avg_fps, AVG(NULLIF(fps_1_low,0)) fps_1_low,
+                      AVG(NULLIF(gpu_util_avg,0)) gpu_util_avg,
+                      AVG(NULLIF(gpu_temp_avg,0)) gpu_temp_avg,
+                      AVG(NULLIF(gpu_power_avg,0)) gpu_power_avg
+                 FROM performance_sessions WHERE day>=?""",
+            (start_day.isoformat(),),
+        ).fetchone())
+        performance_by_gpu = _rows(
+            conn,
+            """SELECT gpu_model label, COUNT(*) sessions,
+                      ROUND(AVG(NULLIF(avg_fps,0)),1) avgFps,
+                      ROUND(AVG(NULLIF(fps_1_low,0)),1) fps1Low,
+                      ROUND(AVG(NULLIF(gpu_util_avg,0)),1) gpuUtil,
+                      ROUND(AVG(NULLIF(gpu_temp_avg,0)),1) gpuTemp,
+                      ROUND(AVG(NULLIF(gpu_power_avg,0)),1) gpuPower
+                 FROM performance_sessions
+                WHERE day>=? AND gpu_model<>''
+                GROUP BY gpu_model ORDER BY sessions DESC, label LIMIT 12""",
+            (start_day.isoformat(),),
+        )
     finally:
         conn.close()
 
@@ -332,6 +412,15 @@ def _build_stats(now=None, days=30):
         "systems": systems,
         "devices": devices,
         "ram": [{"label": key, "value": value} for key, value in ram_buckets.items()],
+        "performance": {
+            "sessions": int(performance.get("sessions") or 0),
+            "avgFps": round(float(performance.get("avg_fps") or 0), 1),
+            "fps1Low": round(float(performance.get("fps_1_low") or 0), 1),
+            "gpuUtil": round(float(performance.get("gpu_util_avg") or 0), 1),
+            "gpuTemp": round(float(performance.get("gpu_temp_avg") or 0), 1),
+            "gpuPower": round(float(performance.get("gpu_power_avg") or 0), 1),
+        },
+        "performanceByGpu": performance_by_gpu,
         "diagnosticReports": _report_summary(),
     }
 

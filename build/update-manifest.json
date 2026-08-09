@@ -1,8 +1,9 @@
 {
-    "version":  "0.18.4",
-    "notes":  "未检测到显卡控制软件时，明确指引点击对应厂商的官方下载按钮。\\n自动检测到新版本后直接弹出更新详情，同时保留标题栏入口供稍后重看。",
+    "version":  "0.19.0",
+    "minimumSupportedVersion":  "0.18.2",
+    "notes":  "显卡型号改为显示驱动识别到的真实硬件，不再被型号伪装污染。\\n游戏启动后自动采样 120 秒，记录平均 FPS、1% Low、GPU 占用率、温度和功耗汇总。\\n后台看板新增游戏性能统计；v0.18.0 / v0.18.1 已停止支持。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "78cf03f49dbb94e61c948d82248a532afa68d5d6f5662719cfe293e56eee9e79",
-    "size":  176640
+    "sha256":  "1788534873532aecdc163c7c8eb370f569454ac286f4a80fbcdbb93e1a43f918",
+    "size":  612352
 }

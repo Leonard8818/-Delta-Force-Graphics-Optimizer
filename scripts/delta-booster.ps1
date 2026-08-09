@@ -453,7 +453,14 @@ function Get-GpuClassKeyPath($Hw) {
   if (-not $k) { return $null }
   try {
     foreach ($n in ($k.GetSubKeyNames() | Where-Object { $_ -match '^\d{4}$' })) {
-      if ((Get-RegValue "$root\$n" 'DriverDesc') -eq $Hw.MainGpuName) { return "$root\$n" }
+      $path = "$root\$n"
+      # DeviceDesc 可被“显卡型号伪装”改写，不能再把显示名当作唯一身份。
+      # 优先用不会随伪装变化的 PCI VEN/DEV 匹配 Class 键，旧数据再按名称兜底。
+      $pnpModel = $(if ($Hw.MainGpuPnp -match '^PCI\\([^\\]+)') { $Matches[1] } else { '' })
+      $matching = "$(Get-RegValue $path 'MatchingDeviceId')"
+      if ($pnpModel -and $matching -match [regex]::Escape($pnpModel)) { return $path }
+      $driverDesc = "$(Get-RegValue $path 'DriverDesc')"
+      if ($driverDesc -in @("$($Hw.MainGpuName)", "$($Hw.MainGpuReportedName)")) { return $path }
     }
   } finally { $k.Close() }
   $null
@@ -661,16 +668,41 @@ function Select-MainGpu($Gpus) {
     Select-Object -First 1)[0]
 }
 
+# DeviceDesc 伪装后 Win32_VideoController.Name 也会跟着变。NVIDIA 的 NVML/nvidia-smi
+# 直接从驱动查询物理适配器型号，不受 DeviceDesc 影响，用它恢复真实型号用于界面、
+# 显卡指引、诊断报告和匿名统计。查询失败时保留 WMI 值，并明确标记为未验证。
+function Get-NvidiaRealGpuNames {
+  try {
+    if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) { return @() }
+    $out = @(& nvidia-smi.exe '--query-gpu=name' '--format=csv,noheader' 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @() }
+    @($out | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
+  } catch { @() }
+}
+
 function Get-HardwareInfo {
   $os   = Get-CimInstance Win32_OperatingSystem
   $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
   $cs   = Get-CimInstance Win32_ComputerSystem
+  $nvidiaNames = @(Get-NvidiaRealGpuNames)
+  $nvidiaIndex = 0
   $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object {
+    $reportedName = "$($_.Name)".Trim()
+    $vendor = Get-GpuVendor $_.PNPDeviceID $reportedName
+    $realName = $reportedName
+    $verified = ($vendor -ne 'NVIDIA')
+    if ($vendor -eq 'NVIDIA' -and $nvidiaIndex -lt $nvidiaNames.Count) {
+      $realName = "$($nvidiaNames[$nvidiaIndex])".Trim()
+      $verified = [bool]$realName
+      $nvidiaIndex++
+    }
     [pscustomobject]@{
-      Name   = $_.Name
-      Vendor = Get-GpuVendor $_.PNPDeviceID $_.Name
-      Driver = $_.DriverVersion
-      Pnp    = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
+      Name         = $realName
+      ReportedName = $reportedName
+      NameVerified = $verified
+      Vendor       = $vendor
+      Driver       = $_.DriverVersion
+      Pnp          = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
     }
   })
   # 双显卡（核显+独显）机器以独显为主，不能依赖 WMI 的未定义返回顺序
@@ -689,6 +721,9 @@ function Get-HardwareInfo {
     Gpus          = $gpus
     MainGpuVendor = $(if ($main) { $main.Vendor } else { 'Unknown' })
     MainGpuName   = $(if ($main) { $main.Name } else { '未检测到' })
+    MainGpuReportedName = $(if ($main) { $main.ReportedName } else { '未检测到' })
+    MainGpuNameVerified = $(if ($main) { [bool]$main.NameVerified } else { $false })
+    MainGpuPnp    = $(if ($main) { $main.Pnp } else { $null })
     IsLaptop      = $isLaptop
     IsAdmin       = Test-Admin
   }

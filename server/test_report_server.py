@@ -37,6 +37,7 @@ class TelemetryTests(unittest.TestCase):
             "cpu": "Example CPU",
             "gpuVendor": "NVIDIA",
             "gpuModel": "NVIDIA GeForce RTX 4070 SUPER",
+            "gpuModelVerified": True,
             "ramGb": 31.8,
             "deviceType": "desktop",
             "ok": 5,
@@ -60,6 +61,32 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(1, stats["period"]["apply_failed"])
         self.assertEqual("0.18.0", stats["versions"][0]["label"])
         self.assertEqual(2, stats["versions"][0]["value"])
+        self.assertEqual("NVIDIA GeForce RTX 4070 SUPER", stats["gpus"][0]["label"])
+
+    def test_performance_session_aggregates(self):
+        now = 1786248000
+        data = self.payload("55555555-5555-4555-8555-555555555555", "performance")
+        data.update({
+            "durationSec": 120,
+            "avgFps": 144.2,
+            "fps1Low": 93.5,
+            "gpuUtilAvg": 97.1,
+            "gpuUtilMax": 100,
+            "gpuTempAvg": 72.4,
+            "gpuTempMax": 76,
+            "gpuPowerAvg": 151.7,
+            "gpuPowerMax": 180.2,
+        })
+        SERVER._record_telemetry(data, now)
+        unverified = dict(data)
+        unverified.update({"installId": "66666666-6666-4666-8666-666666666666", "gpuModel": "NVIDIA GeForce GTX 1050 Ti", "gpuModelVerified": False})
+        SERVER._record_telemetry(unverified, now + 1)
+        stats = SERVER._build_stats(now)
+        self.assertEqual(1, stats["performance"]["sessions"])
+        self.assertEqual(144.2, stats["performance"]["avgFps"])
+        self.assertEqual(93.5, stats["performance"]["fps1Low"])
+        self.assertEqual(97.1, stats["performance"]["gpuUtil"])
+        self.assertEqual(1, stats["performanceByGpu"][0]["sessions"])
 
     def test_rejects_identifying_or_oversized_fields(self):
         bad = self.payload("not-a-guid")
@@ -106,6 +133,28 @@ class TelemetryTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=3)
+
+    def test_migrates_pre_019_clients_table(self):
+        os.remove(SERVER.DB_PATH)
+        import sqlite3
+        conn = sqlite3.connect(SERVER.DB_PATH)
+        try:
+            conn.execute("""CREATE TABLE clients (
+                client_hash TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+                app_version TEXT NOT NULL DEFAULT '', os_name TEXT NOT NULL DEFAULT '',
+                os_build TEXT NOT NULL DEFAULT '', cpu_model TEXT NOT NULL DEFAULT '',
+                gpu_vendor TEXT NOT NULL DEFAULT '', gpu_model TEXT NOT NULL DEFAULT '',
+                ram_gb REAL NOT NULL DEFAULT 0, device_type TEXT NOT NULL DEFAULT '')""")
+            conn.commit()
+        finally:
+            conn.close()
+        SERVER._init_db()
+        conn = SERVER._connect()
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(clients)")}
+        finally:
+            conn.close()
+        self.assertIn("gpu_model_verified", columns)
 
 
 if __name__ == "__main__":

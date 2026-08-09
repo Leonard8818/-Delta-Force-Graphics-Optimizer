@@ -7,6 +7,8 @@ logs/
 # 第三方工具由用户自行下载放入（体积大且各有授权条款），仓库只保留 .nip 配置档
 tools/*.exe
 tools/*.dll
+!tools/PresentMon.exe
+!tools/PresentMon-LICENSE.txt
 
 # 打包产物
 build/out/

@@ -299,6 +299,8 @@ $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂
   version  = "$ver"
+  # v0.18.0 / v0.18.1 存在必须淘汰的问题；支持该字段的客户端低于此版本时不允许跳过。
+  minimumSupportedVersion = '0.18.2'
   notes    = '（发布前把这里换成真实的更新说明，支持 \n 换行）'
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

@@ -22,6 +22,7 @@
   button:disabled { opacity:.45; cursor:wait; }
   .status { min-width:120px; text-align:right; color:var(--tx2); font:11px Consolas,monospace; }
   .kpis { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+  .perf-kpis { grid-template-columns:repeat(6,minmax(0,1fr)); margin-top:12px; }
   .kpi,.panel { background:linear-gradient(145deg,rgba(16,26,23,.96),rgba(10,20,17,.96)); border:1px solid var(--line); position:relative; overflow:hidden; }
   .kpi::before { content:""; position:absolute; left:0; top:0; width:34px; height:2px; background:var(--green); }
   .kpi { padding:17px 18px 15px; min-height:112px; }
@@ -55,10 +56,15 @@
   .activity .cell { background:#091310; border:1px solid #192D25; padding:14px; }
   .activity strong { display:block; color:var(--gold); font:700 22px Consolas,monospace; margin-bottom:5px; }
   .activity span { color:var(--tx2); font-size:10px; }
+  .metric-table { width:100%; border-collapse:collapse; font:11px Consolas,"Microsoft YaHei UI",sans-serif; }
+  .metric-table th,.metric-table td { padding:10px 9px; border-bottom:1px solid #192D25; text-align:right; white-space:nowrap; }
+  .metric-table th { color:var(--tx2); font-weight:400; font-size:10px; }
+  .metric-table th:first-child,.metric-table td:first-child { text-align:left; max-width:320px; overflow:hidden; text-overflow:ellipsis; }
+  .metric-table td { color:#C8D2CE; }
   .privacy { margin-top:12px; border-left:3px solid var(--gold); background:#15150E; padding:12px 15px; color:#A9A58E; font-size:11px; line-height:1.8; }
   .error { color:var(--danger); }
   footer { margin-top:26px; padding-top:14px; border-top:1px solid var(--line); color:#496359; font:10px Consolas,monospace; letter-spacing:.08em; }
-  @media (max-width:1000px) { .kpis { grid-template-columns:repeat(3,1fr); } .grid { grid-template-columns:1fr; } }
+  @media (max-width:1000px) { .kpis,.perf-kpis { grid-template-columns:repeat(3,1fr); } .grid { grid-template-columns:1fr; } }
   @media (max-width:680px) { .shell{padding:20px 14px 40px} header{flex-direction:column}.actions{width:100%;justify-content:space-between}.kpis{grid-template-columns:1fr 1fr}.split{grid-template-columns:1fr}.activity{grid-template-columns:1fr}.bar-row{grid-template-columns:minmax(80px,1fr) 1.4fr 36px} }
 </style>
 </head>
@@ -79,6 +85,22 @@
     <article class="kpi"><div class="label">近 15 分钟在线</div><div class="value" id="active15m">—</div><div class="hint">按最近一次事件估算</div></article>
     <article class="kpi"><div class="label">今日启动次数</div><div class="value" id="launchesToday">—</div><div class="hint" id="active30d">近 30 日活跃 —</div></article>
     <article class="kpi"><div class="label">诊断报告</div><div class="value" id="reports">—</div><div class="hint">仅显示数量，不展示正文</div></article>
+  </section>
+
+  <section class="kpis perf-kpis" aria-label="游戏性能指标">
+    <article class="kpi"><div class="label">性能采样会话</div><div class="value" id="perfSessions">—</div><div class="hint">近 30 日 · 每局最多采样 120 秒</div></article>
+    <article class="kpi"><div class="label">平均帧率</div><div class="value" id="avgFps">—</div><div class="hint">FPS · 有效样本平均</div></article>
+    <article class="kpi"><div class="label">平均 1% Low</div><div class="value" id="fps1Low">—</div><div class="hint">FPS · 流畅度下限</div></article>
+    <article class="kpi"><div class="label">平均 GPU 占用</div><div class="value" id="gpuUtil">—</div><div class="hint">%</div></article>
+    <article class="kpi"><div class="label">平均 GPU 温度</div><div class="value" id="gpuTemp">—</div><div class="hint">°C · 支持时记录</div></article>
+    <article class="kpi"><div class="label">平均 GPU 功耗</div><div class="value" id="gpuPower">—</div><div class="hint">W · 支持时记录</div></article>
+  </section>
+
+  <section class="grid" style="grid-template-columns:1fr">
+    <article class="panel">
+      <div class="panel-head"><h2>不同真实显卡的游戏性能</h2><span class="tag">120S SAMPLE</span></div>
+      <div style="overflow-x:auto"><table class="metric-table"><thead><tr><th>真实显卡型号</th><th>会话</th><th>平均 FPS</th><th>1% Low</th><th>GPU 占用</th><th>温度</th><th>功耗</th></tr></thead><tbody id="performanceByGpu"></tbody></table></div>
+    </article>
   </section>
 
   <section class="grid">
@@ -114,7 +136,7 @@
     <article class="panel"><div class="panel-head"><h2>设备类型</h2><span class="tag">DEVICE</span></div><div id="devices" class="bars"></div></article>
   </section>
 
-  <div class="privacy">统计从 v0.18.0 开始累计。客户端只发送随机安装标识、版本、Windows / CPU / GPU / 内存 / 设备类型，以及启动、优化、还原的汇总结果；不发送用户名、机器名、Windows SID、游戏路径或注册表内容。服务端对安装标识加盐哈希后存储，并且不把遥测请求 IP 写入统计数据库。</div>
+  <div class="privacy">基础统计从 v0.18.0 开始累计，真实显卡与游戏性能统计从 v0.19.0 开始累计。客户端只发送随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，启动、优化、还原汇总，以及游戏中最多 120 秒的 FPS、1% Low、GPU 占用率、温度和功耗汇总；不上传逐帧 CSV、用户名、机器名、Windows SID、游戏路径或注册表内容。服务端对安装标识加盐哈希后存储，并且不把遥测请求 IP 写入统计数据库。</div>
   <footer>DELTA FORCE · BOOSTER — PRIVATE ADMIN · AUTO REFRESH 60S</footer>
 </main>
 <script>
@@ -122,6 +144,7 @@
   const byId = id => document.getElementById(id);
   const fmt = value => new Intl.NumberFormat('zh-CN').format(Number(value || 0));
   const set = (id, value) => { byId(id).textContent = value; };
+  const metric = (value, suffix='') => Number(value)>0 ? Number(value).toFixed(1)+suffix : '—';
 
   function renderBars(id, rows) {
     const host = byId(id); host.replaceChildren();
@@ -166,14 +189,30 @@
     });
   }
 
+  function renderPerformanceRows(rows) {
+    const body=byId('performanceByGpu'); body.replaceChildren();
+    if (!(rows||[]).length) {
+      const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=7; td.className='empty'; td.textContent='等待 v0.19.0 客户端完成首批游戏采样'; tr.appendChild(td); body.appendChild(tr); return;
+    }
+    (rows||[]).forEach(row => {
+      const tr=document.createElement('tr');
+      const values=[row.label,fmt(row.sessions),metric(row.avgFps),metric(row.fps1Low),metric(row.gpuUtil,'%'),metric(row.gpuTemp,'°C'),metric(row.gpuPower,'W')];
+      values.forEach((value,index) => { const td=document.createElement('td'); td.textContent=String(value ?? '—'); if(index===0) td.title=String(row.label||''); tr.appendChild(td); });
+      body.appendChild(tr);
+    });
+  }
+
   function render(data) {
-    const t=data.totals || {}, p=data.period || {};
+    const t=data.totals || {}, p=data.period || {}, perf=data.performance || {};
     set('users',fmt(t.users)); set('newToday','今日新增 '+fmt(t.newToday));
     set('active7d',fmt(t.active7d)); set('active24h','近 24 小时 '+fmt(t.active24h));
     set('active15m',fmt(t.active15m)); set('launchesToday',fmt(t.launchesToday));
     set('active30d','近 30 日活跃 '+fmt(t.active30d)); set('reports',fmt((data.diagnosticReports||{}).count));
     set('periodLaunches',fmt(p.launches)); set('periodApplies',fmt(p.applies)); set('periodRestores',fmt(p.restores));
     set('applyOk',fmt(p.apply_ok)); set('applyFailed',fmt(p.apply_failed)); set('restoreFailed',fmt(p.restore_failed));
+    set('perfSessions',fmt(perf.sessions)); set('avgFps',metric(perf.avgFps)); set('fps1Low',metric(perf.fps1Low));
+    set('gpuUtil',metric(perf.gpuUtil,'%')); set('gpuTemp',metric(perf.gpuTemp,'°C')); set('gpuPower',metric(perf.gpuPower,'W'));
+    renderPerformanceRows(data.performanceByGpu);
     renderTrend(data.daily); renderBars('versions',data.versions); renderBars('gpus',data.gpus);
     renderBars('systems',data.systems); renderBars('ram',data.ram); renderBars('vendors',data.gpuVendors); renderBars('devices',data.devices);
     set('status','更新于 '+new Date(Number(data.generatedAt)*1000).toLocaleTimeString('zh-CN',{hour12:false}));

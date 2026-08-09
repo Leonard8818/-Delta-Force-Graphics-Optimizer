@@ -1,9 +1,12 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.18.4
+  DeltaForceBooster 图形界面 — v0.19.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.19.0：显卡型号改从驱动/NVML 读取真实硬件，不再让伪装值污染界面和统计；游戏启动后
+        自动采样 120 秒，记录平均 FPS、1% Low、GPU 占用率、温度和功耗汇总；加入最低
+        支持版本策略，低于门槛的客户端不可跳过更新。
   v0.18.4：显卡软件缺失时明确指引点击官方下载按钮；自动检测到新版本时直接弹出
         更新详情，不再只显示标题栏入口。
   v0.18.3：主推全套加入显卡型号伪装，仍保留独立二次确认和手动目标型号选择。
@@ -49,7 +52,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.18.4'
+$script:GuiVersion = '0.19.0'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -417,7 +420,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.18.4 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.19.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -747,7 +750,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.18.4 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.19.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1569,7 +1572,7 @@ function Update-StreamerPage {
 
 # 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
 # 老用户不会因为条款改了还停留在旧版本的「已同意」上
-$script:DisclaimerVersion = '2'
+$script:DisclaimerVersion = '3'
 $script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
 
 # 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
@@ -1610,7 +1613,7 @@ function Get-DisclaimerText {
     '- 会修改注册表、电源计划、系统服务等系统级设置；改动前自动备份，可点「还原设置」回退，但还原不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
-    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / GPU / 内存 / 设备类型，以及启动、优化、还原的汇总结果；不发送用户名、机器名、SID、游戏路径或注册表内容。'
+    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（FPS、1% Low、GPU 占用率、温度、功耗）；不发送用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。'
     '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
     ''
     '完整声明见项目根目录的 DISCLAIMER.md。'
@@ -1840,6 +1843,7 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
       cpu        = "$($Hw.CPU)"
       gpuVendor  = "$($Hw.MainGpuVendor)"
       gpuModel   = "$($Hw.MainGpuName)"
+      gpuModelVerified = [bool]$Hw.MainGpuNameVerified
       ramGb      = [double]$Hw.RamGB
       deviceType = $(if ($Hw.IsLaptop) { 'laptop' } else { 'desktop' })
       ok         = [math]::Max(0, $Ok)
@@ -1858,6 +1862,174 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
     $async = $ps.BeginInvoke()
     [void]$script:TelemetryJobs.Add([pscustomobject]@{ PowerShell = $ps; Async = $async })
   } catch {}
+}
+
+# ---------- 游戏性能记录（一次会话只采样一段，不常驻逐帧记录） ----------
+
+$script:PerformanceJobs = New-Object System.Collections.ArrayList
+$script:MonitoredGamePids = @{}
+$script:PerformanceSampleSeconds = 120
+$script:PerformanceWarmupSeconds = 20
+
+function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
+  if ($GamePid -le 0 -or $script:MonitoredGamePids.ContainsKey($GamePid)) { return }
+  $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
+  if (-not (Test-Path -LiteralPath $presentMon)) {
+    Write-Log '性能记录未启动：缺少 tools\PresentMon.exe。'
+    return
+  }
+  $script:MonitoredGamePids[$GamePid] = $true
+  $installId = Get-TelemetryInstallId
+  $sessionFile = Join-Path $script:RootDir 'config\performance-sessions.json'
+  $ps = [PowerShell]::Create()
+  [void]$ps.AddScript({
+    param($GamePid, $PresentMon, $SessionFile, $UploadUrl, $InstallId, $Version,
+          $GpuVendor, $GpuModel, $GpuVerified, $WarmupSeconds, $SampleSeconds)
+    $ErrorActionPreference = 'SilentlyContinue'
+
+    function Get-Number([object]$Value) {
+      $n = 0.0
+      if ([double]::TryParse("$Value", [Globalization.NumberStyles]::Float,
+          [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) { return $n }
+      $null
+    }
+    function Get-Average($Values) {
+      $clean = @($Values | Where-Object { $null -ne $_ })
+      if (-not $clean.Count) { return 0.0 }
+      [math]::Round(($clean | Measure-Object -Average).Average, 1)
+    }
+    function Get-Maximum($Values) {
+      $clean = @($Values | Where-Object { $null -ne $_ })
+      if (-not $clean.Count) { return 0.0 }
+      [math]::Round(($clean | Measure-Object -Maximum).Maximum, 1)
+    }
+
+    # 避开启动加载期；若游戏提前退出就不生成空会话。
+    for ($i = 0; $i -lt $WarmupSeconds; $i++) {
+      if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { return }
+      Start-Sleep -Seconds 1
+    }
+
+    $tmp = Join-Path $env:TEMP "dfb-presentmon-$GamePid-$([guid]::NewGuid().ToString('N')).csv"
+    $pm = Start-Process -FilePath $PresentMon -WindowStyle Hidden -PassThru -ArgumentList @(
+      '--process_id', "$GamePid", '--output_file', "`"$tmp`"", '--timed', "$SampleSeconds",
+      '--terminate_after_timed', '--terminate_on_proc_exit', '--no_console_stats',
+      '--session_name', "DFB-$GamePid")
+
+    $util = @(); $temp = @(); $power = @()
+    $started = Get-Date
+    while ($pm -and -not $pm.HasExited -and ((Get-Date) - $started).TotalSeconds -lt ($SampleSeconds + 15)) {
+      if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { break }
+      $sampled = $false
+      if ($GpuVendor -eq 'NVIDIA' -and (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) {
+        $raw = @(& nvidia-smi.exe '--query-gpu=utilization.gpu,temperature.gpu,power.draw' '--format=csv,noheader,nounits' 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $raw.Count) {
+          $parts = @("$($raw[0])" -split ',' | ForEach-Object { $_.Trim() })
+          if ($parts.Count -ge 3) {
+            $u = Get-Number $parts[0]; $t = Get-Number $parts[1]; $w = Get-Number $parts[2]
+            if ($null -ne $u) { $util += $u; $sampled = $true }
+            if ($null -ne $t) { $temp += $t }
+            if ($null -ne $w) { $power += $w }
+          }
+        }
+      }
+      # AMD / Intel 或 nvidia-smi 不可用时，退回 Windows GPU Engine 计数器。
+      if (-not $sampled) {
+        $counters = @(Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples |
+          Where-Object { $_.InstanceName -match "pid_$($GamePid)_" -and $_.InstanceName -match 'engtype_3D' }
+        if ($counters.Count) {
+          $sum = [math]::Min(100.0, [double](($counters | Measure-Object CookedValue -Sum).Sum))
+          $util += $sum
+        }
+      }
+      Start-Sleep -Seconds 2
+      try { $pm.Refresh() } catch {}
+    }
+    if ($pm -and -not $pm.HasExited) { try { $pm.Kill() } catch {} }
+    if ($pm) { try { $pm.WaitForExit(5000) | Out-Null } catch {} }
+
+    $frameMs = New-Object 'System.Collections.Generic.List[double]'
+    if (Test-Path -LiteralPath $tmp) {
+      try {
+        foreach ($row in @(Import-Csv -LiteralPath $tmp)) {
+          $ms = Get-Number $row.MsBetweenPresents
+          if ($null -ne $ms -and $ms -gt 0 -and $ms -le 1000) { $frameMs.Add([double]$ms) }
+        }
+      } catch {}
+      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+    $avgFps = 0.0; $fps1Low = 0.0
+    if ($frameMs.Count -ge 30) {
+      $avgMs = ($frameMs | Measure-Object -Average).Average
+      if ($avgMs -gt 0) { $avgFps = [math]::Round(1000.0 / $avgMs, 1) }
+      $fps = @($frameMs | ForEach-Object { 1000.0 / $_ } | Sort-Object)
+      $idx = [math]::Max(0, [math]::Floor(($fps.Count - 1) * 0.01))
+      $fps1Low = [math]::Round($fps[$idx], 1)
+    }
+
+    $session = [ordered]@{
+      recordedAt = (Get-Date).ToUniversalTime().ToString('o')
+      durationSec = [math]::Min($SampleSeconds, [math]::Round(((Get-Date) - $started).TotalSeconds))
+      gpuModel = "$GpuModel"
+      avgFps = $avgFps; fps1Low = $fps1Low
+      gpuUtilAvg = Get-Average $util; gpuUtilMax = Get-Maximum $util
+      gpuTempAvg = Get-Average $temp; gpuTempMax = Get-Maximum $temp
+      gpuPowerAvg = Get-Average $power; gpuPowerMax = Get-Maximum $power
+    }
+    if ($session.avgFps -le 0 -and $session.gpuUtilAvg -le 0) { return }
+
+    # 本地只保留最近 50 段汇总，诊断报告可直接带上；不保留逐帧 CSV。
+    try {
+      $dir = Split-Path -Parent $SessionFile
+      if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+      $old = @()
+      if (Test-Path -LiteralPath $SessionFile) { $old = @(Get-Content -LiteralPath $SessionFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
+      $all = @($old) + [pscustomobject]$session
+      if ($all.Count -gt 50) { $all = @($all | Select-Object -Last 50) }
+      [IO.File]::WriteAllText($SessionFile, ($all | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($true)))
+    } catch {}
+
+    # 真实型号未通过驱动验证时只留本地，不把可能仍受 DeviceDesc 伪装影响的名称送上榜。
+    if ($InstallId -and $GpuVerified) {
+      try {
+        $payload = [ordered]@{
+          installId = $InstallId; event = 'performance'; version = $Version
+          gpuVendor = $GpuVendor; gpuModel = $GpuModel; gpuModelVerified = [bool]$GpuVerified
+          durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
+          gpuUtilAvg = $session.gpuUtilAvg; gpuUtilMax = $session.gpuUtilMax
+          gpuTempAvg = $session.gpuTempAvg; gpuTempMax = $session.gpuTempMax
+          gpuPowerAvg = $session.gpuPowerAvg; gpuPowerMax = $session.gpuPowerMax
+        }
+        $body = [Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress))
+        Invoke-WebRequest -Uri $UploadUrl -Method Post -Body $body -ContentType 'application/json; charset=utf-8' `
+          -TimeoutSec 8 -UseBasicParsing | Out-Null
+      } catch {}
+    }
+  })
+  foreach ($arg in @($GamePid, $presentMon, $sessionFile, $script:TelemetryUploadUrl, $installId,
+                      $script:GuiVersion, "$($Hw.MainGpuVendor)", "$($Hw.MainGpuName)",
+                      [bool]$Hw.MainGpuNameVerified, $script:PerformanceWarmupSeconds,
+                      $script:PerformanceSampleSeconds)) {
+    [void]$ps.AddArgument($arg)
+  }
+  $async = $ps.BeginInvoke()
+  [void]$script:PerformanceJobs.Add([pscustomobject]@{ PowerShell = $ps; Async = $async; Pid = $GamePid })
+  Write-Log "检测到游戏进程 PID $GamePid：将在启动稳定后记录 120 秒 FPS / GPU 性能汇总。"
+}
+
+function Poll-GamePerformanceCapture {
+  foreach ($job in @($script:PerformanceJobs)) {
+    if (-not $job.Async.IsCompleted) { continue }
+    try { $job.PowerShell.EndInvoke($job.Async) | Out-Null } catch {}
+    try { $job.PowerShell.Dispose() } catch {}
+    $script:PerformanceJobs.Remove($job) | Out-Null
+    Write-Log "游戏性能记录已完成（PID $($job.Pid)），汇总已保存到本地并按隐私设置匿名上报。"
+  }
+  if (-not $script:TargetExe) { return }
+  $name = [IO.Path]::GetFileNameWithoutExtension($script:TargetExe)
+  foreach ($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+    Start-GamePerformanceCapture $proc.Id $script:HardwareInfo
+  }
 }
 
 # ---------- 诊断报告（本地组装 + 脱敏 + 用户确认后上传） ----------
@@ -1892,13 +2064,30 @@ function New-DiagnosticReport {
     $lines.Add("系统：$($hw.OS)（Build $($hw.Build)）")
     $lines.Add("CPU：$($hw.CPU)（$($hw.Cores) 核 $($hw.Threads) 线程）")
     $lines.Add("内存：$($hw.RamGB) GB")
-    foreach ($g in $hw.Gpus) { $lines.Add("显卡：$($g.Name)（$($g.Vendor)，驱动 $($g.Driver)）") }
+    foreach ($g in $hw.Gpus) {
+      $lines.Add("显卡（真实）：$($g.Name)（$($g.Vendor)，驱动 $($g.Driver)）")
+      if ($g.ReportedName -and $g.ReportedName -ne $g.Name) { $lines.Add("     系统当前伪装上报：$($g.ReportedName)") }
+    }
     $lines.Add("机型：$(if ($hw.IsLaptop) { '笔记本' } else { '台式机' })")
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
   $lines.Add('')
 
   $lines.Add('== 游戏路径 ==')
   $lines.Add($(if ($script:TargetExe) { "$script:TargetExe" } else { '未定位' }))
+  $lines.Add('')
+
+  $lines.Add('== 最近游戏性能记录 ==')
+  try {
+    $perfFile = Join-Path $script:RootDir 'config\performance-sessions.json'
+    if (-not (Test-Path -LiteralPath $perfFile)) { $lines.Add('（暂无记录；v0.19.0 起在游戏启动稳定后自动采样）') }
+    else {
+      $sessions = @(Get-Content -LiteralPath $perfFile -Raw -Encoding UTF8 | ConvertFrom-Json | Select-Object -Last 5)
+      foreach ($s in $sessions) {
+        $lines.Add("$($s.recordedAt)｜$($s.gpuModel)｜$($s.durationSec)s｜平均 $($s.avgFps) FPS｜1% Low $($s.fps1Low) FPS")
+        $lines.Add("     GPU 占用 $($s.gpuUtilAvg)% / 峰值 $($s.gpuUtilMax)%｜温度 $($s.gpuTempAvg)°C / 峰值 $($s.gpuTempMax)°C｜功耗 $($s.gpuPowerAvg)W / 峰值 $($s.gpuPowerMax)W")
+      }
+    }
+  } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
   $lines.Add('')
 
   $lines.Add('== 优化项状态 ==')
@@ -2436,10 +2625,10 @@ function Stop-UpdInstallSpinner {
 function Reset-UpdDialogButtons {
   $script:UpdUi.DlPanel.Visibility = 'Collapsed'
   $script:UpdUi.CancelDlBtn.Visibility = 'Collapsed'
-  $script:UpdUi.SkipChk.Visibility = 'Visible'
+  $script:UpdUi.SkipChk.Visibility = $(if ($script:UpdDlgInfo.Mandatory) { 'Collapsed' } else { 'Visible' })
   $script:UpdUi.UpdBtn.Visibility = $(if ($script:UpdDlgInfo.CanInline) { 'Visible' } else { 'Collapsed' })
   $script:UpdUi.GoBtn.Visibility = 'Visible'
-  $script:UpdUi.LaterBtn.Visibility = 'Visible'
+  $script:UpdUi.LaterBtn.Visibility = $(if ($script:UpdDlgInfo.Mandatory) { 'Collapsed' } else { 'Visible' })
 }
 
 # 更新提醒对话框：v0.11 起支持内置更新——「立即更新」在应用内下载安装包（进度条 +
@@ -2629,6 +2818,7 @@ function Show-UpdateDialog($UpdInfo) {
   $script:UpdDlg = [Windows.Markup.XamlReader]::Parse($uxaml)
   $script:UpdDlg.Resources.MergedDictionaries.Add($script:ThemeRes)
   $script:UpdDlgInfo = $UpdInfo
+  $script:AllowMandatoryDialogClose = $false
   $script:UpdDlg.Owner = $window
   $script:UpdUi = @{}
   foreach ($n in 'DlgTitle','VerText','CurText','NotesText','InlineNote','DlPanel','DlPhaseText','DlSizeText',
@@ -2642,6 +2832,11 @@ function Show-UpdateDialog($UpdInfo) {
   # 说明里直接露出“\n”字符。
   $notes = ("$($UpdInfo.Notes)" -replace '\\n', "`n").Trim()
   $script:UpdUi.NotesText.Text = $(if ($notes) { $notes } else { '（本次更新没有附带说明）' })
+  if ($UpdInfo.Mandatory) {
+    $script:UpdUi.SkipChk.Visibility = 'Collapsed'
+    $script:UpdUi.LaterBtn.Visibility = 'Collapsed'
+    $script:UpdUi.CurText.Text += " · 此版本已停止支持，需升级后继续使用"
+  }
   if ($UpdInfo.CanInline) {
     $script:UpdUi.InlineNote.Text = '「立即更新」全程自动：从官方源（df.ltz88.cn）下载 → 校验完整性 → 原地安装到当前目录 → 自动打开新版本，中途不需要你再操作。自存方案 / 备份 / 运行状态不会被覆盖。'
   } else {
@@ -2691,6 +2886,7 @@ function Show-UpdateDialog($UpdInfo) {
         # 交棒完成，放行关窗：拦截关窗的守卫是拦用户的，别把自己也拦在里面。
         # 这里用 Close() 而不是设 DialogResult——非模态时后者会抛，且返回值此刻已无意义
         $script:UpdInstalling = $false
+        $script:AllowMandatoryDialogClose = $true
         $script:UpdDlg.Close()
         $window.Close()
         # Close 之后进程未必真退（实机反馈旧窗口残留、与安装后的新实例并存）：
@@ -2760,18 +2956,28 @@ function Show-UpdateDialog($UpdInfo) {
   $script:UpdUi.GoBtn.Add_Click({
     # 只允许 http/https：清单被篡改成本地路径/其他协议时拒绝打开，防止借更新入口执行文件
     $u = "$($script:UpdDlgInfo.Url)"
-    if ($u -match '^https?://') { Start-Process $u } else { Write-Log '更新清单里的下载地址不是网页链接，已拦截。' }
+    if ($u -match '^https?://') {
+      Start-Process $u
+      if ($script:UpdDlgInfo.Mandatory) {
+        $script:AllowMandatoryDialogClose = $true
+        $script:UpdDlg.DialogResult = $true
+        $window.Close()
+        return
+      }
+    } else { Write-Log '更新清单里的下载地址不是网页链接，已拦截。'; return }
     $script:UpdDlg.DialogResult = $true
   })
   $script:UpdUi.LaterBtn.Add_Click({ $script:UpdDlg.DialogResult = $false })
   # 安装已经起来了就不许关窗：关了也停不下安装器，只会让用户以为取消了
-  $script:UpdDlg.Add_Closing({ if ($script:UpdInstalling) { $_.Cancel = $true } })
+  $script:UpdDlg.Add_Closing({
+    if ($script:UpdInstalling -or ($script:UpdDlgInfo.Mandatory -and -not $script:AllowMandatoryDialogClose)) { $_.Cancel = $true }
+  })
   # 下载中途直接关掉对话框：请求后台取消，轮询定时器会等它清理完临时文件再回收
   $script:UpdDlg.Add_Closed({
     if ($script:DlState -and -not $script:DlState.Done) { $script:DlState.Cancel = $true }
   })
   $script:UpdDlg.ShowDialog() | Out-Null
-  if ($script:UpdUi.SkipChk.IsChecked -and (Get-Command Set-BoosterSkipVersion -ErrorAction SilentlyContinue)) {
+  if (-not $UpdInfo.Mandatory -and $script:UpdUi.SkipChk.IsChecked -and (Get-Command Set-BoosterSkipVersion -ErrorAction SilentlyContinue)) {
     # 返回值必须吞掉：现在函数输出会被调用方接住，落盘结果混进去会把 $skipped 变成数组
     Set-BoosterSkipVersion $UpdInfo.Version | Out-Null
     Write-Log "已设置不再提醒 v$($UpdInfo.Version)。"
@@ -2967,6 +3173,12 @@ $window.Add_ContentRendered({
     $script:UpdatePeriodicTimer.Interval = [TimeSpan]::FromMinutes($script:UpdateCheckIntervalMinutes)
     $script:UpdatePeriodicTimer.Add_Tick({ Start-UpdateCheck })
     $script:UpdatePeriodicTimer.Start()
+    # 软件保持打开时观察游戏进程；每个 PID 只采一次 120 秒汇总，不做永久逐帧录制。
+    $script:PerformanceTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:PerformanceTimer.Interval = [TimeSpan]::FromSeconds(5)
+    $script:PerformanceTimer.Add_Tick({ Poll-GamePerformanceCapture })
+    $script:PerformanceTimer.Start()
+    Poll-GamePerformanceCapture
   } catch {
     $ui.ScanState.Text = '检测失败'
     Write-Log "初始化失败：$($_.Exception.Message)"
@@ -2987,6 +3199,8 @@ $window.Add_Closing({
   if ($script:Busy) {
     $_.Cancel = $true
     Write-Log '正在执行优化/还原，请等本轮结束后再关闭。'
+  } else {
+    if ($script:PerformanceTimer) { $script:PerformanceTimer.Stop() }
   }
 })
 $ui.CloseBtn.Add_Click({

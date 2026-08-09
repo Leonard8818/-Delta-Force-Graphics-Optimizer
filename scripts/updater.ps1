@@ -226,9 +226,11 @@ function Test-BoosterUpdate {
     $m = Get-BoosterManifest $ManifestUrl $TimeoutMs
     if (-not $m) { return $null }
     if ((Compare-BoosterVersion "$($m.version)" $CurrentVersion) -le 0) { return $null }
+    $minimum = "$($m.minimumSupportedVersion)"
+    $mandatory = [bool]($minimum -and (Compare-BoosterVersion $CurrentVersion $minimum) -lt 0)
     # 用户点过「不再提醒此版本」的就不再弹；出了更新的版本会重新提醒。
     # 手动检查（-IncludeSkipped）例外：用户主动点按钮就是想看结果，不该被跳过记录挡住
-    if (-not $IncludeSkipped) {
+    if (-not $IncludeSkipped -and -not $mandatory) {
       $cfg = Get-BoosterUpdateConfig
       if ("$($cfg.SkippedVersion)" -eq "$($m.version)") { return $null }
     }
@@ -249,6 +251,8 @@ function Test-BoosterUpdate {
       Sha256     = $sha
       Size       = $size
       CanInline  = $canInline
+      Mandatory  = $mandatory
+      MinimumSupportedVersion = $minimum
       InlineDeny = $(if ($canInline) { '' } elseif (-not $urlVerdict.Allowed) { $urlVerdict.Reason } else { '清单缺少 SHA256 或文件大小，内置更新已禁用' })
     }
   } catch { $null }

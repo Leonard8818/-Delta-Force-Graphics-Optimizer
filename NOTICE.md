@@ -28,7 +28,8 @@
 ## 第三方内容
 
 - `tools/DeltaForce-Recommended.nip` 是本项目生成的配置文件，采用 NVIDIA Profile Inspector 的导入格式（该格式的 schema 与设置项 ID 参考自 [nvidiaProfileInspector](https://github.com/Orbmu2k/nvidiaProfileInspector) 开源项目）。本项目**不分发** Profile Inspector 程序本身，使用者需自行获取。
-- 本项目不捆绑、不分发任何第三方可执行文件。安装包与启动器均由 Windows 自带的 .NET 编译器现场构建，无第三方依赖。
+- `tools/PresentMon.exe` 来自 Intel / GameTechDev 的 [PresentMon](https://github.com/GameTechDev/PresentMon) 官方发布，用于通过 Windows ETW 采样游戏帧呈现数据；本项目不注入游戏进程。其许可证原文随附于 `tools/PresentMon-LICENSE.txt`。
+- 除上述 PresentMon 外，安装包与启动器均由 Windows 自带的 .NET 编译器现场构建，不再捆绑其他第三方可执行文件。
 
 ## 游戏内设置参考数据
 
