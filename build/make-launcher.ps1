@@ -1,11 +1,12 @@
 ﻿<#
-  DeltaForceBooster 启动器构建脚本 — v0.3
+  DeltaForceBooster 启动器构建脚本 — v0.4
+  v0.4：启动器改为 asInvoker；启动 GUI 前校验关键脚本/PresentMon 的发布哈希，
+        安装文件被替换或经重解析点跳转时拒绝启动并提示重新安装。
   v0.3：程序集版本号按位补齐到四段，三段 GUI 版本不再拼成五段导致 csc 编译失败。
   v0.2：ICO 除内嵌进 exe 外，另落一份 gui\app.ico 随包分发——WPF 窗口不设 Icon 时
         任务栏/Alt-Tab 显示宿主 powershell.exe 的图标（实机反馈），GUI 启动时读它。
   用系统自带的 .NET Framework csc.exe 编译出根目录「启动优化工具.exe」，零第三方依赖：
-    - exe 内嵌 requireAdministrator 清单：双击即弹一次 UAC，GUI 脚本检测到已是管理员
-      就不会二次提权，也没有 bat 方式先闪黑色控制台窗口的问题；
+    - exe 内嵌 asInvoker 清单：GUI 默认以普通权限启动，需要系统权限的操作再单独提权；
     - exe 不受 PowerShell 执行策略限制（实测有用户机器默认策略拦截未签名 .ps1，
       只有带 -ExecutionPolicy Bypass 的入口才跑得起来）；
     - 图标（官网同款三角 Logo）与版本信息由本脚本现场生成/内嵌。
@@ -27,8 +28,27 @@ $ver = $Matches[1]
 $verParts = @($ver -split '\.') + @('0', '0', '0', '0')
 $ver4 = ($verParts[0..3]) -join '.'
 
-$csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+# 关键运行文件的哈希直接编进启动器。安装目录 ACL 是主边界；这里再阻止离线篡改、
+# 杀毒误删后被同名文件顶替等情况。make-installer 每次发布都会强制重建本启动器。
+$hashFiles = @(
+  'gui\DeltaForceBooster-GUI.ps1',
+  'scripts\delta-booster.ps1',
+  'scripts\updater.ps1',
+  'scripts\telemetry-client.ps1',
+  'scripts\tuning-experiment.ps1',
+  'tools\PresentMon.exe'
+)
+$hashRows = foreach ($rel in $hashFiles) {
+  $path = Join-Path $root $rel
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "启动器哈希白名单文件缺失：$rel" }
+  $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
+  '        new string[] { @"' + $rel + '", "' + $hash + '" }'
+}
+$hashRowsText = $hashRows -join ",`r`n"
+
+$windowsDir = Split-Path -Parent ([Environment]::SystemDirectory)
+$csc = Join-Path $windowsDir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+if (-not (Test-Path $csc)) { $csc = Join-Path $windowsDir 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
 if (-not (Test-Path $csc)) { throw '本机没有 .NET Framework csc.exe，无法编译启动器（保留 .bat 入口即可）' }
 
 # ---------- 1. 生成图标：官网同款三角 Logo，手写 ICO 格式 ----------
@@ -77,14 +97,14 @@ $icoFile = Join-Path $work 'launcher.ico'
 [IO.File]::WriteAllBytes((Join-Path $root 'gui\app.ico'), $ms.ToArray())
 $bw.Close()
 
-# ---------- 2. UAC 提权清单 ----------
+# ---------- 2. asInvoker 清单 ----------
 $manifest = @'
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>
@@ -95,16 +115,18 @@ $manifestFile = Join-Path $work 'launcher.manifest'
 
 # ---------- 3. C# 启动器源码 ----------
 $cs = @"
-// DeltaForceBooster 启动器：唯一职责是以管理员权限拉起 gui\DeltaForceBooster-GUI.ps1。
-// 用 exe 而不是 bat：不闪黑框、不受执行策略限制、UAC 弹窗带正规程序名。
+// DeltaForceBooster 启动器：校验发布文件后，以当前用户权限拉起 GUI。
+// 用 exe 而不是 bat：不闪黑框、不受执行策略限制，并固定从 System32 启动 PowerShell。
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("三角洲行动优化助手")]
-[assembly: AssemblyDescription("DeltaForceBooster 启动器（以管理员权限打开优化界面）")]
+[assembly: AssemblyDescription("DeltaForceBooster 安全启动器")]
 [assembly: AssemblyProduct("DeltaForceBooster")]
 [assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
 [assembly: AssemblyCopyright("DeltaForceBooster MIT 开源项目")]
@@ -112,23 +134,93 @@ using System.Windows.Forms;
 [assembly: AssemblyFileVersion("$ver4")]
 
 static class Launcher {
+    static readonly string[][] RequiredFiles = new string[][] {
+$hashRowsText
+    };
+
+    static string Sha256(string path) {
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var sha = SHA256.Create())
+            return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+    }
+
+    static bool HasReparsePoint(string root, string relativePath) {
+        string current = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+        try {
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true;
+            foreach (string part in relativePath.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)) {
+                current = Path.Combine(current, part);
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true;
+            }
+        } catch { return true; }
+        return false;
+    }
+
+    static bool IsSha256(string value) {
+        if (string.IsNullOrEmpty(value) || value.Length != 64) return false;
+        foreach (char c in value)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
+        return true;
+    }
+
+    static string ValidateIdentity(string root) {
+        string rel = "install.identity";
+        string identity = Path.Combine(root, rel);
+        string launcher = Path.Combine(root, "启动优化工具.exe");
+        if (!File.Exists(identity) || !File.Exists(launcher)) return "install.identity 缺失";
+        if (HasReparsePoint(root, rel) || HasReparsePoint(root, "启动优化工具.exe")) return "安装身份位于重解析点路径";
+        try {
+            if (new FileInfo(identity).Length <= 0 || new FileInfo(identity).Length > 512) return "安装身份大小无效";
+            string text;
+            using (var fs = new FileStream(identity, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var reader = new StreamReader(fs, new UTF8Encoding(false, true), false)) text = reader.ReadToEnd();
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length != 4 || lines[3].Length != 0 || lines[0] != "SchemaVersion=1" ||
+                lines[1] != "ProductId=DeltaForceBooster" || !lines[2].StartsWith("LauncherSha256=", StringComparison.Ordinal))
+                return "安装身份格式无效";
+            string expected = lines[2].Substring("LauncherSha256=".Length);
+            if (!IsSha256(expected) || !string.Equals(Sha256(launcher), expected, StringComparison.OrdinalIgnoreCase))
+                return "启动器与安装身份不匹配";
+            return null;
+        } catch (Exception ex) { return "安装身份校验失败：" + ex.Message; }
+    }
+
+    static string ValidateFiles(string root) {
+        string identityError = ValidateIdentity(root);
+        if (identityError != null) return identityError;
+        string prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        foreach (string[] item in RequiredFiles) {
+            string path = Path.GetFullPath(Path.Combine(root, item[0]));
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+                return item[0] + " 缺失";
+            if (HasReparsePoint(root, item[0])) return item[0] + " 位于重解析点路径";
+            try {
+                if (!string.Equals(Sha256(path), item[1], StringComparison.OrdinalIgnoreCase))
+                    return item[0] + " 完整性校验失败";
+            } catch (Exception ex) { return item[0] + " 校验失败：" + ex.Message; }
+        }
+        return null;
+    }
+
     [STAThread]
     static void Main() {
         string root = AppDomain.CurrentDomain.BaseDirectory;
         string gui = Path.Combine(root, "gui", "DeltaForceBooster-GUI.ps1");
-        if (!File.Exists(gui)) {
-            MessageBox.Show("未找到 gui\\DeltaForceBooster-GUI.ps1。\n请把本程序放在优化工具的根目录里运行。",
+        string validationError = ValidateFiles(root);
+        if (validationError != null) {
+            MessageBox.Show("程序文件不完整或已被修改：" + validationError +
+                "\n\n为避免运行异常文件，启动已停止。请从官网重新安装完整版本。",
                 "三角洲行动优化助手", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
         var psi = new ProcessStartInfo();
-        psi.FileName = "powershell.exe";
+        string system = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        psi.FileName = Path.Combine(system, "WindowsPowerShell", "v1.0", "powershell.exe");
         // -ExecutionPolicy Bypass：实测有用户机器默认策略拒绝未签名脚本，入口必须自带豁免
         psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + gui + "\"";
         psi.WorkingDirectory = root;
         psi.UseShellExecute = true;
-        // 本 exe 已带 requireAdministrator 清单，这里继承管理员权限；
-        // 控制台宿主以隐藏方式启动，WPF 窗口由脚本自己弹出，全程无黑框
+        // asInvoker：控制台宿主继承当前用户权限；WPF 窗口由脚本自己弹出，全程无黑框。
         psi.WindowStyle = ProcessWindowStyle.Hidden;
         try { Process.Start(psi); }
         catch (Exception ex) {

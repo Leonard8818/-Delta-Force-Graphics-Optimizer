@@ -1,7 +1,9 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.16.4
+  DeltaForceBooster 核心脚本 — v0.17
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.17：备份升级为受保护目录中的严格 schema + HMAC 写前日志，新增核心互斥与可靠退出码；
+        修复混合/多显卡匹配、计划任务覆盖、无效 MMCSS 值、缓存重解析点和外部工具信任问题。
   v0.16.4：着色器缓存项改名为「解决掉帧：清理着色器缓存」——用户搜的问的都是
         「解决掉帧」，只写手段名，真正需要它的人在列表里认不出来。
   v0.16.3：①VC++ 运行库体检改为默认勾选（社区排查掉帧最常命中的一条，纯检测零代价）；
@@ -24,7 +26,7 @@
   v0.14：备份改为边执行边落盘：开工前先试写 backup-*.pending.json（写不进直接中止、
         不做任何修改），每记录一条备份立即重写，全部完成后原子改名为正式备份；
         中途断电/被杀留下的 pending 备份可被 -Restore 正常识别并还原（还原时明确提示来源）。
-  v0.13：新增 risky 项 gpu-name-spoof（改独显上报型号，默认不勾、不进任何预设）；
+  v0.13：新增 risky 项 gpu-name-spoof（改独显上报型号，默认不勾；后续版本已纳入需二次确认的主推全套）；
         新增 Get-GpuPanelApps（显卡控制面板安装检测，供界面决定是否显示入口按钮）；
         显卡指引只保留驱动层内容（游戏内那部分已有独立页）。
   v0.12：VC++ 体检只在「缺失某架构」时报问题，x64/x86 版本不同步改为中性陈述；
@@ -40,10 +42,11 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListItems
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListPresets
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Apply -Preset balanced
+    powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Apply -Preset main -Risky
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -SavePreset "我的方案" -Items id1,id2
 
   安全设计：
-    - Apply 前把每个被改动的注册表值/电源设置/系统开关完整备份到 backup\backup-*.json
+    - Apply 在每次系统写入前，先将严格 schema + HMAC 写前日志落到 %ProgramData%\DeltaForceBooster\backup
     - Restore 按备份逆序恢复，原本不存在的值会被删除而不是写 0
     - 优化项分两档：safe（默认推荐）与 risky（有副作用，GUI 必须通过独立二次确认，
       CLI 必须显式加 -Risky 才会执行）。
@@ -63,6 +66,9 @@ param(
   [string[]]$Items,
   [string]$GamePath,
   [string]$BackupFile,
+  [string]$ResultId,
+  [string]$UserSid,
+  [string]$UserLocalAppData,
   [ValidateSet('NVIDIA GeForce GTX 705 Ti', 'NVIDIA GeForce GTX 1050 Ti')]
   [string]$GpuSpoofModel,
   [switch]$Risky,
@@ -71,9 +77,43 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:Root      = Split-Path -Parent $PSScriptRoot
-$script:BackupDir = Join-Path $script:Root 'backup'
 $script:ToolsDir  = Join-Path $script:Root 'tools'
-$script:LockTask  = 'DeltaForceBooster-PowerPlanLock'
+$script:WindowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+$script:System32 = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+$script:SystemDrive = [IO.Path]::GetPathRoot($script:WindowsDir).TrimEnd('\')
+$script:ProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+$script:CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+$script:CurrentLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+# 提权进程继承的 PSModulePath 可由发起用户控制。仅保留 Windows 与机器级模块目录，防止
+# Get-CimInstance / MMAgent / Appx 等命令自动加载用户伪造的同名模块。
+$script:TrustedModuleRoots = @(
+  (Join-Path $PSHOME 'Modules'),
+  (Join-Path $script:ProgramFiles 'WindowsPowerShell\Modules')
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique
+$env:PSModulePath = ($script:TrustedModuleRoots -join [IO.Path]::PathSeparator)
+$script:LegacyBackupDir = Join-Path $script:Root 'backup'
+$script:LegacyConfigDir = Join-Path $script:Root 'config'
+$script:LegacyProfileDir = Join-Path $script:Root 'profiles'
+$script:TargetUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$script:TargetLocalAppData = [IO.Path]::GetFullPath($script:CurrentLocalAppData)
+$script:UseExplicitUserHive = $false
+$script:UserDataRoot = Join-Path $script:TargetLocalAppData 'DeltaForceBooster'
+$script:ProgramDataRoot = Join-Path $script:CommonAppData 'DeltaForceBooster'
+$script:ConfigDir = Join-Path $script:UserDataRoot 'config'
+$script:ProfileDir = Join-Path $script:UserDataRoot 'profiles'
+$script:BackupDir = Join-Path $script:ProgramDataRoot 'backup'
+$script:IpcDir = Join-Path $script:ProgramDataRoot 'ipc'
+$script:BackupKeyFile = Join-Path $script:ProgramDataRoot 'backup.key'
+$script:LegacyRootsFile = Join-Path $script:ProgramDataRoot 'legacy-roots.json'
+$script:BackupSchemaVersion = 2
+$script:LockTaskPrefix = 'DeltaForceBooster-PowerPlanLock'
+# 每个安装目录使用独立任务名：不再用 /F 覆盖系统里可能已经存在的同名任务。
+$rootHash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([IO.Path]::GetFullPath($script:Root)).ToUpperInvariant()))
+$script:LockTask = '{0}-{1}' -f $script:LockTaskPrefix, (([BitConverter]::ToString($rootHash) -replace '-', '').Substring(0, 12))
+$script:EngineMutexName = 'Global\DeltaForceBooster.Engine'
+$script:PowerCfgExe = Join-Path $script:System32 'powercfg.exe'
+$script:BcdEditExe = Join-Path $script:System32 'bcdedit.exe'
+$script:SchTasksExe = Join-Path $script:System32 'schtasks.exe'
 
 # ---------- 基础工具 ----------
 
@@ -82,12 +122,387 @@ function Test-Admin {
   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Expand-TrustedProfilePath([string]$RawPath, [string]$ProfilePath) {
+  if (-not $RawPath) { return $null }
+  $value = "$RawPath"
+  $map = [ordered]@{
+    '%SystemDrive%' = $script:SystemDrive
+    '%SystemRoot%' = $script:WindowsDir
+  }
+  if ($ProfilePath) {
+    $map['%USERPROFILE%'] = $ProfilePath
+    $map['%USERNAME%'] = Split-Path -Leaf $ProfilePath
+    $map['%HOMEDRIVE%'] = [IO.Path]::GetPathRoot($ProfilePath).TrimEnd('\')
+    $map['%HOMEPATH%'] = $ProfilePath.Substring([IO.Path]::GetPathRoot($ProfilePath).Length - 1)
+  }
+  foreach ($name in $map.Keys) {
+    $replacement = ([string]$map[$name]).Replace('$', '$$')
+    $value = [regex]::Replace($value, [regex]::Escape($name), $replacement, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  }
+  if ($value -match '%[^%]+%') { throw "用户路径包含未允许的环境变量：$value" }
+  $value
+}
+
+function Set-TargetUserContext([string]$SidText, [string]$LocalAppDataPath) {
+  if ([bool]$SidText -ne [bool]$LocalAppDataPath) { throw 'UserSid 与 UserLocalAppData 必须同时提供' }
+  if (-not $SidText) {
+    $script:UseExplicitUserHive = $false
+    $script:TargetUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $script:TargetLocalAppData = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData))
+  } else {
+    try { $sid = New-Object Security.Principal.SecurityIdentifier($SidText) } catch { throw 'UserSid 格式无效' }
+    $SidText = $sid.Value
+    $lm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+      $pk = $lm.OpenSubKey("SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$SidText")
+      if (-not $pk) { throw 'UserSid 没有对应的 Windows 用户配置文件' }
+      try { $profileRaw = $pk.GetValue('ProfileImagePath', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+      finally { $pk.Close() }
+    } finally { $lm.Close() }
+    if (-not $profileRaw) { throw 'UserSid 没有对应的 Windows 用户配置文件' }
+    $profileFull = [IO.Path]::GetFullPath((Expand-TrustedProfilePath "$profileRaw" $null)).TrimEnd('\')
+    $hive = [Microsoft.Win32.Registry]::Users.OpenSubKey($SidText)
+    if (-not $hive) { throw '目标用户注册表配置单元未加载，无法安全写入该用户的 HKCU' }
+    try {
+      $usk = $hive.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
+      if ($usk) {
+        try { $localRaw = $usk.GetValue('Local AppData', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+        finally { $usk.Close() }
+      }
+    } finally { $hive.Close() }
+    if ($localRaw) { $expected = [IO.Path]::GetFullPath((Expand-TrustedProfilePath "$localRaw" $profileFull)).TrimEnd('\') }
+    else { $expected = [IO.Path]::GetFullPath((Join-Path $profileFull 'AppData\Local')).TrimEnd('\') }
+    $actual = [IO.Path]::GetFullPath($LocalAppDataPath).TrimEnd('\')
+    if ($actual -ine $expected) { throw "UserLocalAppData 与 UserSid 的系统配置文件不匹配（期望 $expected）" }
+    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($actual))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) { throw 'UserLocalAppData 必须位于本地固定磁盘' }
+    if (-not (Test-Path -LiteralPath $actual -PathType Container) -or (Test-PathHasReparsePoint $actual)) {
+      throw 'UserLocalAppData 不存在或路径包含目录联接/符号链接'
+    }
+    $script:TargetUserSid = $SidText
+    $script:TargetLocalAppData = $actual
+    $script:UseExplicitUserHive = $true
+  }
+  $script:UserDataRoot = Join-Path $script:TargetLocalAppData 'DeltaForceBooster'
+  $script:ConfigDir = Join-Path $script:UserDataRoot 'config'
+  $script:ProfileDir = Join-Path $script:UserDataRoot 'profiles'
+}
+
+function Test-AclRuleAllowsWrite($Rule) {
+  # FullControl/Modify 这类复合枚举也包含“读”位，不能直接当 write-mask，否则 Users 只读 ACE 也会误判为可写。
+  $writeMask = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
+  $rights = [int64]$Rule.FileSystemRights
+  (($Rule.FileSystemRights -band $writeMask) -ne 0) -or (($rights -band 0x10000000) -ne 0) -or (($rights -band 0x40000000) -ne 0)
+}
+
+function Test-DirectoryAclSafe([string]$Path, [string[]]$TrustedSids, [string[]]$AllowedOwnerSids) {
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container) -or (Test-PathHasReparsePoint $Path)) { return $false }
+    $acl = [IO.Directory]::GetAccessControl($Path, [Security.AccessControl.AccessControlSections]'Owner, Access')
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin $AllowedOwnerSids) { return $false }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+          $rule.IdentityReference.Value -notin $TrustedSids) {
+        # CREATOR OWNER 的 InheritOnly ACE 不授予当前目录权限；当前目录没有任何非受信写 ACE 时，普通用户也无法创建子项来获得该权限。
+        $creatorInheritOnly = ($rule.IdentityReference.Value -eq 'S-1-3-0' -and
+          (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0))
+        if (-not $creatorInheritOnly -and (Test-AclRuleAllowsWrite $rule)) { return $false }
+      }
+    }
+    $true
+  } catch { $false }
+}
+
+function Test-ProtectedDirectoryAclExact([string]$Path, [bool]$UsersRead) {
+  try {
+    $trusted = @('S-1-5-18','S-1-5-32-544')
+    if (-not (Test-DirectoryAclSafe $Path $trusted $trusted)) { return $false }
+    $acl = [IO.Directory]::GetAccessControl($Path, [Security.AccessControl.AccessControlSections]'Owner, Access')
+    if (-not $acl.AreAccessRulesProtected) { return $false }
+    $full = [Security.AccessControl.FileSystemRights]::FullControl
+    $seen = @{}
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      $sid = $rule.IdentityReference.Value
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { return $false }
+      if ($sid -in $trusted) {
+        if (($rule.FileSystemRights -band $full) -ne $full) { return $false }
+        $seen[$sid] = $true
+      } elseif ($UsersRead -and $sid -eq 'S-1-5-32-545') {
+        if (Test-AclRuleAllowsWrite $rule) { return $false }
+      } else { return $false }
+    }
+    [bool]($seen['S-1-5-18'] -and $seen['S-1-5-32-544'])
+  } catch { $false }
+}
+
+function New-ProtectedDirectory([string]$Path, [bool]$UsersRead) {
+  if (-not (Test-Admin)) { throw "初始化受保护目录需要管理员权限：$Path" }
+  $acl = New-Object Security.AccessControl.DirectorySecurity
+  $acl.SetAccessRuleProtection($true, $false)
+  $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+  $none = [Security.AccessControl.PropagationFlags]::None
+  $allow = [Security.AccessControl.AccessControlType]::Allow
+  $adminSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+  $acl.SetOwner($adminSid)
+  foreach ($sidText in 'S-1-5-18','S-1-5-32-544') {
+    $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, $none, $allow)
+    [void]$acl.AddAccessRule($rule)
+  }
+  if ($UsersRead) {
+    $users = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')
+    $readRule = New-Object Security.AccessControl.FileSystemAccessRule($users, [Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize', $inherit, $none, $allow)
+    [void]$acl.AddAccessRule($readRule)
+  }
+  if (Test-Path -LiteralPath $Path) {
+    # 已有目录若曾由普通用户创建，对方可能仍持有可写句柄。此时不能“接管后继续”，必须关闭失败。
+    if (-not (Test-DirectoryAclSafe $Path @('S-1-5-18','S-1-5-32-544') @('S-1-5-18','S-1-5-32-544'))) {
+      throw "已有受保护目录的所有者或权限不安全，已拒绝接管：$Path"
+    }
+  } else {
+    $parent = Split-Path -Parent $Path
+    if ($parent -and (Test-Path -LiteralPath $parent) -and (Test-PathHasReparsePoint $parent)) {
+      throw "受保护目录父路径包含目录联接或符号链接：$parent"
+    }
+    # .NET Framework 的安全描述符重载让“创建目录”和“设置 ACL”成为一步；如果同名目录被竞态预建，下面的再校验会关闭失败。
+    [void][IO.Directory]::CreateDirectory($Path, $acl)
+    if (-not (Test-DirectoryAclSafe $Path @('S-1-5-18','S-1-5-32-544') @('S-1-5-18','S-1-5-32-544'))) {
+      throw "受保护目录创建后所有者或权限校验失败：$Path"
+    }
+  }
+  [IO.Directory]::SetAccessControl($Path, $acl)
+  if (-not (Test-ProtectedDirectoryAclExact $Path $UsersRead)) { throw "受保护目录 ACL 最终校验失败：$Path" }
+}
+
+function Set-ProtectedFileAcl([string]$Path) {
+  $acl = New-Object Security.AccessControl.FileSecurity
+  $acl.SetAccessRuleProtection($true, $false)
+  $adminSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+  $acl.SetOwner($adminSid)
+  foreach ($sidText in 'S-1-5-18','S-1-5-32-544') {
+    $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl,
+      [Security.AccessControl.AccessControlType]::Allow)
+    [void]$acl.AddAccessRule($rule)
+  }
+  [IO.File]::SetAccessControl($Path, $acl)
+}
+
+function Test-ProtectedFileAcl([string]$Path) {
+  try {
+    $acl = [IO.File]::GetAccessControl($Path, [Security.AccessControl.AccessControlSections]'Owner, Access')
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { return $false }
+    if (-not $acl.AreAccessRulesProtected) { return $false }
+    $full = [Security.AccessControl.FileSystemRights]::FullControl
+    $seen = @{}
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      $sid = $rule.IdentityReference.Value
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $sid -notin @('S-1-5-18','S-1-5-32-544') -or
+          (($rule.FileSystemRights -band $full) -ne $full)) { return $false }
+      $seen[$sid] = $true
+    }
+    [bool]($seen['S-1-5-18'] -and $seen['S-1-5-32-544'])
+  } catch { $false }
+}
+
+function Get-LegacyRoots {
+  $script:LegacyRootWarnings = @()
+  if (-not (Test-Path -LiteralPath $script:LegacyRootsFile -PathType Leaf)) { return @() }
+  if (-not (Test-Admin)) { return @() }
+  if (Test-PathHasReparsePoint $script:LegacyRootsFile -or -not (Test-ProtectedFileAcl $script:LegacyRootsFile)) {
+    throw 'legacy-roots.json 类型或权限异常，已拒绝读取旧备份位置'
+  }
+  $f = Get-Item -LiteralPath $script:LegacyRootsFile -Force
+  if ($f.Length -gt 64KB) { throw 'legacy-roots.json 超过 64KB 上限' }
+  try { $doc = [IO.File]::ReadAllText($script:LegacyRootsFile, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
+  catch { throw "legacy-roots.json 格式损坏：$($_.Exception.Message)" }
+  Assert-ExactProperties $doc @('SchemaVersion','Roots') @() 'legacy-roots.json'
+  if ([int]$doc.SchemaVersion -ne 1) { throw "不支持的 legacy-roots.json 版本：$($doc.SchemaVersion)" }
+  $roots = @($doc.Roots)
+  if ($roots.Count -gt 16) { throw 'legacy-roots.json 的 Roots 超过 16 项上限' }
+  $valid = @()
+  foreach ($raw in $roots) {
+    if ("$raw" -notmatch '^[A-Za-z]:\\' -or (Split-Path -Leaf "$raw") -notmatch '^\.DeltaForceBooster\.migrated-[0-9A-Fa-f]{32}$') {
+      throw "旧安装根路径格式无效：$raw"
+    }
+    $root = [IO.Path]::GetFullPath("$raw").TrimEnd('\')
+    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) { throw "旧安装根不在本地固定磁盘：$root" }
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+      $script:LegacyRootWarnings += "已登记的旧安装根已不存在，已跳过：$root"
+      continue
+    }
+    if (Test-PathHasReparsePoint $root) {
+      $script:LegacyRootWarnings += "已登记的旧安装根含重解析点，已跳过：$root"
+      continue
+    }
+    $valid += $root
+  }
+  @($valid | Select-Object -Unique)
+}
+
+function Test-TrustedProgramBackupDir([string]$Dir) {
+  try {
+    $rootFull = [IO.Path]::GetFullPath($script:Root).TrimEnd('\')
+    $dirFull = [IO.Path]::GetFullPath($Dir).TrimEnd('\')
+    $programRoots = @(
+      [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
+      [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    ) | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') } | Select-Object -Unique
+    if (-not @($programRoots | Where-Object {
+      $rootFull.StartsWith(($_ + '\'), [StringComparison]::OrdinalIgnoreCase)
+    }).Count) { return $false }
+    if (-not $dirFull.StartsWith(($rootFull + '\'), [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    $trusted = @('S-1-5-18','S-1-5-32-544',$trustedInstaller)
+    (Test-DirectoryAclSafe $rootFull $trusted $trusted) -and (Test-DirectoryAclSafe $dirFull $trusted $trusted)
+  } catch { $false }
+}
+
+function Get-LegacyBackupDirs {
+  $script:LegacyBackupWarnings = @()
+  $dirs = @()
+  if (Test-Path -LiteralPath $script:LegacyBackupDir -PathType Container) {
+    if (Test-TrustedProgramBackupDir $script:LegacyBackupDir) { $dirs += [IO.Path]::GetFullPath($script:LegacyBackupDir).TrimEnd('\') }
+    else { $script:LegacyBackupWarnings += "程序目录中的旧备份目录不是受信的只读 Program Files 路径，已跳过：$script:LegacyBackupDir" }
+  }
+  $roots = @(Get-LegacyRoots)
+  $script:LegacyBackupWarnings += @($script:LegacyRootWarnings)
+  $dirs += @(($roots) | ForEach-Object {
+    $d = [IO.Path]::GetFullPath((Join-Path $_ 'backup'))
+    if (-not (Test-Path -LiteralPath $d -PathType Container)) {
+      $script:LegacyBackupWarnings += "旧安装根中没有备份目录，已跳过：$d"
+    } elseif (Test-PathHasReparsePoint $d) {
+      $script:LegacyBackupWarnings += "旧备份目录含重解析点，已跳过：$d"
+    } else { $d }
+  })
+  @($dirs | Select-Object -Unique)
+}
+
+function Initialize-UserDataStore {
+  # 提权 helper 不得创建/迁移目标用户可写目录；用户数据由原用户的普通权限进程初始化。
+  if (Test-Admin) { return }
+  $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $currentLocal = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
+  if ($currentSid -ine $script:TargetUserSid -or $currentLocal -ine $script:TargetLocalAppData.TrimEnd('\')) {
+    throw '用户数据只能由目标用户的普通权限进程初始化'
+  }
+  foreach ($d in $script:ConfigDir,$script:ProfileDir) {
+    if (-not (Test-Path -LiteralPath $d)) { [void][IO.Directory]::CreateDirectory($d) }
+  }
+  # 旧版把可写数据放在程序目录。只迁移明确的 JSON 文件，目标已存在时绝不覆盖用户新数据。
+  $legacyPower = Join-Path $script:LegacyConfigDir 'power-scheme.json'
+  $newPower = Join-Path $script:ConfigDir 'power-scheme.json'
+  if ((Test-Path -LiteralPath $legacyPower) -and -not (Test-Path -LiteralPath $newPower)) {
+    Copy-Item -LiteralPath $legacyPower -Destination $newPower
+  }
+  if (Test-Path -LiteralPath $script:LegacyProfileDir) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $script:LegacyProfileDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+      $dest = Join-Path $script:ProfileDir $f.Name
+      if (-not (Test-Path -LiteralPath $dest)) { Copy-Item -LiteralPath $f.FullName -Destination $dest }
+    }
+  }
+}
+
+function Initialize-ProtectedStore {
+  New-ProtectedDirectory $script:ProgramDataRoot $false
+  New-ProtectedDirectory $script:BackupDir $false
+  if (Test-Path -LiteralPath $script:BackupKeyFile) {
+    $keyItem = Get-Item -LiteralPath $script:BackupKeyFile -Force
+    if ($keyItem.PSIsContainer -or (Test-PathHasReparsePoint $script:BackupKeyFile) -or -not (Test-ProtectedFileAcl $script:BackupKeyFile)) {
+      throw '备份完整性密钥类型或权限异常，已拒绝继续；请修复 ProgramData 文件后重试'
+    }
+  }
+  if (-not (Test-Path -LiteralPath $script:BackupKeyFile)) {
+    $key = New-Object byte[] 32
+    $rng = New-Object Security.Cryptography.RNGCryptoServiceProvider
+    try { $rng.GetBytes($key) } finally { $rng.Dispose() }
+    $fs = New-Object IO.FileStream($script:BackupKeyFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+                                  [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try { $fs.Write($key, 0, $key.Length); $fs.Flush($true) } finally { $fs.Dispose() }
+    Set-ProtectedFileAcl $script:BackupKeyFile
+  }
+}
+
+function Get-BackupHmacKey {
+  Initialize-ProtectedStore
+  $key = [IO.File]::ReadAllBytes($script:BackupKeyFile)
+  if ($key.Length -ne 32) { throw '备份完整性密钥损坏（长度不正确）' }
+  $key
+}
+
+function Initialize-IpcStore {
+  New-ProtectedDirectory $script:ProgramDataRoot $false
+  New-ProtectedDirectory $script:IpcDir $true
+  # 结果只用于一次提权调用回传；清理 24 小时前且名称严格为 GUID 的旧文件，避免长期堆积。
+  $cutoff = (Get-Date).AddHours(-24)
+  foreach ($f in @(Get-ChildItem -LiteralPath $script:IpcDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
+                   Where-Object { $_.BaseName -match '^[0-9a-fA-F-]{36}$' -and $_.LastWriteTime -lt $cutoff })) {
+    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Write-BytesAtomic([string]$Path, [byte[]]$Bytes) {
+  $dir = Split-Path -Parent $Path
+  if (-not (Test-Path -LiteralPath $dir)) { throw "目标目录不存在：$dir" }
+  $tmp = Join-Path $dir ('.{0}.{1}.tmp' -f (Split-Path -Leaf $Path), [guid]::NewGuid().ToString('N'))
+  $backup = Join-Path $dir ('.{0}.{1}.bak' -f (Split-Path -Leaf $Path), [guid]::NewGuid().ToString('N'))
+  try {
+    $fs = New-Object IO.FileStream($tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+                                   [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try { $fs.Write($Bytes, 0, $Bytes.Length); $fs.Flush($true) } finally { $fs.Dispose() }
+    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($tmp, $Path, $backup, $true) }
+    else { [IO.File]::Move($tmp, $Path) }
+  } finally {
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+function Write-IpcResult([string]$Id, [string]$Action, $Data, [int]$ExitCode, [string]$ErrorMessage) {
+  if (-not $Id) { return }
+  $parsed = [guid]::Empty
+  if (-not [guid]::TryParseExact($Id, 'D', [ref]$parsed)) { throw 'ResultId 必须是标准 D 格式 GUID' }
+  Initialize-IpcStore
+  $body = [ordered]@{
+    SchemaVersion = 1; ResultId = $parsed.ToString('D'); Action = $Action
+    CreatedUtc = [DateTime]::UtcNow.ToString('o'); ExitCode = $ExitCode
+    Ok = ($ExitCode -eq 0); Data = $Data; Error = $ErrorMessage
+  }
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($body | ConvertTo-Json -Depth 10))
+  Write-BytesAtomic (Join-Path $script:IpcDir ($parsed.ToString('D') + '.json')) $bytes
+}
+
+function Enter-EngineMutex {
+  $created = $false
+  $m = New-Object Threading.Mutex($false, $script:EngineMutexName, [ref]$created)
+  try {
+    if (-not $m.WaitOne(0)) { throw '另一个优化或还原任务正在运行，请等待它完成后重试' }
+  } catch [Threading.AbandonedMutexException] {
+    # 上一进程异常退出时系统把互斥锁交给当前进程，继续接管并依赖 pending 日志恢复。
+  } catch {
+    $m.Dispose(); throw
+  }
+  $m
+}
+
+function Exit-EngineMutex($Mutex) {
+  if (-not $Mutex) { return }
+  try { $Mutex.ReleaseMutex() } catch {}
+  $Mutex.Dispose()
+}
+
 # 用 .NET Registry API 而不是 PowerShell Provider：值名是完整 exe 路径时含反斜杠，
 # Provider 的 -Name 会做通配符解析，.NET API 没有这个坑。
 function Split-RegPath([string]$Path) {
   # 输出两个对象（根键、子路径），调用侧用 $base,$sub = ... 解包；不要再包一层数组
   if     ($Path -match '^HKLM:\\?(.*)$') { [Microsoft.Win32.Registry]::LocalMachine; $Matches[1] }
-  elseif ($Path -match '^HKCU:\\?(.*)$') { [Microsoft.Win32.Registry]::CurrentUser;  $Matches[1] }
+  elseif ($Path -match '^HKCU:\\?(.*)$') {
+    if ($script:UseExplicitUserHive) { [Microsoft.Win32.Registry]::Users; "$script:TargetUserSid\$($Matches[1])" }
+    else { [Microsoft.Win32.Registry]::CurrentUser; $Matches[1] }
+  }
   else   { throw "不支持的注册表根：$Path" }
 }
 
@@ -126,19 +541,10 @@ $script:UltimateGuid = 'e9a42b02-d5df-448d-aa00-03f14749eb61'
 # 工具自建方案的专属名：用户可能自建过任意名字的方案（实测有人的方案就叫「4060」），
 # 新建的方案必须一眼能认出来自本工具，避免与用户自己维护的方案混淆
 $script:ToolSchemeName = '三角洲优化 · 卓越性能'
-$script:ConfigDir = Join-Path $script:Root 'config'
-
-# 自建方案 GUID 记在 config\ 而不是 profiles\：profiles 下的 *.json 会被扫描成用户预设方案
+# 电源计划是系统全局对象；直接从受保护的系统配置按专属名称定位，不再从
+# 目标用户可写的 LocalAppData 读写 GUID，避免提权进程与用户目录产生 TOCTOU。
 function Get-ToolSchemeGuid {
-  $f = Join-Path $script:ConfigDir 'power-scheme.json'
-  if (-not (Test-Path -LiteralPath $f)) { return $null }
-  try { (Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).Guid } catch { $null }
-}
-
-function Save-ToolSchemeGuid([string]$SchemeGuid) {
-  if (-not (Test-Path -LiteralPath $script:ConfigDir)) { New-Item -ItemType Directory -Path $script:ConfigDir | Out-Null }
-  @{ Guid = $SchemeGuid; Name = $script:ToolSchemeName; Created = (Get-Date).ToString('s') } |
-    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $script:ConfigDir 'power-scheme.json') -Encoding UTF8
+  @(Get-PowerSchemes | Where-Object { $_.Name -eq $script:ToolSchemeName } | Select-Object -First 1).Guid
 }
 
 # 方案名在注册表里是资源引用串 "@...powrprof.dll,-19,Ultimate Performance"，
@@ -176,7 +582,7 @@ function Get-ActiveScheme { Get-PowerSchemes | Where-Object Active | Select-Obje
 # 当成成功」的坑（模板方案不可激活），powercfg 的输出留在 $script:LastActivateOut 供报错用
 function Invoke-SchemeActivate([string]$SchemeGuid) {
   $ErrorActionPreference = 'SilentlyContinue'
-  $out = & powercfg /setactive $SchemeGuid 2>&1
+  $out = & $script:PowerCfgExe /setactive $SchemeGuid 2>&1
   $script:LastActivateOut = ("$out").Trim()
   if ($LASTEXITCODE -ne 0) { return $false }
   $now = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme'
@@ -217,14 +623,13 @@ function Enable-UltimateScheme {
 
   # 没有可直接激活的现成方案：从模板实例化，挂工具专属名（防与用户自建方案混淆），再激活
   $ErrorActionPreference = 'SilentlyContinue'
-  $out = & powercfg -duplicatescheme $script:UltimateGuid 2>&1
+  $out = & $script:PowerCfgExe -duplicatescheme $script:UltimateGuid 2>&1
   if ($LASTEXITCODE -ne 0 -or "$out" -notmatch "($script:GuidRx)") {
     throw "无法创建卓越性能电源计划（powercfg 原话：$(("$out").Trim())）"
   }
   $newGuid = $Matches[1]
-  $ren = & powercfg -changename $newGuid $script:ToolSchemeName '由 DeltaForceBooster 创建，还原优化后如不需要可手动删除' 2>&1
+  $ren = & $script:PowerCfgExe -changename $newGuid $script:ToolSchemeName '由 DeltaForceBooster 创建，还原优化后如不需要可手动删除' 2>&1
   if ($LASTEXITCODE -ne 0) { Write-Warning "电源计划已创建但命名失败：$(("$ren").Trim())" }
-  Save-ToolSchemeGuid $newGuid
   if (-not (Invoke-SchemeActivate $newGuid)) {
     throw "新方案已创建但激活失败（powercfg 原话：$script:LastActivateOut）"
   }
@@ -284,7 +689,7 @@ function Remove-PowerSettingAcOverride([string]$SchemeGuid, [string]$Sub, [strin
   if ($k) { try { $k.DeleteSubKeyTree($Setting, $false) } finally { $k.Close() } }
   # 改的是活动方案时要重新 setactive 才即时生效；非活动方案执行这句无害
   $ErrorActionPreference = 'SilentlyContinue'
-  & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+  & $script:PowerCfgExe /setactive SCHEME_CURRENT 2>&1 | Out-Null
 }
 
 # 解除隐藏，返回原 Attributes 值供还原用；已可见则返回 $null
@@ -292,7 +697,7 @@ function Show-PowerSetting([string]$Sub, [string]$Setting) {
   if (-not (Test-PowerSettingHidden $Sub $Setting)) { return $null }
   $old = Get-RegValue "$script:PsRoot\$Sub\$Setting" 'Attributes'
   $ErrorActionPreference = 'SilentlyContinue'
-  $out = & powercfg -attributes $Sub $Setting -ATTRIB_HIDE 2>&1
+  $out = & $script:PowerCfgExe -attributes $Sub $Setting -ATTRIB_HIDE 2>&1
   if ($LASTEXITCODE -ne 0) { throw "解除电源项隐藏失败$(if ("$out") { "（powercfg 原话：$(("$out").Trim())）" } else { '（需要管理员权限）' })" }
   $old
 }
@@ -304,9 +709,12 @@ function Set-PowerSettingAc([string]$Sub, [string]$Setting, [int]$Value, [string
   $ErrorActionPreference = 'SilentlyContinue'
   # 把 powercfg 的原话带进异常：曾有 12 代机器报「尝试写入不受支持的设置」，
   # 只抛笼统的「写入失败」会让用户完全没法定位
-  $out = & powercfg /setacvalueindex $target $Sub $Setting $Value 2>&1
+  $out = & $script:PowerCfgExe /setacvalueindex $target $Sub $Setting $Value 2>&1
   if ($LASTEXITCODE -ne 0) { throw "写入电源项失败$(if ("$out") { "（powercfg 原话：$(("$out").Trim())）" } else { '' })" }
-  & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+  $refresh = & $script:PowerCfgExe /setactive SCHEME_CURRENT 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "刷新电源方案失败（powercfg 原话：$(("$refresh").Trim())）" }
+  $actual = $(if ($SchemeGuid) { Get-PowerSettingAcExplicit $SchemeGuid $Sub $Setting } else { Get-PowerSettingAc $Sub $Setting })
+  if ($null -eq $actual -or [int]$actual -ne $Value) { throw "电源项写入后验证失败（期望 $Value，实际 $actual）" }
 }
 
 # ---------- 内存压缩 / 计划任务 ----------
@@ -329,10 +737,7 @@ function Set-MMAgentState([string]$Feature, [bool]$Enabled) {
 }
 
 function Test-LockTaskExists {
-  # schtasks 找不到任务时往 stderr 写字，Stop 模式下会被当成终止错误，这里局部降级
-  $ErrorActionPreference = 'SilentlyContinue'
-  & schtasks /Query /TN $script:LockTask 2>&1 | Out-Null
-  $LASTEXITCODE -eq 0
+  [bool](Test-BoosterLockTask $script:LockTask)
 }
 
 # ---------- 休眠 / 引导配置 / 显卡专项 ----------
@@ -342,21 +747,22 @@ function Get-HibernateState {
   # 两个信号都拿不到才算读取失败——备份必须基于真实旧状态
   $v = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled'
   if ($null -ne $v) { return ([int]$v -ne 0) }
-  [bool](Test-Path -LiteralPath (Join-Path $env:SystemDrive 'hiberfil.sys'))
+  [bool](Test-Path -LiteralPath (Join-Path $script:SystemDrive 'hiberfil.sys'))
 }
 
 function Set-HibernateEnabled([bool]$On) {
   # powercfg 失败信息走 stderr，Stop 模式下会变终止错误，这里局部降级后查退出码
   $ErrorActionPreference = 'SilentlyContinue'
-  & powercfg -h $(if ($On) { 'on' } else { 'off' }) 2>&1 | Out-Null
+  & $script:PowerCfgExe -h $(if ($On) { 'on' } else { 'off' }) 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw '设置休眠状态失败（需要管理员权限）' }
+  if ((Get-HibernateState) -ne $On) { throw '设置休眠状态后回读验证失败' }
 }
 
 # 读 {current} 引导项里某个值。bcdedit 连读取都要管理员，非管理员返回 $null；
 # 值名（disabledynamictick 等）和取值（Yes/Off 等）不随系统语言变化，可安全解析
 function Get-BcdValue([string]$Name) {
   $ErrorActionPreference = 'SilentlyContinue'
-  $out = & bcdedit /enum "{current}" 2>&1
+  $out = & $script:BcdEditExe /enum "{current}" 2>&1
   if ($LASTEXITCODE -ne 0) { return $null }
   foreach ($line in @($out)) {
     if ("$line" -match ('^\s*' + [regex]::Escape($Name) + '\s+(\S+)\s*$')) { return $Matches[1] }
@@ -367,37 +773,52 @@ function Get-BcdValue([string]$Name) {
 
 function Set-BcdEntryValue([string]$Name, [string]$Value) {
   $ErrorActionPreference = 'SilentlyContinue'
-  & bcdedit /set "{current}" $Name $Value 2>&1 | Out-Null
+  & $script:BcdEditExe /set "{current}" $Name $Value 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "写入引导配置失败：$Name（需要管理员权限）" }
+  $actual = Get-BcdValue $Name
+  if ($null -eq $actual -or "$actual" -ine "$Value") { throw "写入引导配置后验证失败：$Name（期望 $Value，实际 $actual）" }
+}
+
+function Get-TaskXml([string]$TaskName) {
+  $ErrorActionPreference = 'SilentlyContinue'
+  $out = & $script:SchTasksExe /Query /TN $TaskName /XML 2>&1
+  if ($LASTEXITCODE -ne 0) { return $null }
+  try { [xml](@($out) -join "`r`n") } catch { $null }
+}
+
+function Test-BoosterLockTask([string]$TaskName) {
+  $xml = Get-TaskXml $TaskName
+  if (-not $xml) { return $false }
+  $cmd = $xml.SelectSingleNode("//*[local-name()='Exec']/*[local-name()='Command']")
+  $arg = $xml.SelectSingleNode("//*[local-name()='Exec']/*[local-name()='Arguments']")
+  if (-not $cmd -or -not $arg) { return $false }
+  try { $commandPath = [IO.Path]::GetFullPath("$($cmd.InnerText)".Trim().Trim('"')) } catch { return $false }
+  [bool]($commandPath -ieq [IO.Path]::GetFullPath($script:PowerCfgExe) -and
+         "$($arg.InnerText)".Trim() -match ('(?i)^/setactive\s+' + $script:GuidRx + '$'))
 }
 
 function Remove-BcdEntryValue([string]$Name) {
   $ErrorActionPreference = 'SilentlyContinue'
-  # 原本就没设过该值时 deletevalue 报"找不到元素"，这正是还原目标状态，不算失败
-  & bcdedit /deletevalue "{current}" $Name 2>&1 | Out-Null
+  # 原本就没设过该值时 deletevalue 会返回非零；最终回读为 absent 才算达到还原目标。
+  $out = & $script:BcdEditExe /deletevalue "{current}" $Name 2>&1
+  $code = $LASTEXITCODE
+  $actual = Get-BcdValue $Name
+  if ($null -eq $actual) { throw "删除引导配置后无法回读验证：$Name" }
+  if ($actual -ne 'absent') { throw "删除引导配置失败：$Name（退出码 $code，实际仍为 $actual；bcdedit 原话：$(("$out").Trim())）" }
 }
 
 # 独显在 Enum\PCI 下的实例路径。同一个 VEN_10DE 下还挂着 HD Audio 控制器等非显卡设备，
 # 必须按驱动服务名 nvlddmkm 认显卡，不能只看厂商 ID。
 # 实测（RTX 3070 Laptop / Win11 26200）：该键 Owner=BUILTIN\Administrators 且管理员组
 # FullControl，管理员可直接读写，无需 takeown/改 ACL——与电源方案键（只有 SYSTEM 可写）不同。
-function Get-NvidiaGpuEnumPath {
-  $root = 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI'
-  $base, $sub = Split-RegPath $root
-  $k = $base.OpenSubKey($sub)
-  if (-not $k) { return $null }
-  try {
-    foreach ($ven in ($k.GetSubKeyNames() | Where-Object { $_ -match 'VEN_10DE' })) {
-      $vk = $base.OpenSubKey("$sub\$ven")
-      if (-not $vk) { continue }
-      try {
-        foreach ($inst in $vk.GetSubKeyNames()) {
-          if ((Get-RegValue "$root\$ven\$inst" 'Service') -match 'nvlddmkm') { return "$root\$ven\$inst" }
-        }
-      } finally { $vk.Close() }
-    }
-  } finally { $k.Close() }
-  $null
+function Get-NvidiaGpuEnumPath($Hw) {
+  if (-not $Hw -or $Hw.MainGpuVendor -ne 'NVIDIA' -or -not $Hw.MainGpuPnp) { return $null }
+  $nvCount = @($Hw.Gpus | Where-Object Vendor -eq 'NVIDIA').Count
+  if ($nvCount -gt 1 -and -not $Hw.MainGpuPciMatched) { return $null }
+  if ("$($Hw.MainGpuPnp)" -notmatch '^PCI\\VEN_10DE&') { return $null }
+  $path = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Hw.MainGpuPnp)"
+  if ("$(Get-RegValue $path 'Service')" -notmatch '(?i)^nvlddmkm$') { return $null }
+  $path
 }
 
 # 显卡控制面板入口检测。装了才给按钮，没装只给下载页——按钮点了没反应比没有按钮更糟。
@@ -431,7 +852,7 @@ function Get-GpuPanelApps([string]$Vendor) {
     }
     'AMD' {
       $rs = @('C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe',
-              "$env:SystemRoot\System32\amdow.exe") |
+               (Join-Path $script:System32 'amdow.exe')) |
             Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
       $apps += @{ Key = 'amd-sw'; Name = 'AMD Software (Adrenalin)'; Installed = [bool]$rs
                   Kind = 'exe'; Target = $rs
@@ -454,6 +875,19 @@ function Get-GpuPanelApps([string]$Vendor) {
 function Get-GpuClassKeyPath($Hw) {
   if (-not $Hw -or $Hw.MainGpuVendor -notin 'NVIDIA', 'AMD') { return $null }
   $root = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+  # Enum 设备键的 Driver 值直接指向 Class\{GUID}\000x，优先走这条一一对应关系。
+  # 仅按 VEN/DEV 在两张同型号显卡上仍会命中第一张，不能算可靠匹配。
+  if ($Hw.MainGpuPnp) {
+    $driver = "$(Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Hw.MainGpuPnp)" 'Driver')"
+    if ($driver -match '^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\(\d{4})$') {
+      $exact = "$root\$($Matches[1])"
+      $baseExact, $subExact = Split-RegPath $exact
+      $kExact = $baseExact.OpenSubKey($subExact)
+      if ($kExact) { $kExact.Close(); return $exact }
+    }
+  }
+  $sameVendorCount = @($Hw.Gpus | Where-Object { $_.Vendor -eq $Hw.MainGpuVendor }).Count
+  if ($sameVendorCount -gt 1) { return $null }
   $base, $sub = Split-RegPath $root
   $k = $base.OpenSubKey($sub)
   if (-not $k) { return $null }
@@ -529,8 +963,14 @@ public static class DfbCpuTopo {
 function Get-GpuIrqOps($Hw) {
   # KAFFINITY 只覆盖一个处理器组（64 逻辑核），超出的机器不做
   if (-not $Hw -or $Hw.Threads -lt 4 -or $Hw.Threads -gt 64) { return $null }
-  $gpu = @($Hw.Gpus | Where-Object { $_.Vendor -in 'NVIDIA', 'AMD' -and $_.Pnp }) | Select-Object -First 1
+  # 必须按硬件评分阶段选出的 MainGpuPnp 精确落键。WMI 的原始数组顺序未定义，
+  # “第一个 NVIDIA/AMD”在 AMD 核显 + NVIDIA 独显笔记本上会绑错设备。
+  $gpu = @($Hw.Gpus | Where-Object { $_.Pnp -and $_.Pnp -ieq $Hw.MainGpuPnp }) | Select-Object -First 1
   if (-not $gpu) { return $null }
+  $nvGpuCount = @($Hw.Gpus | Where-Object Vendor -eq 'NVIDIA').Count
+  if ($gpu.Vendor -eq 'NVIDIA' -and $nvGpuCount -gt 1 -and -not $Hw.MainGpuPciMatched) {
+    return $null
+  }
   $cores = Get-CpuCoreTopology
   if (-not $cores -or @($cores).Count -lt 2) { return $null }
   $top = ($cores | Measure-Object -Property Class -Maximum).Maximum
@@ -624,19 +1064,47 @@ function Get-MemoryXmpStatus {
   @{ Ok = $true; Text = "$ddr 运行在 $cur MHz，已超过 JEDEC 基准，XMP/EXPO 已生效" }
 }
 
+function Get-NvidiaSmiPath {
+  @((Join-Path $script:System32 'nvidia-smi.exe'),
+    (Join-Path $script:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe')) |
+    Where-Object { (Test-Path -LiteralPath $_ -PathType Leaf) -and -not (Test-PathHasReparsePoint $_) } |
+    Select-Object -First 1
+}
+
 function Get-PcieLinkStatus {
-  if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
+  $smi = Get-NvidiaSmiPath
+  if (-not $smi) {
     return @{ Ok = $null; Text = '无法检测（无 nvidia-smi；A 卡/核显可用 GPU-Z 查看总线接口）' }
   }
   $ErrorActionPreference = 'SilentlyContinue'
-  # 参数必须整体加引号：PowerShell 会把裸逗号解析成数组，拆散 nvidia-smi 的查询串
-  $out = & nvidia-smi '--query-gpu=pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max' '--format=csv,noheader' 2>&1
+  $hw = Get-HardwareInfo
+  if ($hw.MainGpuVendor -ne 'NVIDIA' -or -not $hw.MainGpuPciLocation) { return @{ Ok = $null; Text = '无法可靠匹配主 NVIDIA 显卡的 PCI 位置' } }
+  # 带 pci.bus_id 查询并按 SetupAPI 得到的主卡 BDF 精确选行，多卡时不再固定取第一行。
+  $out = & $smi '--query-gpu=pci.bus_id,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max' '--format=csv,noheader' 2>&1
   if ($LASTEXITCODE -ne 0 -or -not "$out") { return @{ Ok = $null; Text = '无法检测（nvidia-smi 查询失败）' } }
-  $p = @("$(@($out)[0])" -split ',' | ForEach-Object { $_.Trim() })
-  if ($p.Count -lt 4 -or $p[3] -notmatch '^\d+$') { return @{ Ok = $null; Text = "无法检测（输出异常：$out）" } }
-  $ok = ([int]$p[3] -ge 8)
+  $row = $null
+  foreach ($line in @($out)) {
+    $p = @("$line" -split ',' | ForEach-Object { $_.Trim() })
+    if ($p.Count -lt 5 -or $p[0] -notmatch '(?:[0-9A-Fa-f]{4,8}:)?([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-7])$') { continue }
+    $key = ('{0}:{1}:{2}' -f [Convert]::ToUInt32($Matches[1],16),[Convert]::ToUInt32($Matches[2],16),[Convert]::ToUInt32($Matches[3],16))
+    if ($key -eq $hw.MainGpuPciLocation) { $row = $p; break }
+  }
+  if (-not $row -or $row[4] -notmatch '^\d+$') { return @{ Ok = $null; Text = '无法检测（nvidia-smi 没有返回主显卡对应的 PCI 行）' } }
+  $ok = ([int]$row[4] -ge 8)
   @{ Ok = $ok
-     Text = "链路上限 PCIe $($p[1]).0 x$($p[3])$(if ($ok) { '，正常' } else { '，异常偏低，检查显卡是否插在直连 CPU 的主插槽' })（当前 $($p[0]).0 x$($p[2])，空闲降速属正常）" }
+     Text = "链路上限 PCIe $($row[2]).0 x$($row[4])$(if ($ok) { '，正常' } else { '，异常偏低，检查显卡是否插在直连 CPU 的主插槽' })（当前 $($row[1]).0 x$($row[3])，空闲降速属正常）" }
+}
+
+function Get-NvAutoOptStatus {
+  $path = Join-Path $script:TargetLocalAppData 'NVIDIA Corporation\NVIDIA app\NvBackend\config.xml'
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @{ Ok = $null; Text = '未找到 NVIDIA App 配置；如已安装，请在 App 内确认“自动优化游戏设置”' } }
+  if (Test-PathHasReparsePoint $path) { return @{ Ok = $null; Text = 'NVIDIA App 配置路径含目录联接/符号链接，已拒绝读取' } }
+  $f = Get-Item -LiteralPath $path
+  if ($f.Length -gt 4MB) { return @{ Ok = $null; Text = 'NVIDIA App 配置文件异常过大，已拒绝读取' } }
+  try { $txt = [IO.File]::ReadAllText($path) } catch { return @{ Ok = $null; Text = "读取 NVIDIA App 配置失败：$($_.Exception.Message)" } }
+  if ($txt -match '<Setting name=[''"]EnableAutomaticApplyOPS[''"] value=[''"]0[''"]') { return @{ Ok = $true; Text = 'NVIDIA App 自动优化已关闭' } }
+  if ($txt -match '<Setting name=[''"]EnableAutomaticApplyOPS[''"] value=[''"]1[''"]') { return @{ Ok = $false; Text = 'NVIDIA App 自动优化仍开启，请在 NVIDIA App 内手动关闭' } }
+  @{ Ok = $null; Text = '未找到 NVIDIA App 自动优化设置，请在 App 内手动确认' }
 }
 
 # ---------- 硬件与游戏检测 ----------
@@ -677,12 +1145,66 @@ function Select-MainGpu($Gpus) {
 # DeviceDesc 伪装后 Win32_VideoController.Name 也会跟着变。NVIDIA 的 NVML/nvidia-smi
 # 直接从驱动查询物理适配器型号，不受 DeviceDesc 影响，用它恢复真实型号用于界面、
 # 显卡指引、诊断报告和匿名统计。查询失败时保留 WMI 值，并明确标记为未验证。
-function Get-NvidiaRealGpuNames {
+function Get-PciBusLocation([string]$PnpDeviceId) {
   try {
-    if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) { return @() }
-    $out = @(& nvidia-smi.exe '--query-gpu=name' '--format=csv,noheader' 2>$null)
+    if (-not ('DfbPciLocation' -as [type])) {
+      Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DfbPciLocation {
+  const uint SPDRP_BUSNUMBER = 0x15, SPDRP_ADDRESS = 0x1C;
+  [StructLayout(LayoutKind.Sequential)]
+  struct SP_DEVINFO_DATA { public uint cbSize; public Guid ClassGuid; public uint DevInst; public UIntPtr Reserved; }
+  [DllImport("setupapi.dll", SetLastError=true)] static extern IntPtr SetupDiCreateDeviceInfoList(IntPtr cls, IntPtr hwnd);
+  [DllImport("setupapi.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  static extern bool SetupDiOpenDeviceInfo(IntPtr set, string id, IntPtr hwnd, uint flags, ref SP_DEVINFO_DATA data);
+  [DllImport("setupapi.dll", SetLastError=true)]
+  static extern bool SetupDiGetDeviceRegistryProperty(IntPtr set, ref SP_DEVINFO_DATA data, uint prop,
+    out uint regType, byte[] buffer, uint size, out uint needed);
+  [DllImport("setupapi.dll")] static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
+  static uint GetDword(IntPtr set, ref SP_DEVINFO_DATA data, uint prop) {
+    byte[] b = new byte[4]; uint type, needed;
+    if (!SetupDiGetDeviceRegistryProperty(set, ref data, prop, out type, b, 4, out needed))
+      throw new InvalidOperationException("SetupAPI property unavailable");
+    return BitConverter.ToUInt32(b, 0);
+  }
+  public static string Get(string id) {
+    IntPtr set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+    if (set == new IntPtr(-1)) return null;
+    try {
+      SP_DEVINFO_DATA data = new SP_DEVINFO_DATA(); data.cbSize = (uint)Marshal.SizeOf(data);
+      if (!SetupDiOpenDeviceInfo(set, id, IntPtr.Zero, 0, ref data)) return null;
+      uint bus = GetDword(set, ref data, SPDRP_BUSNUMBER);
+      uint address = GetDword(set, ref data, SPDRP_ADDRESS);
+      uint device = (address >> 16) & 0xffff, function = address & 0xffff;
+      return bus + ":" + device + ":" + function;
+    } catch { return null; }
+    finally { SetupDiDestroyDeviceInfoList(set); }
+  }
+}
+'@
+    }
+    [DfbPciLocation]::Get($PnpDeviceId)
+  } catch { $null }
+}
+
+function Get-NvidiaGpuIdentities {
+  try {
+    # 只执行驱动安装到受保护系统目录的 nvidia-smi，绝不从用户可写 PATH 解析同名 EXE。
+    $smi = Get-NvidiaSmiPath
+    if (-not $smi) { return @() }
+    $out = @(& $smi '--query-gpu=name,pci.bus_id' '--format=csv,noheader' 2>$null)
     if ($LASTEXITCODE -ne 0) { return @() }
-    @($out | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
+    @($out | ForEach-Object {
+      $line = "$($_)".Trim()
+      if ($line -match '^(.*?),\s*(?:[0-9A-Fa-f]{4,8}:)?([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-7])$') {
+        [pscustomobject]@{
+          Name = $Matches[1].Trim(); Bus = [Convert]::ToUInt32($Matches[2],16)
+          Device = [Convert]::ToUInt32($Matches[3],16); Function = [Convert]::ToUInt32($Matches[4],16)
+          Key = ('{0}:{1}:{2}' -f [Convert]::ToUInt32($Matches[2],16),[Convert]::ToUInt32($Matches[3],16),[Convert]::ToUInt32($Matches[4],16))
+        }
+      }
+    } | Where-Object { $_ })
   } catch { @() }
 }
 
@@ -690,17 +1212,21 @@ function Get-HardwareInfo {
   $os   = Get-CimInstance Win32_OperatingSystem
   $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
   $cs   = Get-CimInstance Win32_ComputerSystem
-  $nvidiaNames = @(Get-NvidiaRealGpuNames)
-  $nvidiaIndex = 0
-  $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object {
+  $nvidiaIds = @(Get-NvidiaGpuIdentities)
+  $video = @(Get-CimInstance Win32_VideoController)
+  $nvidiaWmiCount = @($video | Where-Object { (Get-GpuVendor $_.PNPDeviceID "$($_.Name)") -eq 'NVIDIA' }).Count
+  $gpus = @($video | ForEach-Object {
     $reportedName = "$($_.Name)".Trim()
     $vendor = Get-GpuVendor $_.PNPDeviceID $reportedName
     $realName = $reportedName
     $verified = ($vendor -ne 'NVIDIA')
-    if ($vendor -eq 'NVIDIA' -and $nvidiaIndex -lt $nvidiaNames.Count) {
-      $realName = "$($nvidiaNames[$nvidiaIndex])".Trim()
-      $verified = [bool]$realName
-      $nvidiaIndex++
+    $pciLocation = $(if ($vendor -eq 'NVIDIA') { Get-PciBusLocation "$($_.PNPDeviceID)" } else { $null })
+    $pciMatched = $false
+    if ($vendor -eq 'NVIDIA') {
+      $match = @($nvidiaIds | Where-Object { $_.Key -eq $pciLocation }) | Select-Object -First 1
+      # 单卡机器不存在错配歧义，SetupAPI 属性缺失时仍可安全一一对应；多卡必须按 PCI BDF 命中。
+      if (-not $match -and $nvidiaWmiCount -eq 1 -and $nvidiaIds.Count -eq 1) { $match = $nvidiaIds[0] }
+      if ($match) { $realName = "$($match.Name)".Trim(); $verified = [bool]$realName; $pciMatched = $true }
     }
     [pscustomobject]@{
       Name         = $realName
@@ -709,6 +1235,8 @@ function Get-HardwareInfo {
       Vendor       = $vendor
       Driver       = $_.DriverVersion
       Pnp          = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
+      PciLocation  = $pciLocation
+      PciMatched   = $pciMatched
     }
   })
   # 双显卡（核显+独显）机器以独显为主，不能依赖 WMI 的未定义返回顺序
@@ -730,9 +1258,28 @@ function Get-HardwareInfo {
     MainGpuReportedName = $(if ($main) { $main.ReportedName } else { '未检测到' })
     MainGpuNameVerified = $(if ($main) { [bool]$main.NameVerified } else { $false })
     MainGpuPnp    = $(if ($main) { $main.Pnp } else { $null })
+    MainGpuPciLocation = $(if ($main) { $main.PciLocation } else { $null })
+    MainGpuPciMatched = $(if ($main) { [bool]$main.PciMatched } else { $false })
     IsLaptop      = $isLaptop
     IsAdmin       = Test-Admin
   }
+}
+
+function Resolve-ValidatedGamePath([string]$Path) {
+  if (-not $Path -or -not [IO.Path]::IsPathRooted($Path)) {
+    throw '游戏主程序路径必须是完整的绝对路径'
+  }
+  $full = [IO.Path]::GetFullPath($Path)
+  $leaf = [IO.Path]::GetFileName($full)
+  if ($leaf -notin @('DeltaForceClient-Win64-Shipping.exe','DeltaForce.exe')) {
+    throw '请选择三角洲行动主程序：DeltaForceClient-Win64-Shipping.exe 或 DeltaForce.exe'
+  }
+  if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw '所选游戏主程序不存在，请重新定位' }
+  $file = Get-Item -LiteralPath $full -Force
+  if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw '所选游戏主程序是符号链接或重解析文件，请选择真实 exe 文件'
+  }
+  $full
 }
 
 function Find-GamePath {
@@ -822,14 +1369,57 @@ function Find-GamePath {
 # 本机没装对应品牌显卡时目录根本不存在，那不是错误，跳过即可
 function Get-ShaderCacheDirs {
   @(
-    @{ Label = 'DirectX 着色器缓存'; Path = (Join-Path $env:LOCALAPPDATA 'D3DSCache') }
-    @{ Label = 'NVIDIA DX 缓存';     Path = (Join-Path $env:LOCALAPPDATA 'NVIDIA\DXCache') }
-    @{ Label = 'NVIDIA GL 缓存';     Path = (Join-Path $env:LOCALAPPDATA 'NVIDIA\GLCache') }
-    @{ Label = 'NVIDIA 全局缓存';    Path = (Join-Path $env:ProgramData  'NVIDIA Corporation\NV_Cache') }
-    @{ Label = 'AMD DX 缓存';        Path = (Join-Path $env:LOCALAPPDATA 'AMD\DxCache') }
-    @{ Label = 'AMD DXC 缓存';       Path = (Join-Path $env:LOCALAPPDATA 'AMD\DxcCache') }
-    @{ Label = 'Intel 着色器缓存';   Path = (Join-Path $env:LOCALAPPDATA 'Intel\ShaderCache') }
+    @{ Label = 'DirectX 着色器缓存'; Path = (Join-Path $script:TargetLocalAppData 'D3DSCache'); Scope = 'user' }
+    @{ Label = 'NVIDIA DX 缓存';     Path = (Join-Path $script:TargetLocalAppData 'NVIDIA\DXCache'); Scope = 'user' }
+    @{ Label = 'NVIDIA GL 缓存';     Path = (Join-Path $script:TargetLocalAppData 'NVIDIA\GLCache'); Scope = 'user' }
+    @{ Label = 'NVIDIA 全局缓存';    Path = (Join-Path $script:CommonAppData 'NVIDIA Corporation\NV_Cache'); Scope = 'system' }
+    @{ Label = 'AMD DX 缓存';        Path = (Join-Path $script:TargetLocalAppData 'AMD\DxCache'); Scope = 'user' }
+    @{ Label = 'AMD DXC 缓存';       Path = (Join-Path $script:TargetLocalAppData 'AMD\DxcCache'); Scope = 'user' }
+    @{ Label = 'Intel 着色器缓存';   Path = (Join-Path $script:TargetLocalAppData 'Intel\ShaderCache'); Scope = 'user' }
   )
+}
+
+function Test-PathHasReparsePoint([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path)
+  $root = [IO.Path]::GetPathRoot($full)
+  $cur = $root
+  $rest = $full.Substring($root.Length).TrimEnd('\')
+  foreach ($part in @($rest -split '\\' | Where-Object { $_ })) {
+    $cur = Join-Path $cur $part
+    if (-not (Test-Path -LiteralPath $cur)) { break }
+    $attrs = [IO.File]::GetAttributes($cur)
+    if (($attrs -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
+  }
+  $false
+}
+
+function Get-SafeFilesUnderRoot([string]$Root) {
+  $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+  if (Test-PathHasReparsePoint $rootFull) {
+    return [pscustomobject]@{ Files = @(); Rejected = @($rootFull) }
+  }
+  $prefix = $rootFull + [IO.Path]::DirectorySeparatorChar
+  $stack = New-Object 'System.Collections.Generic.Stack[string]'
+  $stack.Push($rootFull)
+  $files = New-Object System.Collections.Generic.List[object]
+  $rejected = New-Object System.Collections.Generic.List[string]
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    foreach ($entry in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+      try {
+        $full = [IO.Path]::GetFullPath($entry.FullName)
+        if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+          [void]$rejected.Add($full); continue
+        }
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+          [void]$rejected.Add($full); continue
+        }
+        if ($entry.PSIsContainer) { $stack.Push($full) }
+        else { [void]$files.Add($entry) }
+      } catch { [void]$rejected.Add("$($entry.FullName)") }
+    }
+  }
+  [pscustomobject]@{ Files = @($files | ForEach-Object { $_ }); Rejected = @($rejected | ForEach-Object { $_ }) }
 }
 
 # 当前占用总量，供界面显示「值不值得清」。目录不存在或读不到都按 0 计
@@ -837,7 +1427,7 @@ function Get-ShaderCacheSize {
   $sum = 0
   foreach ($d in Get-ShaderCacheDirs) {
     if (-not (Test-Path -LiteralPath $d.Path)) { continue }
-    $f = @(Get-ChildItem -LiteralPath $d.Path -Recurse -File -Force -ErrorAction SilentlyContinue)
+    $f = @((Get-SafeFilesUnderRoot $d.Path).Files)
     if ($f.Count -gt 0) { $sum += ($f | Measure-Object Length -Sum).Sum }
   }
   $sum
@@ -849,12 +1439,36 @@ function Clear-ShaderCache {
   $cleared = @(); $failed = @()
   foreach ($d in Get-ShaderCacheDirs) {
     if (-not (Test-Path -LiteralPath $d.Path)) { continue }
-    $files = @(Get-ChildItem -LiteralPath $d.Path -Recurse -File -Force -ErrorAction SilentlyContinue)
+    if ($d.Scope -eq 'system') {
+      # ProgramData 缓存需要 handle/no-follow 遍历才能完全消除检查→删除 TOCTOU；当前版本
+      # 宁可跳过，也不在管理员权限下用字符串路径递归删除。
+      $failed += "$($d.Label) 属于系统级缓存，当前安全模式暂不自动删除"
+      continue
+    }
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $currentLocal = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
+    if ((Test-Admin) -or $currentSid -ine $script:TargetUserSid -or $currentLocal -ine $script:TargetLocalAppData.TrimEnd('\')) {
+      $failed += "$($d.Label) 必须由目标用户的普通权限进程清理，已拒绝在提权进程中删除"
+      continue
+    }
+    $scan = Get-SafeFilesUnderRoot $d.Path
+    if (@($scan.Rejected).Count -gt 0) {
+      $failed += "$($d.Label) 含目录联接/符号链接或越界项，已拒绝整目录清理"
+      continue
+    }
+    $rootFull = [IO.Path]::GetFullPath($d.Path).TrimEnd('\')
+    $prefix = $rootFull + [IO.Path]::DirectorySeparatorChar
+    $files = @($scan.Files)
     if ($files.Count -eq 0) { continue }
     $bytes = ($files | Measure-Object Length -Sum).Sum
     $err = 0
     foreach ($f in $files) {
-      try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch { $err++ }
+      try {
+        $candidate = [IO.Path]::GetFullPath($f.FullName)
+        if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+            (Test-PathHasReparsePoint $candidate)) { throw '候选文件越界或路径中出现重解析点' }
+        Remove-Item -LiteralPath $candidate -Force -ErrorAction Stop
+      } catch { $err++ }
     }
     if ($err -eq 0) {
       $cleared += "$($d.Label) 已清空（$([math]::Round($bytes / 1MB, 1))MB）"
@@ -886,10 +1500,24 @@ function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop) {
   'NVIDIA GeForce GTX 705 Ti'
 }
 
+function Test-TrustedNvidiaProfileInspector([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+  if ((Split-Path -Leaf $Path) -ine 'nvidiaProfileInspector.exe') { return $false }
+  if (Test-PathHasReparsePoint $Path) { return $false }
+  try {
+    $sig = Get-AuthenticodeSignature -LiteralPath $Path
+    [bool]($sig.Status -eq 'Valid' -and $sig.SignerCertificate -and
+           $sig.SignerCertificate.Subject -match '(?i)(^|,\s*)CN=(NVIDIA Corporation|Orbmu2k)(,|$)')
+  } catch { $false }
+}
+
 function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   $items = @()
   $hw = $null
   try { $hw = Get-HardwareInfo } catch {}
+  # 游戏路径会同时用于 AppCompat、GPU 首选项和 IFEO。入口先严格限定真实游戏主程序，
+  # 避免用户在文件选择器里误点任意 exe 后得到一串难懂的备份白名单失败。
+  if ($GamePath) { $GamePath = Resolve-ValidatedGamePath $GamePath }
   $exeName = $(if ($GamePath) { Split-Path -Leaf $GamePath } else { $null })
 
   # ===== safe 档：默认推荐，不降低系统安全性 =====
@@ -966,7 +1594,7 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                  @{ Kind = 'reg'; Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseThreshold1'; Value = '0'; Kind2 = 'String' }
                  @{ Kind = 'reg'; Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseThreshold2'; Value = '0'; Kind2 = 'String' }
                )
-               Note = '与帧率无关但影响压枪手感，FPS 玩家普遍关闭。会改变鼠标移动习惯，默认不勾选。' }
+               Note = '与帧率无关但影响压枪手感，射击游戏玩家普遍关闭。会改变鼠标移动习惯，默认不勾选。' }
 
   # ===== v0.4 新增：全套调试路线补齐 =====
 
@@ -980,9 +1608,9 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                Ops  = @(@{ Kind = 'reg'; Path = $mmcss; Name = 'NetworkThrottlingIndex'; Value = -1; Kind2 = 'DWord'; Label = '网络限流指数（-1 即 0xffffffff 不限流）' })
                Note = '系统默认每毫秒只放行 10 个网络包给非多媒体流量，网游高发包率下引入延迟抖动；0xffffffff 表示彻底不限流。' }
 
-  $items += @{ Id = 'sys-responsiveness'; Tier = 'safe'; Name = '提高系统响应度（MMCSS 后台保留=0）'; Admin = $true; Default = $true; Kind = 'multi'
-               Ops  = @(@{ Kind = 'reg'; Path = $mmcss; Name = 'SystemResponsiveness'; Value = 0; Kind2 = 'DWord'; Label = '后台 CPU 保留比例' })
-               Note = '默认给后台任务保留 20% CPU；写 0 让前台游戏拿满（内核实际按 10% 下限钳制，0 是游戏圈通行写法）。' }
+  $items += @{ Id = 'sys-responsiveness'; Tier = 'safe'; Name = '提高系统响应度（MMCSS 后台保留=10%）'; Admin = $true; Default = $true; Kind = 'multi'
+               Ops  = @(@{ Kind = 'reg'; Path = $mmcss; Name = 'SystemResponsiveness'; Value = 10; Kind2 = 'DWord'; Label = '后台 CPU 保留比例' })
+               Note = '把系统为后台多媒体任务保留的 CPU 比例设为 Windows 支持的最低有效值 10%。低于 10 的值会被系统钳制为 20，因此不再写无效的 0。' }
 
   $items += @{ Id = 'sysmain-off'; Tier = 'safe'; Name = '禁用 SysMain 预取服务'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Services\SysMain'; Name = 'Start'; Value = 4; Kind2 = 'DWord'; Label = 'SysMain 启动类型（4=禁用）' })
@@ -1005,14 +1633,9 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   # NVIDIA App 的「自动优化」开关落在 NvBackend\config.xml 的 EnableAutomaticApplyOPS
   # （OPS=Optimal Playable Settings，本机 A/B 实测坐实：界面开关与该值即时联动、App 常驻
   # 时也直接写盘）。没装 NVIDIA App（A 卡/核显）时文件不存在，Ops 置空走「本机不适用」降级
-  $nvAppCfg = Join-Path $env:LOCALAPPDATA 'NVIDIA Corporation\NVIDIA app\NvBackend\config.xml'
-  $items += @{ Id = 'nv-autoopt-off'; Tier = 'safe'; Name = '关闭 NVIDIA App 自动优化游戏设置'; Admin = $false; Default = $true; Kind = 'multi'
-               Ops  = $(if (Test-Path -LiteralPath $nvAppCfg) { @(@{ Kind = 'file'; Path = $nvAppCfg
-                          Match   = '(<Setting name=[''"]EnableAutomaticApplyOPS[''"] value=[''"])1([''"][^>]*/>)'
-                          Replace = '${1}0$2'
-                          Verify  = '<Setting name=[''"]EnableAutomaticApplyOPS[''"] value=[''"]0[''"]'
-                          Label   = 'NVIDIA 自动优化(OPS)' }) })
-               Note = '这个开关开着时，NVIDIA 会自动把它认为「最佳」的画质设置写进游戏、覆盖你自己调好的参数（俗称"白调"）。关掉只是不再自动改游戏设置，不影响驱动本身。与「锁定电源计划」同源：都是防外部程序偷改你的配置。' }
+  $items += @{ Id = 'nv-autoopt-off'; Tier = 'safe'; Name = 'NVIDIA App 自动优化体检（手动关闭）'; Admin = $false; Default = $false; Kind = 'check'
+               Check = 'Get-NvAutoOptStatus'
+               Note = '只检测 NVIDIA App 是否仍在自动覆盖游戏设置，不再由工具写入用户配置文件；发现开启时请在 NVIDIA App 内手动关闭。' }
 
   $items += @{ Id = 'gpu-irq-affinity'; Tier = 'safe'; Name = '显卡中断绑核（固定到高性能核）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = (Get-GpuIrqOps $hw)
@@ -1057,7 +1680,7 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   # 这是它与其余所有优化项的根本区别，Note 里对用户讲清楚
   # 项名以「解决掉帧」开头：用户搜的、问的都是这四个字，「清理着色器缓存」是手段不是诉求，
   # 只写手段的话真正需要它的人在列表里根本认不出来
-  $items += @{ Id = 'shader-cache-clean'; Tier = 'safe'; Name = '解决掉帧：清理着色器缓存（实验功能，不保证生效）'; Admin = $false; Default = $false; Kind = 'cache'
+  $items += @{ Id = 'shader-cache-clean'; Tier = 'safe'; Name = '★ 解决掉帧：清理着色器缓存（实验功能，不保证生效）'; Admin = $false; Default = $false; Kind = 'cache'
                Note = '针对「进游戏后每隔十几秒卡顿 2~3 秒」这类症状——社区普遍指向显卡/DirectX 着色器缓存异常，游戏大版本更新后尤其高发。只清理系统与显卡驱动的缓存目录，不碰游戏安装目录内任何文件。执行前请先知道三件事：①清理后首次进游戏要重新编译着色器，头一两局可能比现在更卡，之后才恢复；②如果你的掉帧不是从游戏更新之后才开始的，这项大概率无效；③缓存由驱动自动重建，因此本项不进备份、也无需还原——点「还原设置」不会把它恢复回来（也不需要）。游戏和显卡驱动面板开着时部分文件会被占用，关掉再执行效果最好。' }
 
   $items += @{ Id = 'dyntick-off'; Tier = 'safe'; Name = '禁用动态计时器（bcdedit）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
@@ -1070,7 +1693,7 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   $items += @{ Id = 'pagefile-custom'; Tier = 'safe'; Name = "虚拟内存固定为 $([int]($ramInt * 1.5))–$($ramInt * 2) GB"; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = $(if ($ramInt -gt 0) { @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
                                                   Name = 'PagingFiles'; Kind2 = 'MultiString'; Label = '页面文件'
-                                                  Value = [string[]]@("$env:SystemDrive\pagefile.sys $($ramInt * 1536) $($ramInt * 2048)") }) })
+                                                   Value = [string[]]@("$script:SystemDrive\pagefile.sys $($ramInt * 1536) $($ramInt * 2048)") }) })
                Note = '取消系统自动管理，按公式固定页面文件（初始=内存×1.5、最大=×2），防止动态收缩引发卡顿。只建议在游戏闪退/爆内存时启用：会立即占用系统盘约 ' + [int]($ramInt * 1.5) + ' GB，默认不勾选。重启生效。' }
 
   # 以下几项按 exe 路径/文件名落地，没有游戏路径时 Ops 为空，Apply 时跳过并提示
@@ -1094,27 +1717,27 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                Ops = $prioOps; RequiresGame = $true
                Note = '通过 IFEO 让游戏进程一启动就是高优先级，抢占后台扫描/更新占用的资源。需要游戏 exe 路径。' }
 
-  # ===== risky 档：必须显式勾选 + -Risky 才执行，不进任何预设方案 =====
+  # ===== risky 档：必须显式勾选 + -Risky 才执行；仅主推全套包含，界面必须单独二次确认 =====
 
   # 改独显上报的型号名。实测结论（RTX 3070 Laptop / Win11 26200）：该键管理员组有
   # FullControl，直接写即可，无需 takeown 或改 ACL；写入即时生效（WMI 立刻改口径），
   # 写回原字符串后逐字节一致、WMI 同步复原——所以备份/还原走通用 reg 通路就够。
-  $nvEnum = Get-NvidiaGpuEnumPath
+  $nvEnum = Get-NvidiaGpuEnumPath $hw
   $spoofModels = @(Get-GpuSpoofModels)
   $fakeGpu = $(if ($GpuSpoofModel -and $spoofModels -contains $GpuSpoofModel) { $GpuSpoofModel }
                else { Get-DefaultGpuSpoofModel $(if ($hw) { $hw.MainGpuName } else { '' }) $(if ($hw) { $hw.IsLaptop } else { $false }) })
-  $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = '显卡型号伪装'; SpoofModel = $fakeGpu; Admin = $true; Default = $false; Kind = 'multi'
+  $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = '★ 显卡型号伪装'; SpoofModel = $fakeGpu; Admin = $true; Default = $false; Kind = 'multi'
                Ops = $(if ($nvEnum) { @(@{ Kind = 'reg'; Path = $nvEnum; Name = 'DeviceDesc'; Value = $fakeGpu
                                            Kind2 = 'String'; Label = '显卡型号' }) })
                Note = '让游戏以为你是低端卡从而走低配渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。仅 N 卡可用，备份原值可完整还原。' }
 
   # N 卡进阶：用户自行下载 NVIDIA Profile Inspector 放进 tools\ 后才出现此项
   $npi = Join-Path $script:ToolsDir 'nvidiaProfileInspector.exe'
-  $nip = Get-ChildItem $script:ToolsDir -Filter '*.nip' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ((Test-Path -LiteralPath $npi) -and $nip) {
+  $nip = Get-Item -LiteralPath (Join-Path $script:ToolsDir 'DeltaForce-Recommended.nip') -ErrorAction SilentlyContinue
+  if ((Test-TrustedNvidiaProfileInspector $npi) -and $nip -and -not (Test-PathHasReparsePoint $nip.FullName)) {
     $items += @{ Id = 'nvidia-profile'; Tier = 'safe'; Name = "导入 N 卡驱动配置档（$($nip.Name)）"; Admin = $true; Default = $false; Kind = 'npi'
                  Npi = $npi; Nip = $nip.FullName
-                 Note = '调用 NVIDIA Profile Inspector 静默导入 3D 设置（低延迟/预渲染帧/DLSS 预设）。此项无自动备份，请先在 Inspector 里手动导出当前配置。' }
+                 Note = '仅在 NVIDIA Profile Inspector 带有效且受信发布者签名时调用，并检查导入进程退出码。此项无自动备份，请先在 Inspector 里手动导出当前配置。' }
   }
 
   $items
@@ -1136,7 +1759,7 @@ function Get-BuiltinPresets {
                 'gpu-irq-affinity',
                 'dvr-off','wer-off','sysmain-off','wsearch-off','hibernate-off','mem-compress-off',
                 'paging-exec','transparency-off','mpo-off','dyntick-off','mouse-accel-off',
-                'hags','fso-off','gpu-pref','gpu-pstate-lock','nv-autoopt-off','gpu-name-spoof','nvidia-profile',
+                'hags','fso-off','gpu-pref','gpu-pstate-lock','gpu-name-spoof',
                 'pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
@@ -1145,20 +1768,19 @@ function Get-BuiltinPresets {
       Items = @('power-ultimate','power-tuning','hags','game-mode','dvr-off','prio-separation',
                 'paging-exec','wer-off','transparency-off','mpo-off','net-throttling-off',
                 'sys-responsiveness','mmcss-games','fso-off','gpu-pref','game-priority',
-                'nv-autoopt-off','pcie-check','vcredist-check','xmp-check')
+                'pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
       Id = 'safe-only'; Name = '保守（只改当前用户）'; Builtin = $true
-      Note = '只动 HKCU 用户级设置，不碰系统全局、不需要重启。适合公司电脑或不想动系统的人。'
+      Note = '只改当前用户设置，不碰系统全局，通常无需重启；执行时仍会为受保护备份请求一次 UAC。适合不想改系统全局设置的人。'
       Items = @('game-mode','dvr-off','wer-off','transparency-off','fso-off','gpu-pref','windowed-opt-off')
     }
   )
 }
 
 function Get-ProfileDir {
-  $d = Join-Path $script:Root 'profiles'
-  if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
-  $d
+  Initialize-UserDataStore
+  $script:ProfileDir
 }
 
 function Get-UserPresets {
@@ -1179,6 +1801,7 @@ function Get-Presets { @(Get-BuiltinPresets) + @(Get-UserPresets) }
 
 # 文件名要能安全落盘，方案显示名另存字段，不受文件名清洗影响
 function Save-UserPreset([string]$Name, [string[]]$ItemIds) {
+  if (Test-Admin) { throw '自存方案请由当前用户的普通权限进程操作' }
   if (-not $Name) { throw '方案名不能为空' }
   $safe = ($Name -replace '[\\/:*?"<>|]', '_').Trim()
   if (-not $safe) { throw '方案名无效' }
@@ -1191,12 +1814,13 @@ function Save-UserPreset([string]$Name, [string[]]$ItemIds) {
   $ids = @($ItemIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   if ($ids.Count -eq 0) { throw '方案里至少要有一项' }
   $f = Join-Path (Get-ProfileDir) "$safe.json"
-  @{ Name = $Name; Saved = (Get-Date).ToString('yyyy-MM-dd HH:mm'); Items = $ids } |
-    ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $f -Encoding UTF8
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((@{ Name = $Name; Saved = (Get-Date).ToString('yyyy-MM-dd HH:mm'); Items = $ids } | ConvertTo-Json -Depth 4))
+  Write-BytesAtomic $f $bytes
   $f
 }
 
 function Remove-UserPreset([string]$Id) {
+  if (Test-Admin) { throw '删除自存方案请由当前用户的普通权限进程操作' }
   $p = @(Get-UserPresets | Where-Object { $_.Id -eq $Id }) | Select-Object -First 1
   if (-not $p) { throw "未找到自存方案：$Id" }
   Remove-Item -LiteralPath $p.File -Force
@@ -1337,7 +1961,7 @@ function Get-GpuGuideText([string]$Vendor, [string]$GpuName, [bool]$IsLaptop) {
       'NVIDIA App → 图形 → 三角洲行动：RTX 40/50 系可把 DLSS 模型预设选到 Preset K，'
       '其余型号保持默认。'
       ''
-      '「自动优化」会覆写你调好的画质，用本工具的「关闭 NVIDIA App 自动优化游戏设置」项关掉即可。'
+      '「自动优化」会覆写你调好的画质，请在 NVIDIA App 内手动关闭；本工具只做状态体检，不写它的配置文件。'
       '进阶：NVIDIA Profile Inspector 放进本工具 tools\ 目录后可一键导入驱动配置档。'
     ) -join "`n" }
     'AMD' { @(
@@ -1362,6 +1986,341 @@ function Get-GpuGuideText([string]$Vendor, [string]$GpuName, [bool]$IsLaptop) {
 
 # ---------- 动作 ----------
 
+function Get-ObjectPropertyNames($Object) {
+  if ($Object -is [Collections.IDictionary]) { @($Object.Keys | ForEach-Object { "$_" }) }
+  else { @($Object.PSObject.Properties.Name) }
+}
+
+function Assert-ExactProperties($Object, [string[]]$Required, [string[]]$Optional, [string]$Label) {
+  if ($null -eq $Object) { throw "$Label 不能为空" }
+  $actual = @(Get-ObjectPropertyNames $Object)
+  foreach ($n in $Required) { if ($actual -notcontains $n) { throw "$Label 缺少字段：$n" } }
+  $allowed = @($Required) + @($Optional)
+  $unknown = @($actual | Where-Object { $allowed -notcontains $_ })
+  if ($unknown.Count -gt 0) { throw "$Label 包含未知字段：$($unknown -join '、')" }
+}
+
+function Get-BackupOpFields([string]$Kind, [bool]$Version2) {
+  $base = @(if ($Version2) { 'Id','Status','Kind' } else { 'Kind' })
+  switch ($Kind) {
+    'reg'     { $base + @('Path','Name','Existed','OldValue','OldKind') }
+    'pcfg'    { $base + @('Sub','Setting','Label','Existed','OldValue','SchemeGuid') }
+    'mmagent' { $base + @('Feature','OldEnabled') }
+    'sched'   { $base + @('TaskName') }
+    'hib'     { $base + @('OldEnabled') }
+    'bcd'     { $base + @('Name','OldValue') }
+    'file'    { $base + @('Path','OrigB64') }
+    'power'   { $base + @('Old','ToolCreated','NewGuid') }
+    default   { throw "未知备份类型：$Kind" }
+  }
+}
+
+function Test-AllowedGameExe([string]$Path) {
+  if (-not [IO.Path]::IsPathRooted($Path)) { return $false }
+  try { $leaf = [IO.Path]::GetFileName([IO.Path]::GetFullPath($Path)) } catch { return $false }
+  $leaf -iin @('DeltaForceClient-Win64-Shipping.exe','DeltaForce.exe')
+}
+
+function Test-AllowedBackupRegTarget($Op) {
+  $path = "$($Op.Path)"; $name = "$($Op.Name)"
+  # 游戏路径是注册表“值名”，仅允许本项目识别的两个真实游戏进程名。
+  if ($path -ieq 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers' -or
+      $path -ieq 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences') {
+    if (Test-AllowedGameExe $name) { return $true }
+  }
+  if ($path -match '^HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\(DeltaForceClient-Win64-Shipping|DeltaForce)\.exe\\PerfOptions$' -and
+      $name -iin @('CpuPriorityClass','IoPriority')) { return $true }
+  if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\\{4d36e968-e325-11ce-bfc1-08002be10318\}\\\d{4}$' -and
+      $name -ieq 'DisableDynamicPstate') { return $true }
+  if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\PCI\\VEN_(10DE|1002)&[^\\]+\\[^\\]+\\Device Parameters\\Interrupt Management\\Affinity Policy$' -and
+      $name -iin @('DevicePolicy','AssignmentSetOverride')) { return $true }
+  if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\PCI\\VEN_10DE&[^\\]+\\[^\\]+$' -and $name -ieq 'DeviceDesc') { return $true }
+  if ($name -ieq 'Attributes') {
+    $allowedPowerPaths = @(
+      "$script:PsRoot\$script:SubUsb\d4e98f31-5ffe-4ce1-be31-1b38b384c009",
+      "$script:PsRoot\$script:SubProc\4d2b0152-7d5c-498b-88e2-34345392a2c5",
+      "$script:PsRoot\$script:SubProc\93b8b6dc-0698-4d1c-9ee4-0644e900c85d",
+      "$script:PsRoot\$script:SubProc\bae08b81-2d5e-4688-ad6a-13243356654b"
+    )
+    if ($allowedPowerPaths -icontains $path) { return $true }
+  }
+
+  $fixed = @(
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling|PowerThrottlingOff',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers|HwSchMode',
+    'HKCU:\Software\Microsoft\GameBar|AutoGameModeEnabled','HKCU:\Software\Microsoft\GameBar|AllowAutoGameMode',
+    'HKCU:\System\GameConfigStore|GameDVR_Enabled','HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR|AppCaptureEnabled',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl|Win32PrioritySeparation',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management|DisablePagingExecutive',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management|PagingFiles',
+    'HKCU:\Software\Microsoft\Windows\Windows Error Reporting|Disabled',
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize|EnableTransparency',
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects|VisualFXSetting',
+    'HKCU:\Control Panel\Mouse|MouseSpeed','HKCU:\Control Panel\Mouse|MouseThreshold1','HKCU:\Control Panel\Mouse|MouseThreshold2',
+    'HKLM:\SOFTWARE\Microsoft\Windows\Dwm|OverlayTestMode',
+    'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile|NetworkThrottlingIndex',
+    'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile|SystemResponsiveness',
+    'HKLM:\SYSTEM\CurrentControlSet\Services\SysMain|Start','HKLM:\SYSTEM\CurrentControlSet\Services\WSearch|Start',
+    'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games|GPU Priority',
+    'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games|Priority',
+    'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games|Scheduling Category',
+    'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games|SFIO Priority',
+    'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences|DirectXUserGlobalSettings'
+  )
+  $fixed -icontains ($path + '|' + $name)
+}
+
+function Test-JsonInteger($Value, [long]$Min, [decimal]$Max) {
+  if ($Value -isnot [sbyte] -and $Value -isnot [byte] -and $Value -isnot [int16] -and $Value -isnot [uint16] -and
+      $Value -isnot [int32] -and $Value -isnot [uint32] -and $Value -isnot [int64] -and $Value -isnot [uint64]) { return $false }
+  try { ([decimal]$Value -ge [decimal]$Min) -and ([decimal]$Value -le $Max) } catch { $false }
+}
+
+function Assert-BackupRegValue($Op) {
+  if ($Op.Existed -isnot [bool]) { throw '备份注册表 Existed 必须是布尔值' }
+  if (-not $Op.Existed) {
+    if ($null -ne $Op.OldValue -or "$($Op.OldKind)") { throw '原本不存在的注册表值不得携带旧内容' }
+    return
+  }
+  $kind = "$($Op.OldKind)"
+  switch ($kind) {
+    'String'       { if ($Op.OldValue -isnot [string] -or $Op.OldValue.Length -gt 4096) { throw '备份注册表字符串值无效' } }
+    'ExpandString' { if ($Op.OldValue -isnot [string] -or $Op.OldValue.Length -gt 4096) { throw '备份注册表可展开字符串值无效' } }
+    'DWord'        { if (-not (Test-JsonInteger $Op.OldValue ([int32]::MinValue) ([uint32]::MaxValue))) { throw '备份注册表 DWord 值无效' } }
+    'QWord'        { if (-not (Test-JsonInteger $Op.OldValue ([int64]::MinValue) ([decimal][uint64]::MaxValue))) { throw '备份注册表 QWord 值无效' } }
+    'Binary' {
+      $values = @($Op.OldValue)
+      if ($values.Count -gt 64 -or @($values | Where-Object { -not (Test-JsonInteger $_ 0 255) }).Count -gt 0) { throw '备份注册表二进制值无效' }
+    }
+    'MultiString' {
+      $values = @($Op.OldValue)
+      if ($values.Count -gt 32 -or @($values | Where-Object { $_ -isnot [string] -or $_.Length -gt 4096 }).Count -gt 0) { throw '备份注册表多字符串值无效' }
+    }
+    default { throw "注册表值类型无效：$kind" }
+  }
+
+  $path = "$($Op.Path)"; $name = "$($Op.Name)"
+  if ($name -ieq 'PagingFiles') {
+    foreach ($entry in @($Op.OldValue)) {
+      if ($entry -notmatch '^(?:[A-Za-z]|\?):\\pagefile\.sys\s+\d+\s+\d+$') { throw '备份页面文件值不在安全格式白名单' }
+    }
+  }
+  if ($name -ieq 'AssignmentSetOverride' -and @($Op.OldValue).Count -gt 32) { throw '备份中断亲和性掩码过长' }
+  if ($name -ieq 'DevicePolicy' -and ([decimal]$Op.OldValue -lt 0 -or [decimal]$Op.OldValue -gt 5)) { throw '备份中断策略值超出白名单' }
+  if ($name -ieq 'DeviceDesc' -and $Op.OldValue.Length -gt 512) { throw '备份显卡描述过长' }
+  if ($name -ieq 'Start' -and ([decimal]$Op.OldValue -lt 0 -or [decimal]$Op.OldValue -gt 4)) { throw '备份服务启动类型超出白名单' }
+  if ($path -like '*\Multimedia\SystemProfile\Tasks\Games') {
+    if ($name -ieq 'GPU Priority' -and ([decimal]$Op.OldValue -lt 0 -or [decimal]$Op.OldValue -gt 31)) { throw '备份 GPU Priority 超出白名单' }
+    if ($name -ieq 'Priority' -and ([decimal]$Op.OldValue -lt 1 -or [decimal]$Op.OldValue -gt 8)) { throw '备份 MMCSS Priority 超出白名单' }
+    if ($name -ieq 'Scheduling Category' -and "$($Op.OldValue)" -notin @('High','Medium','Low')) { throw '备份 Scheduling Category 超出白名单' }
+    if ($name -ieq 'SFIO Priority' -and "$($Op.OldValue)" -notin @('High','Normal','Low')) { throw '备份 SFIO Priority 超出白名单' }
+  }
+}
+
+function Assert-BackupOperation($Op, [bool]$Version2, [string]$AllowedLocalAppData) {
+  if (-not $AllowedLocalAppData) { $AllowedLocalAppData = $script:TargetLocalAppData }
+  $kind = "$($Op.Kind)"
+  $fields = @(Get-BackupOpFields $kind $Version2)
+  Assert-ExactProperties $Op $fields @() "备份操作($kind)"
+  if ($kind -eq 'file') {
+    # 旧版曾备份 NVIDIA App 的用户配置文件。提权还原任何用户可写路径都存在
+    # 目录换成 junction 的竞态窗口；该优化项已改为纯检测，因此新旧 schema 都关闭拒绝文件操作。
+    throw '备份中的用户配置文件操作已停用，请在 NVIDIA App 内手动确认该设置'
+  }
+  if ($Version2) {
+    $id = [guid]::Empty
+    if (-not [guid]::TryParseExact("$($Op.Id)", 'D', [ref]$id)) { throw "备份操作 Id 无效：$($Op.Id)" }
+    if ("$($Op.Status)" -notin @('prepared','applied')) { throw "备份操作状态无效：$($Op.Status)" }
+  }
+  switch ($kind) {
+    'reg' {
+      if (-not (Test-AllowedBackupRegTarget $Op)) { throw "备份注册表目标不在白名单：$($Op.Path)|$($Op.Name)" }
+      if ("$($Op.OldKind)" -notin @('','String','ExpandString','Binary','DWord','MultiString','QWord')) { throw "注册表值类型无效：$($Op.OldKind)" }
+      Assert-BackupRegValue $Op
+    }
+    'pcfg' {
+      $valid = (($Op.Sub -ieq $script:SubUsb -and $Op.Setting -ieq 'd4e98f31-5ffe-4ce1-be31-1b38b384c009') -or
+                ($Op.Sub -ieq $script:SubProc -and $Op.Setting -iin @('4d2b0152-7d5c-498b-88e2-34345392a2c5','93b8b6dc-0698-4d1c-9ee4-0644e900c85d','bae08b81-2d5e-4688-ad6a-13243356654b')))
+      $g = [guid]::Empty
+      if (-not $valid -or -not [guid]::TryParse("$($Op.SchemeGuid)", [ref]$g)) { throw '备份电源项目标不在白名单' }
+      $badOld = $(if ($Op.Existed -is [bool] -and $Op.Existed) { -not (Test-JsonInteger $Op.OldValue ([int32]::MinValue) ([uint32]::MaxValue)) } else { $null -ne $Op.OldValue })
+      if ($Op.Existed -isnot [bool] -or $badOld -or ("$($Op.Label)").Length -gt 256) { throw '备份电源项旧值无效' }
+    }
+    'mmagent' { if ("$($Op.Feature)" -notin @('mc','pc') -or $Op.OldEnabled -isnot [bool]) { throw '备份内存管理目标或旧值不在白名单' } }
+    'sched' {
+      if ("$($Op.TaskName)" -ne $script:LockTaskPrefix -and "$($Op.TaskName)" -notmatch ('^' + [regex]::Escape($script:LockTaskPrefix) + '-[0-9A-Fa-f]{12}$')) {
+        throw '备份计划任务目标不在白名单'
+      }
+    }
+    'hib' { if ($Op.OldEnabled -isnot [bool]) { throw '备份休眠状态无效' } }
+    'bcd' {
+      if ("$($Op.Name)" -ne 'disabledynamictick' -or "$($Op.OldValue)" -notin @('absent','Yes','No','yes','no')) { throw '备份 BCD 目标或旧值不在白名单' }
+    }
+    'power' {
+      $a = [guid]::Empty; $b = [guid]::Empty
+      if ($Op.Old -and -not [guid]::TryParse("$($Op.Old)", [ref]$a)) { throw '原电源计划 GUID 无效' }
+      if ($Op.NewGuid -and -not [guid]::TryParse("$($Op.NewGuid)", [ref]$b)) { throw '新电源计划 GUID 无效' }
+      if ($Op.ToolCreated -isnot [bool]) { throw '备份电源计划 ToolCreated 必须是布尔值' }
+    }
+  }
+}
+
+function ConvertTo-CanonicalBackupOp($Op, [bool]$Version2) {
+  $ordered = [ordered]@{}
+  foreach ($n in @(Get-BackupOpFields "$($Op.Kind)" $Version2)) { $ordered[$n] = $Op.$n }
+  [pscustomobject]$ordered
+}
+
+function Get-BackupCanonicalPayload($Document) {
+  $payload = [ordered]@{
+    SchemaVersion = [int]$Document.SchemaVersion
+    BackupId = "$($Document.BackupId)"
+    CreatedUtc = "$($Document.CreatedUtc)"
+    UserSid = "$($Document.UserSid)"
+    UserLocalAppData = "$($Document.UserLocalAppData)"
+    State = "$($Document.State)"
+    Ops = @($Document.Ops | ForEach-Object { ConvertTo-CanonicalBackupOp $_ $true })
+  }
+  $payload | ConvertTo-Json -Depth 10 -Compress
+}
+
+function Get-HmacHex([string]$Text, [byte[]]$Key) {
+  $h = New-Object Security.Cryptography.HMACSHA256(,$Key)
+  try { ([BitConverter]::ToString($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))) -replace '-', '').ToLowerInvariant() }
+  finally { $h.Dispose() }
+}
+
+function Test-FixedTimeEqual([byte[]]$A, [byte[]]$B) {
+  if ($A.Length -ne $B.Length) { return $false }
+  $diff = 0
+  for ($i = 0; $i -lt $A.Length; $i++) { $diff = $diff -bor ($A[$i] -bxor $B[$i]) }
+  $diff -eq 0
+}
+
+function Set-BackupIntegrity($Document) {
+  $value = Get-HmacHex (Get-BackupCanonicalPayload $Document) (Get-BackupHmacKey)
+  $Document.Integrity = [pscustomobject][ordered]@{ Algorithm = 'HMAC-SHA256'; Value = $value }
+}
+
+function Write-BackupDocumentAtomic([string]$Path, $Document) {
+  Set-BackupIntegrity $Document
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Document | ConvertTo-Json -Depth 10))
+  Write-BytesAtomic $Path $bytes
+}
+
+function Assert-BackupDocument($Document, [bool]$RequireIntegrity) {
+  if ($RequireIntegrity) {
+    Assert-ExactProperties $Document @('SchemaVersion','BackupId','CreatedUtc','UserSid','UserLocalAppData','State','Ops','Integrity') @() '备份文档'
+    if ([int]$Document.SchemaVersion -ne $script:BackupSchemaVersion) { throw "不支持的备份版本：$($Document.SchemaVersion)" }
+    $id = [guid]::Empty; $when = [DateTime]::MinValue
+    if (-not [guid]::TryParseExact("$($Document.BackupId)", 'D', [ref]$id)) { throw '备份 ID 无效' }
+    if (-not [DateTime]::TryParse("$($Document.CreatedUtc)", [ref]$when)) { throw '备份时间无效' }
+    try { [void](New-Object Security.Principal.SecurityIdentifier("$($Document.UserSid)")) } catch { throw '备份用户 SID 无效' }
+    if (-not [IO.Path]::IsPathRooted("$($Document.UserLocalAppData)")) { throw '备份用户 LocalAppData 路径无效' }
+    if ("$($Document.State)" -notin @('pending','complete')) { throw '备份状态无效' }
+    Assert-ExactProperties $Document.Integrity @('Algorithm','Value') @() '备份完整性字段'
+    if ($Document.Integrity.Algorithm -ne 'HMAC-SHA256' -or "$($Document.Integrity.Value)" -notmatch '^[0-9a-f]{64}$') { throw '备份完整性字段无效' }
+  } else {
+    Assert-ExactProperties $Document @('Time','Ops') @() '旧版备份文档'
+    $legacyWhen = [DateTime]::MinValue
+    if (-not [DateTime]::TryParse("$($Document.Time)", [ref]$legacyWhen)) { throw '旧版备份时间无效' }
+  }
+  $ops = @($Document.Ops)
+  if ($ops.Count -gt 256) { throw '备份操作超过 256 项上限' }
+  $allowedLocal = $(if ($RequireIntegrity) { "$($Document.UserLocalAppData)" } else { $script:TargetLocalAppData })
+  foreach ($op in $ops) { Assert-BackupOperation $op $RequireIntegrity $allowedLocal }
+  if ($RequireIntegrity) {
+    $expected = Get-HmacHex (Get-BackupCanonicalPayload $Document) (Get-BackupHmacKey)
+    $actualBytes = [Text.Encoding]::ASCII.GetBytes("$($Document.Integrity.Value)")
+    $expectBytes = [Text.Encoding]::ASCII.GetBytes($expected)
+    if (-not (Test-FixedTimeEqual $actualBytes $expectBytes)) { throw '备份完整性校验失败，文件可能已被修改' }
+  }
+}
+
+function Test-PathUnder([string]$Path, [string]$Root) {
+  try {
+    $full = [IO.Path]::GetFullPath($Path)
+    $base = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    $full.StartsWith($base, [StringComparison]::OrdinalIgnoreCase)
+  } catch { $false }
+}
+
+function Get-LegacyMigrationId([string]$Path, [string]$Raw) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(([IO.Path]::GetFullPath($Path).ToUpperInvariant() + "`0" + $Raw))) }
+  finally { $sha.Dispose() }
+  $hex = ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+  '{0}-{1}-{2}-{3}-{4}' -f $hex.Substring(0,8),$hex.Substring(8,4),$hex.Substring(12,4),$hex.Substring(16,4),$hex.Substring(20,12)
+}
+
+function Read-ValidatedBackup([string]$Path, [string[]]$LegacyDirs) {
+  $full = [IO.Path]::GetFullPath($Path)
+  $isProtected = Test-PathUnder $full $script:BackupDir
+  if ($null -eq $LegacyDirs) { $LegacyDirs = @(Get-LegacyBackupDirs) }
+  $isLegacy = [bool](@($LegacyDirs | Where-Object { Test-PathUnder $full $_ }).Count -gt 0)
+  if (-not $isProtected -and -not $isLegacy) { throw "备份文件不在受支持的备份目录：$full" }
+  if (Test-PathHasReparsePoint $full) { throw "备份路径包含目录联接或符号链接：$full" }
+  $fi = Get-Item -LiteralPath $full -ErrorAction Stop
+  if ($fi.Length -gt 32MB) { throw '备份文件超过 32MB 上限' }
+  $raw = [IO.File]::ReadAllText($full, [Text.Encoding]::UTF8)
+  try { $doc = $raw | ConvertFrom-Json -ErrorAction Stop } catch { throw "备份 JSON 损坏：$($_.Exception.Message)" }
+  $v2 = [bool]$doc.PSObject.Properties['SchemaVersion']
+  if ($v2) {
+    if (-not $isProtected) { throw '带完整性签名的新备份必须位于受保护备份目录' }
+    Assert-BackupDocument $doc $true
+    return [pscustomobject]@{ Path = $full; Document = $doc; LegacySource = $null }
+  }
+
+  # 旧备份没有完整性签名：先做严格 schema/目标白名单校验，再复制为受保护且签名的新格式，
+  # 后续只从内存中的已验证数据和受保护副本执行，不再信任可写的旧文件。
+  Assert-BackupDocument $doc $false
+  Initialize-ProtectedStore
+  # 迁移文件名由“规范源路径 + 原始内容”确定：中断后重试不会重复制造备份。
+  # 旧根由目标用户可写，提权进程绝不对其 Rename/Write（否则存在 junction 竞态）；
+  # 已还原状态只由受保护目录内的 .restored 标记表示。
+  $id = Get-LegacyMigrationId $full $raw
+  $ops = @($doc.Ops | ForEach-Object {
+    $h = [ordered]@{ Id = [guid]::NewGuid().ToString('D'); Status = 'applied'; Kind = "$($_.Kind)" }
+    foreach ($n in @(Get-BackupOpFields "$($_.Kind)" $false | Select-Object -Skip 1)) { $h[$n] = $_.$n }
+    [pscustomobject]$h
+  })
+  $legacyWhen = [DateTime]::Parse("$($doc.Time)")
+  $migrated = [pscustomobject][ordered]@{
+    SchemaVersion = $script:BackupSchemaVersion; BackupId = $id
+    CreatedUtc = $legacyWhen.ToUniversalTime().ToString('o')
+    UserSid = $script:TargetUserSid; UserLocalAppData = $script:TargetLocalAppData
+    State = $(if ($full -like '*.pending.json') { 'pending' } else { 'complete' })
+    Ops = $ops; Integrity = $null
+  }
+  $dest = Join-Path $script:BackupDir ("backup-migrated-$id$(if ($migrated.State -eq 'pending') { '.pending' }).json")
+  $restoredDest = $dest + '.restored'
+  if (Test-Path -LiteralPath $restoredDest -PathType Leaf) {
+    $consumed = Read-ValidatedBackup $restoredDest @()
+    return [pscustomobject]@{ Path = $consumed.Path; Document = $consumed.Document; LegacySource = $full; Consumed = $true }
+  }
+  if (Test-Path -LiteralPath $dest -PathType Leaf) {
+    $existing = Read-ValidatedBackup $dest @()
+    return [pscustomobject]@{ Path = $existing.Path; Document = $existing.Document; LegacySource = $full; Consumed = $false }
+  }
+  Write-BackupDocumentAtomic $dest $migrated
+  [pscustomobject]@{ Path = $dest; Document = $migrated; LegacySource = $full; Consumed = $false }
+}
+
+function New-BackupDocument([DateTime]$When) {
+  [pscustomobject][ordered]@{
+    SchemaVersion = $script:BackupSchemaVersion
+    BackupId = [guid]::NewGuid().ToString('D')
+    CreatedUtc = $When.ToUniversalTime().ToString('o')
+    UserSid = $script:TargetUserSid
+    UserLocalAppData = $script:TargetLocalAppData
+    State = 'pending'; Ops = @(); Integrity = $null
+  }
+}
+
+function Sort-BackupRecordsNewestFirst($Records) {
+  @($Records | Sort-Object @{ Expression = { [DateTime]::Parse($_.Document.CreatedUtc).ToUniversalTime() }; Descending = $true })
+}
+
 function Invoke-DetectReport([string]$GamePath) {
   $hw = Get-HardwareInfo
   if (-not $GamePath) { $GamePath = Find-GamePath }
@@ -1382,7 +2341,16 @@ function Invoke-DetectReport([string]$GamePath) {
   }
 }
 
-function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
+function Test-ValueEqual($A, $B) {
+  if ($A -is [byte[]] -or $B -is [byte[]]) {
+    $aa = [byte[]]@($A); $bb = [byte[]]@($B)
+    return (Test-FixedTimeEqual $aa $bb)
+  }
+  if ($A -is [array] -or $B -is [array]) { return ((@($A) -join "`0") -ceq (@($B) -join "`0")) }
+  "$A" -ceq "$B"
+}
+
+function Invoke-ApplyOp($Op, $ItemId, [scriptblock]$PrepareBackup, [scriptblock]$MarkApplied) {
   switch ($Op.Kind) {
     'reg' {
       $oldKind = Get-RegValueKind $Op.Path $Op.Name
@@ -1399,9 +2367,13 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       if ($null -ne $oldKind -and "$oldKind" -eq "$($Op.Kind2)" -and "$oldVal" -eq "$newVal") {
         return "无需修改：$(if ($Op.Label) { $Op.Label } else { $Op.Name }) 已是目标状态"
       }
+      $token = & $PrepareBackup @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
+                                   Existed = ($null -ne $oldKind); OldValue = $oldVal; OldKind = "$oldKind" }
       Set-RegValue $Op.Path $Op.Name $newVal $Op.Kind2
-      $BackupOps.Value += @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
-                             Existed = ($null -ne $oldKind); OldValue = $oldVal; OldKind = "$oldKind" }
+      $actualKind = Get-RegValueKind $Op.Path $Op.Name
+      $actualValue = Get-RegValue $Op.Path $Op.Name
+      if ("$actualKind" -ne "$($Op.Kind2)" -or -not (Test-ValueEqual $actualValue $newVal)) { throw '注册表写入后回读验证失败' }
+      & $MarkApplied $token
     }
     'pcfg' {
       if (-not (Test-PowerSetting $Op.Sub $Op.Setting)) {
@@ -1420,23 +2392,27 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       $eff = Get-PowerSettingAc $Op.Sub $Op.Setting
       if ($null -ne $eff -and [int]$eff -eq [int]$Op.Value) { return "无需修改：$($Op.Label) 已是目标状态" }
       # 隐藏项必须先解除隐藏才能写入；原 Attributes 按普通注册表值备份，还原时自动改回
-      $oldAttr = Show-PowerSetting $Op.Sub $Op.Setting
+      $oldAttr = $(if (Test-PowerSettingHidden $Op.Sub $Op.Setting) { Get-RegValue "$script:PsRoot\$($Op.Sub)\$($Op.Setting)" 'Attributes' } else { $null })
       if ($null -ne $oldAttr) {
-        $BackupOps.Value += @{ Kind = 'reg'; Path = "$script:PsRoot\$($Op.Sub)\$($Op.Setting)"; Name = 'Attributes'
-                               Existed = $true; OldValue = $oldAttr; OldKind = 'DWord' }
+        $attrToken = & $PrepareBackup @{ Kind = 'reg'; Path = "$script:PsRoot\$($Op.Sub)\$($Op.Setting)"; Name = 'Attributes'
+                                          Existed = $true; OldValue = $oldAttr; OldKind = 'DWord' }
+        [void](Show-PowerSetting $Op.Sub $Op.Setting)
+        & $MarkApplied $attrToken
       }
+      $token = & $PrepareBackup @{ Kind = 'pcfg'; Sub = $Op.Sub; Setting = $Op.Setting; Label = $Op.Label
+                                   Existed = ($null -ne $old); OldValue = $old; SchemeGuid = $act.Guid }
       Set-PowerSettingAc $Op.Sub $Op.Setting $Op.Value
-      # Label 一并进备份：还原失败/跳过时日志要能报出人话项名，纯 GUID 用户根本对不上号
-      $BackupOps.Value += @{ Kind = 'pcfg'; Sub = $Op.Sub; Setting = $Op.Setting; Label = $Op.Label
-                             Existed = ($null -ne $old); OldValue = $old; SchemeGuid = $act.Guid }
+      & $MarkApplied $token
     }
     'mmagent' {
       $old = Get-MMAgentState $Op.Feature
       if ($null -eq $old) { throw "无法读取 $($Op.Label) 当前状态" }
       # 已是关闭态就跳过：再备份会把「已被上一轮关掉」记成原状态，还原时开不回去
       if (-not $old) { return "无需修改：$($Op.Label) 已是目标状态" }
+      $token = & $PrepareBackup @{ Kind = 'mmagent'; Feature = $Op.Feature; OldEnabled = $old }
       Set-MMAgentState $Op.Feature $false
-      $BackupOps.Value += @{ Kind = 'mmagent'; Feature = $Op.Feature; OldEnabled = $old }
+      if ((Get-MMAgentState $Op.Feature) -ne $false) { throw '内存管理状态写入后回读验证失败' }
+      & $MarkApplied $token
     }
     'kvstr' {
       # 整串备份、只改目标子键：这个值里还住着 AutoHDREnable 等别人的设置，整串覆盖会误伤
@@ -1444,50 +2420,45 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
       $oldRaw  = $(if ($null -ne $oldKind) { Get-RegValue $Op.Path $Op.Name } else { $null })
       # 只比目标子键：整串里其余键值是别人的设置，不影响本项是否已达标
       if ("$(Get-KvStringItem $oldRaw $Op.Key)" -eq "$($Op.Value)") { return "无需修改：$($Op.Label) 已是目标状态" }
+      $token = & $PrepareBackup @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
+                                   Existed = ($null -ne $oldKind); OldValue = $oldRaw; OldKind = "$oldKind" }
       Set-RegValue $Op.Path $Op.Name (Set-KvStringItem $oldRaw $Op.Key $Op.Value) 'String'
-      $BackupOps.Value += @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
-                             Existed = ($null -ne $oldKind); OldValue = $oldRaw; OldKind = "$oldKind" }
+      if ("$(Get-KvStringItem (Get-RegValue $Op.Path $Op.Name) $Op.Key)" -ne "$($Op.Value)") { throw '复合注册表值写入后回读验证失败' }
+      & $MarkApplied $token
     }
     'hib' {
       $old = Get-HibernateState
       # 已关闭就跳过：再备份会把 OldEnabled 记成 $false，还原时休眠开不回去
       if (-not $old) { return "无需修改：$($Op.Label) 已是目标状态" }
+      $token = & $PrepareBackup @{ Kind = 'hib'; OldEnabled = [bool]$old }
       Set-HibernateEnabled $false
-      $BackupOps.Value += @{ Kind = 'hib'; OldEnabled = [bool]$old }
+      & $MarkApplied $token
     }
     'bcd' {
       $old = Get-BcdValue $Op.Name
       if ($null -eq $old) { throw "无法读取引导配置（需要管理员权限）：$($Op.Label)" }
       # 已达标就跳过（bcdedit 取值大小写不敏感）：避免把目标值当原值备份
       if ("$old" -ieq "$($Op.Value)") { return "无需修改：$($Op.Label) 已是目标状态" }
-      Set-BcdEntryValue $Op.Name $Op.Value
       # OldValue='absent' 表示原本未设置，还原时删除该值而不是写回字符串
-      $BackupOps.Value += @{ Kind = 'bcd'; Name = $Op.Name; OldValue = $old }
+      $token = & $PrepareBackup @{ Kind = 'bcd'; Name = $Op.Name; OldValue = $old }
+      Set-BcdEntryValue $Op.Name $Op.Value
+      & $MarkApplied $token
     }
     'file' {
-      # 外部程序的配置文件是别人家的私产：用正则只替换目标那一小段而不是 XML DOM 重排
-      # （.Save() 会把单引号改双引号、动缩进，没必要冒对方解析异常的风险）；
-      # 备份直接存整文件原始字节，还原时逐字节写回，比值级还原可靠
-      if (-not (Test-Path -LiteralPath $Op.Path)) { throw "文件不存在：$($Op.Path)" }
-      $rawBytes = [IO.File]::ReadAllBytes($Op.Path)
-      $txt = [IO.File]::ReadAllText($Op.Path)
-      if ($txt -match $Op.Verify) { return "无需修改：$($Op.Label) 已是目标状态" }
-      if ($txt -notmatch $Op.Match) { throw "未在 $(Split-Path -Leaf $Op.Path) 中找到目标设置（配置结构可能已变化），请手动处理：$($Op.Label)" }
-      $new = [regex]::Replace($txt, $Op.Match, $Op.Replace)
-      # 写回保持原文件的编码与 BOM 状态，除目标片段外逐字节不变
-      $enc = if ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF) { New-Object Text.UTF8Encoding($true) }
-             elseif ($rawBytes.Length -ge 2 -and $rawBytes[0] -eq 0xFF -and $rawBytes[1] -eq 0xFE) { [Text.Encoding]::Unicode }
-             elseif ($rawBytes.Length -ge 2 -and $rawBytes[0] -eq 0xFE -and $rawBytes[1] -eq 0xFF) { [Text.Encoding]::BigEndianUnicode }
-             else { New-Object Text.UTF8Encoding($false) }
-      [IO.File]::WriteAllText($Op.Path, $new, $enc)
-      # 回读校验：拥有该文件的程序（NVIDIA App 常驻进程）可能随时把配置写回去，
-      # 写完必须确认真的落住了，落不住就如实报失败引导手动关
-      if ([IO.File]::ReadAllText($Op.Path) -notmatch $Op.Verify) { throw "写入后回读校验未通过（文件可能被其所属程序改回），请在对应程序里手动设置：$($Op.Label)" }
-      $BackupOps.Value += @{ Kind = 'file'; Path = $Op.Path; OrigB64 = [Convert]::ToBase64String($rawBytes) }
+      throw '用户配置文件自动写入已停用，请在对应程序内手动设置'
     }
     default { throw "未知操作类型：$($Op.Kind)" }
   }
   $null
+}
+
+function Set-ApplyResultChangeState($Result, [bool]$Changed) {
+  $Result | Add-Member -NotePropertyName Changed -NotePropertyValue $Changed -Force
+  if (-not $Changed -and $Result.Ok -and -not $Result.Attention) {
+    $Result.Skipped = $true
+    if ($Result.Msg -like '已写入*') { $Result.Msg = '无需修改：所有设置已是目标状态' }
+  }
+  $Result
 }
 
 # $Progress 为可选进度回调（不传时行为与旧版完全一致，CLI 与 SKILL.md 契约不受影响）：
@@ -1495,6 +2466,8 @@ function Invoke-ApplyOp($Op, $ItemId, [ref]$BackupOps) {
 # 再调一次（额外带该项的 Result），GUI 靠它做进度条与实时日志
 function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, [scriptblock]$Progress,
                       [string]$GpuSpoofModel) {
+  $engineMutex = Enter-EngineMutex
+  try {
   # powershell -File 不会把 "a,b" 解析成数组，整串会当成单个元素传进来，这里统一拆开
   $ItemIds = @($ItemIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   if (-not $GamePath) { $GamePath = Find-GamePath }
@@ -1515,37 +2488,56 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   if ($needAdmin.Count -gt 0 -and -not (Test-Admin)) {
     throw "以下优化项需要管理员权限，请以管理员身份重新运行：$(@($needAdmin | ForEach-Object { $_.Name }) -join '、')"
   }
+  $needsJournal = @($sel | Where-Object { $_.Kind -notin @('check','cache','npi') }).Count -gt 0
+  if ($needsJournal -and -not (Test-Admin)) { throw '可还原修改需要一次 UAC，用于写入受保护的系统备份' }
 
-  $backupOps = @(); $results = @()
+  $results = @()
 
-  # 备份边执行边落盘：先写 *.pending.json、全部完成后原子改名为正式备份，中途断电/被杀
-  # 也能留下可还原的备份文件。开工前必须先试写一次——备份目录写不进去（OneDrive 同步锁、
-  # 只读、磁盘满）就直接中止，绝不能在「存不下备份」的状态下改系统
+  # 严格写前日志：每条撤销记录先以 prepared 状态做 temp→Flush(true)→原子替换，
+  # 系统写入并回读成功后再标 applied。GUID 文件名避免并发/同秒冲突，核心 mutex 负责串行化。
   $applyTime = Get-Date
-  $pendingFile = Join-Path $script:BackupDir ("backup-{0:yyyyMMdd-HHmmss}.pending.json" -f $applyTime)
-  try {
-    if (-not (Test-Path -LiteralPath $script:BackupDir)) { New-Item -ItemType Directory -Path $script:BackupDir -Force | Out-Null }
-    @{ Time = $applyTime.ToString('s'); Ops = @() } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $pendingFile -Encoding UTF8
-  } catch {
-    throw "备份目录不可写（$script:BackupDir），已中止执行，未做任何修改。请先解除目录占用（OneDrive 同步、只读属性、磁盘空间）再重试。原因：$($_.Exception.Message)"
-  }
-  # 每记录一条备份就整文件重写 pending（备份体量小，重写代价可忽略）；写失败只记录不抛出，
-  # 由主循环立即止步——继续执行只会积累更多「改了但没记下」的项。用 . 号调用在当前作用域执行
-  $persisted = 0; $persistErr = $null
-  $persistBackup = {
-    if (-not $persistErr -and $backupOps.Count -gt $persisted) {
-      try {
-        @{ Time = $applyTime.ToString('s'); Ops = $backupOps } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $pendingFile -Encoding UTF8
-        $persisted = $backupOps.Count
-      } catch { $persistErr = $_.Exception.Message }
+  $journal = [pscustomobject]@{ Document = $null; Path = $null; Error = $null }
+  if ($needsJournal) {
+    try {
+      Initialize-ProtectedStore
+      $journal.Document = New-BackupDocument $applyTime
+      $journal.Path = Join-Path $script:BackupDir ("backup-$($journal.Document.BackupId).pending.json")
+      Write-BackupDocumentAtomic $journal.Path $journal.Document
+    } catch {
+      throw "备份目录不可写（$script:BackupDir），已中止执行，未做任何修改。请先解除目录占用（OneDrive 同步、只读属性、磁盘空间）再重试。原因：$($_.Exception.Message)"
     }
+  } else {
+    $journal.Document = [pscustomobject]@{ Ops = @() }
+  }
+  $prepareBackup = {
+    param($Data)
+    if ($journal.Error) { throw "备份写入已失败：$($journal.Error)" }
+    $entry = [ordered]@{ Id = [guid]::NewGuid().ToString('D'); Status = 'prepared'; Kind = "$($Data.Kind)" }
+    foreach ($n in @(Get-BackupOpFields "$($Data.Kind)" $false | Select-Object -Skip 1)) { $entry[$n] = $Data[$n] }
+    $op = [pscustomobject]$entry
+    Assert-BackupOperation $op $true
+    $journal.Document.Ops = @($journal.Document.Ops) + @($op)
+    try { Write-BackupDocumentAtomic $journal.Path $journal.Document }
+    catch { $journal.Error = $_.Exception.Message; throw "备份 prepared 状态持久化失败：$($journal.Error)" }
+    $op.Id
+  }
+  $markApplied = {
+    param([string]$Id, $Updates)
+    $op = @($journal.Document.Ops | Where-Object { $_.Id -eq $Id }) | Select-Object -First 1
+    if (-not $op) { throw "找不到备份操作：$Id" }
+    if ($Updates) { foreach ($k in $Updates.Keys) { $op.$k = $Updates[$k] } }
+    $op.Status = 'applied'
+    try { Write-BackupDocumentAtomic $journal.Path $journal.Document }
+    catch { $journal.Error = $_.Exception.Message; throw "备份 applied 状态持久化失败：$($journal.Error)" }
   }
 
   $total = $sel.Count; $seq = 0
   foreach ($it in $sel) {
     # 备份落不了盘就立即停手：后续改动将无法回滚
-    if ($persistErr) { break }
+    if ($journal.Error) { break }
     $seq++
+    $appliedBefore = @($journal.Document.Ops | Where-Object Status -eq 'applied').Count
+    $changeOverride = $null
     # 进度回调来自调用方（GUI），必须包进保护：回调抛异常不能把整轮执行拖死在半路
     if ($Progress) { try { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = $it.Name; Result = $null }) } catch {} }
     try {
@@ -1557,10 +2549,12 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
         if ($act -and ($act.Guid -eq $script:UltimateGuid -or ($toolGuid -and $act.Guid -eq $toolGuid) -or $act.Name -match '卓越|Ultimate')) {
           $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = "当前已是「$($act.Name)」，无需切换" }
         } else {
+          if (-not $act) { throw '无法确定当前活动电源计划' }
           $old = $act.Guid
+          $token = & $prepareBackup @{ Kind = 'power'; Old = $old; ToolCreated = $false; NewGuid = $null }
           $ps = Enable-UltimateScheme
           # ToolCreated 进备份：还原逻辑据此区分「原本就存在的方案」与「本工具新建的方案」
-          $backupOps += @{ Kind = 'power'; Old = $old; ToolCreated = [bool]$ps.Created; NewGuid = $ps.Guid }
+          & $markApplied $token @{ ToolCreated = [bool]$ps.Created; NewGuid = $ps.Guid }
           $msg = $(if ($ps.Created) { "已创建「$script:ToolSchemeName」并激活（还原后该方案会保留，可手动删除）" }
                    else { '已切换到卓越性能方案' })
           if ($ps.Note) { $msg += "；$($ps.Note)" }
@@ -1568,20 +2562,33 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
         }
       }
       elseif ($it.Kind -eq 'sched') {
-        $guid = (Get-ActiveScheme).Guid
-        & schtasks /Create /TN $script:LockTask /TR "powercfg.exe /setactive $guid" /SC MINUTE /MO 1 /RU SYSTEM /RL HIGHEST /F 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw '计划任务创建失败' }
-        $backupOps += @{ Kind = 'sched'; TaskName = $script:LockTask }
-        $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已锁定到当前电源计划（每分钟重设一次）' }
+        if (Test-LockTaskExists) {
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '锁定任务已存在，无需覆盖' }
+        } else {
+          $active = Get-ActiveScheme
+          if (-not $active) { throw '无法确定当前活动电源计划' }
+          $token = & $prepareBackup @{ Kind = 'sched'; TaskName = $script:LockTask }
+          $taskAction = ('"{0}" /setactive {1}' -f $script:PowerCfgExe, $active.Guid)
+          $taskOut = & $script:SchTasksExe /Create /TN $script:LockTask /TR $taskAction /SC MINUTE /MO 1 /RU SYSTEM /RL HIGHEST 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "计划任务创建失败：$(("$taskOut").Trim())" }
+          if (-not (Test-BoosterLockTask $script:LockTask)) { throw '计划任务创建后回读验证失败' }
+          & $markApplied $token
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已锁定到当前电源计划（每分钟重设一次）' }
+        }
       }
       elseif ($it.Kind -eq 'npi') {
-        & $it.Npi -silentImport $it.Nip
+        if (-not (Test-TrustedNvidiaProfileInspector $it.Npi)) { throw 'NVIDIA Profile Inspector 文件签名或发布者校验未通过' }
+        if (Test-PathHasReparsePoint $it.Nip) { throw 'NVIDIA 配置档路径包含目录联接或符号链接' }
+        $npiOut = & $it.Npi -silentImport $it.Nip 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "NVIDIA Profile Inspector 导入失败（退出码 $LASTEXITCODE）：$("$npiOut".Trim())" }
+        $changeOverride = $true
         $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已导入驱动配置档（此项不在自动备份内）' }
       }
       elseif ($it.Kind -eq 'cache') {
-        # 不写 $backupOps：缓存是可再生数据，备份几百 MB 再原样写回毫无意义。
+        # 缓存是可再生数据，不写备份（备份几百 MB 再原样写回毫无意义）。
         # 但「没有备份」必须在结果里说出来，不能让用户以为这项也能一键还原
         $r = Clear-ShaderCache
+        $changeOverride = [bool]($r.Cleared.Count -gt 0)
         if ($r.Cleared.Count -eq 0 -and $r.Failed.Count -eq 0) {
           $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $true
                                          Msg = '无缓存可清理（本机没有找到着色器缓存文件）' }
@@ -1599,8 +2606,9 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
         # 发现问题恰恰说明检测「运行成功」，绝不能计成失败——用独立的 Attention 状态
         # 承载「体检发现问题/无法判定」，汇总时单列，避免用户误以为工具坏了
         $st = & $it.Check
+        $changeOverride = $false
         $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($st.Ok -eq $true)
-                                       Skipped = $false; Attention = ($st.Ok -ne $true); Msg = "纯检测：$($st.Text)" }
+                                       Skipped = $true; Attention = ($st.Ok -ne $true); Msg = "纯检测：$($st.Text)" }
       }
       else {
         if (-not $it.Ops) {
@@ -1612,16 +2620,14 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
           # 不再拖垮整项，其余子操作照常执行，失败的逐条记录进结果
           $notes = @(); $errs = @()
           foreach ($op in $it.Ops) {
-            if ($persistErr) { break }
+            if ($journal.Error) { break }
             try {
-              $n = Invoke-ApplyOp $op $it.Id ([ref]$backupOps)
+              $n = Invoke-ApplyOp $op $it.Id $prepareBackup $markApplied
               if ($n) { $notes += $n }
             } catch {
               $opLabel = $(if ($op.Label) { $op.Label } elseif ($op.Name) { $op.Name } else { $op.Kind })
               $errs += "$opLabel：$($_.Exception.Message)"
             }
-            # 每条子操作产生的备份立即落盘：断电/被杀最多丢最后一条记录
-            . $persistBackup
           }
           if ($errs.Count -eq 0) {
             $msg = $(if ($notes.Count -gt 0) { "已写入（$($notes -join '；')）" } else { '已写入' })
@@ -1638,8 +2644,9 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
     } catch {
       $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false; Msg = "失败：$($_.Exception.Message)" }
     }
-    # 兜底落盘：power/sched 等直接往 $backupOps 里加记录的分支也在每项结束时持久化
-    . $persistBackup
+    $walChanged = (@($journal.Document.Ops | Where-Object Status -eq 'applied').Count -gt $appliedBefore)
+    $actualChanged = $(if ($null -ne $changeOverride) { [bool]($changeOverride -or $walChanged) } else { $walChanged })
+    [void](Set-ApplyResultChangeState $results[-1] $actualChanged)
     if ($Progress) { try { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = $it.Name; Result = $results[-1] }) } catch {} }
   }
 
@@ -1647,32 +2654,40 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   # 跳过/失败/纯检测项一律 $false——没写进系统的东西谈不上重启生效
   $rebootIds = @($sel | Where-Object { $_.Reboot } | ForEach-Object { $_.Id })
   foreach ($x in $results) {
-    $x | Add-Member -NotePropertyName Reboot -NotePropertyValue ([bool]($x.Ok -and -not $x.Skipped -and -not $x.Attention -and ($rebootIds -contains $x.Id)))
+    $x | Add-Member -NotePropertyName Reboot -NotePropertyValue ([bool]($x.Ok -and $x.Changed -and -not $x.Attention -and ($rebootIds -contains $x.Id)))
   }
 
-  # 收尾三分支：正常完成→pending 原子改名为正式备份；中途写盘失败→保住已持久化的部分并
-  # 如实上报；全程没有产生备份（纯检测/全部跳过）→清掉预写的空壳文件
+  # 正常完成时先把 complete 状态原子持久化，再把 GUID pending 文件原子改名。
   $bf = $null
-  if ($persistErr) {
-    if ($persisted -gt 0) { $bf = $pendingFile }
-    else { Remove-Item -LiteralPath $pendingFile -Force -ErrorAction SilentlyContinue }
-  } elseif ($backupOps.Count -gt 0) {
-    $bf = $pendingFile -replace '\.pending\.json$', '.json'
-    # 改名失败不丢数据：还原逻辑同样识别 pending 文件，退回用它即可
-    try { [IO.File]::Move($pendingFile, $bf) } catch { $bf = $pendingFile }
+  if (-not $journal.Path) {
+    $bf = $null
+  } elseif ($journal.Error) {
+    if (@($journal.Document.Ops).Count -gt 0) { $bf = $journal.Path }
+    else { Remove-Item -LiteralPath $journal.Path -Force -ErrorAction SilentlyContinue }
+  } elseif (@($journal.Document.Ops).Count -gt 0) {
+    try {
+      $journal.Document.State = 'complete'
+      Write-BackupDocumentAtomic $journal.Path $journal.Document
+      $bf = $journal.Path -replace '\.pending\.json$', '.json'
+      [IO.File]::Move($journal.Path, $bf)
+    } catch {
+      $journal.Error = $_.Exception.Message
+      $journal.Document.State = 'pending'
+      $bf = $journal.Path
+    }
   } else {
-    Remove-Item -LiteralPath $pendingFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $journal.Path -Force -ErrorAction SilentlyContinue
   }
   # 备份写盘失败时列出「已生效但备份可能没记全」的项名（排除跳过/纯检测项）：
   # 这是用户手动还原的唯一线索，调用方（GUI/CLI）必须用最醒目的方式呈现
   $unrecorded = @()
-  if ($persistErr) {
+  if ($journal.Error) {
     $unrecorded = @($results | Where-Object {
-      -not $_.Skipped -and -not $_.Attention -and $_.Msg -notlike '纯检测：*' -and
-      ($_.Ok -or $_.Msg -like '部分子项写入失败*')
+      $_.Changed -and -not $_.Attention -and $_.Msg -notlike '纯检测：*'
     } | ForEach-Object { $_.Name })
   }
-  [pscustomobject]@{ Results = $results; Backup = $bf; BackupError = $persistErr; UnrecordedNames = $unrecorded }
+  [pscustomobject]@{ Results = $results; Backup = $bf; BackupError = $journal.Error; UnrecordedNames = $unrecorded }
+  } finally { Exit-EngineMutex $engineMutex }
 }
 
 # $Progress 为可选进度回调（与 Invoke-Apply 同一约定：不传时行为与旧版完全一致，
@@ -1711,22 +2726,78 @@ function Get-RestoreOpKey($op) {
 }
 
 function Invoke-Restore([string]$File, [scriptblock]$Progress) {
+  $engineMutex = Enter-EngineMutex
+  try {
+  if (-not (Test-Admin)) { throw '还原受保护备份需要管理员权限' }
   # 默认合并所有尚未消费过的备份：分多次执行优化会产生多份备份，只回退最新一份会把
   # 更早那次的改动原封留在系统里，而界面却宣布「已回到优化前」。显式传 -BackupFile
   # 仍只还原那一份（专家操作，CLI 契约不变）。全部成功后给备份文件打 .restored 后缀，
   # 下次还原不再消费，避免把早已还原过的旧值再写回系统、覆盖用户此后的手动调整
-  $files = @()
-  if ($File) { $files = @($File) }
-  else {
-    $files = @(Get-ChildItem $script:BackupDir -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue |
-      Sort-Object Name -Descending | Select-Object -ExpandProperty FullName)
-  }
-  if ($files.Count -eq 0) { throw '未找到任何备份文件，无法还原' }
+  Initialize-ProtectedStore
   $restoreNotes = @()
+  $legacyDirs = @()
+  $sourceFiles = @()
+  if ($File) {
+    $candidate = [IO.Path]::GetFullPath($File)
+    # 自动调优把“正在回滚哪一份”先写入本地状态，再调用短生命周期管理员引擎。
+    # 如果机器恰好在系统还原完成、GUI 清除状态引用之前断电，原文件已被原子标为
+    # .restored；重试同一个显式 BackupFile 必须幂等成功，而不是把实验卡死。
+    $restoredCandidate = $candidate + '.restored'
+    if ((Test-PathUnder $candidate $script:BackupDir) -and
+        -not (Test-Path -LiteralPath $candidate -PathType Leaf) -and
+        (Test-Path -LiteralPath $restoredCandidate -PathType Leaf)) {
+      $consumed = Read-ValidatedBackup $restoredCandidate @()
+      if ($consumed.Document.UserSid -ine $script:TargetUserSid -or
+          ([IO.Path]::GetFullPath("$($consumed.Document.UserLocalAppData)").TrimEnd('\') -ine $script:TargetLocalAppData.TrimEnd('\'))) {
+        throw '指定备份属于另一个 Windows 用户，已拒绝跨用户还原'
+      }
+      return [pscustomobject]@{
+        File = $candidate; Files = @($candidate); MergedCount = 1; RestoredOps = 0
+        Failed = @(); Skipped = @(); Notes = @('指定备份此前已完成还原，本次无需重复执行')
+      }
+    }
+    if (-not (Test-PathUnder $candidate $script:BackupDir)) {
+      $legacyDirs = @(Get-LegacyBackupDirs)
+      $restoreNotes += @($script:LegacyBackupWarnings)
+    }
+    $sourceFiles = @($candidate)
+  }
+  else {
+    $legacyDirs = @(Get-LegacyBackupDirs)
+    $restoreNotes += @($script:LegacyBackupWarnings)
+    $sourceFiles = @(
+      foreach ($d in (@($script:BackupDir) + @($legacyDirs) | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $d) {
+          Get-ChildItem -LiteralPath $d -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        }
+      }
+    ) | Select-Object -Unique
+  }
+  if ($sourceFiles.Count -eq 0) {
+    $detail = $(if ($restoreNotes.Count -gt 0) { "（$($restoreNotes -join '；')）" } else { '' })
+    throw "未找到任何备份文件，无法还原$detail"
+  }
+  # GUID 文件名没有时间顺序；必须按签名文档里的 CreatedUtc 新→旧排序，
+  # 合并同一目标时才能稳定保留最早一次 Apply 记录的真实原值。
+  $readRecords = @($sourceFiles | ForEach-Object { Read-ValidatedBackup $_ $legacyDirs })
+  $consumed = @($readRecords | Where-Object Consumed)
+  if ($consumed.Count -gt 0) { $restoreNotes += "已跳过 $($consumed.Count) 份早已迁移并还原的旧备份" }
+  $uniqueRecords = @($readRecords | Where-Object { -not $_.Consumed } | Group-Object Path | ForEach-Object { $_.Group[0] })
+  $records = @(Sort-BackupRecordsNewestFirst $uniqueRecords)
+  if ($records.Count -eq 0) { throw "未找到尚未还原的备份$(if ($restoreNotes.Count -gt 0) { "（$($restoreNotes -join '；')）" })" }
+  $mismatch = @($records | Where-Object {
+    $_.Document.UserSid -ine $script:TargetUserSid -or
+    ([IO.Path]::GetFullPath("$($_.Document.UserLocalAppData)").TrimEnd('\') -ine $script:TargetLocalAppData.TrimEnd('\'))
+  })
+  if ($File -and $mismatch.Count -gt 0) { throw '指定备份属于另一个 Windows 用户，已拒绝跨用户还原' }
+  if ($mismatch.Count -gt 0) { $restoreNotes += "已跳过 $($mismatch.Count) 份属于其他 Windows 用户的备份" }
+  $records = @($records | Where-Object { $mismatch -notcontains $_ })
+  if ($records.Count -eq 0) { throw '未找到属于当前目标用户的备份文件，无法还原' }
+  $files = @($records | ForEach-Object { $_.Path })
   # 按「新→旧」展开成一张操作表（每份内部仍逆序执行）
   $flat = New-Object System.Collections.Generic.List[object]
-  foreach ($f in $files) {
-    $b = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
+  foreach ($record in $records) {
+    $f = $record.Path; $b = $record.Document
     $cur = @($b.Ops); [array]::Reverse($cur)
     foreach ($o in $cur) { [void]$flat.Add($o) }
     # *.pending.json = 某次执行中途异常退出（断电/被杀/备份目录中途写失败）实时保留的备份：
@@ -1814,15 +2885,30 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
             $restored++
           }
         }
-        'mmagent' { Set-MMAgentState $op.Feature ([bool]$op.OldEnabled); $restored++ }
-        'sched'   { & schtasks /Delete /TN $op.TaskName /F 2>&1 | Out-Null; $restored++ }
+        'mmagent' {
+          Set-MMAgentState $op.Feature ([bool]$op.OldEnabled)
+          if ((Get-MMAgentState $op.Feature) -ne [bool]$op.OldEnabled) { throw '内存管理状态还原后回读验证失败' }
+          $restored++
+        }
+        'sched'   {
+          $xml = Get-TaskXml "$($op.TaskName)"
+          if ($xml) {
+            if (-not (Test-BoosterLockTask "$($op.TaskName)")) { throw '同名计划任务不是本工具创建，已拒绝删除' }
+            $taskOut = & $script:SchTasksExe /Delete /TN "$($op.TaskName)" /F 2>&1
+            $code = $LASTEXITCODE
+            if ((Get-TaskXml "$($op.TaskName)") -or $code -ne 0) { throw "计划任务删除失败（退出码 $code）：$(("$taskOut").Trim())" }
+          }
+          $restored++
+        }
         'hib'     { Set-HibernateEnabled ([bool]$op.OldEnabled); $restored++ }
         'bcd'     {
           if ($op.OldValue -eq 'absent') { Remove-BcdEntryValue $op.Name } else { Set-BcdEntryValue $op.Name $op.OldValue }
           $restored++
         }
         # 备份里存的是应用前的整文件原始字节，逐字节写回即完全复原（含编码/BOM/格式）
-        'file'    { [IO.File]::WriteAllBytes($op.Path, [Convert]::FromBase64String($op.OrigB64)); $restored++ }
+        'file'    {
+          throw '用户配置文件备份需要由原用户普通权限进程还原，已拒绝在管理员进程中写入'
+        }
         'reg'     {
           if ($op.Path -like 'HKLM:*' -and -not (Test-Admin)) { throw '需要管理员权限' }
           if ($op.Existed) {
@@ -1831,7 +2917,11 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
             if ($op.OldKind -eq 'Binary') { $val = [byte[]]@($val) }
             elseif ($op.OldKind -eq 'MultiString') { $val = [string[]]@($val) }
             Set-RegValue $op.Path $op.Name $val $op.OldKind
-          } else { Remove-RegValue $op.Path $op.Name }
+            if ("$(Get-RegValueKind $op.Path $op.Name)" -ne "$($op.OldKind)" -or -not (Test-ValueEqual (Get-RegValue $op.Path $op.Name) $val)) { throw '注册表还原后回读验证失败' }
+          } else {
+            Remove-RegValue $op.Path $op.Name
+            if ($null -ne (Get-RegValueKind $op.Path $op.Name)) { throw '注册表删除后回读验证失败' }
+          }
           $restored++
         }
         default   { throw "未知备份类型：$($op.Kind)" }
@@ -1849,14 +2939,26 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
   if (@($failed).Count -eq 0) {
     foreach ($f in $files) {
       try { Rename-Item -LiteralPath $f -NewName ((Split-Path -Leaf $f) + '.restored') -ErrorAction Stop }
-      catch { $restoreNotes += "备份「$(Split-Path -Leaf $f)」已还原但标记失败（$($_.Exception.Message)），下次还原前请手动将其移出 backup 目录" }
+      catch { $failed += "备份「$(Split-Path -Leaf $f)」已还原但完成标记失败：$($_.Exception.Message)" }
     }
   }
   [pscustomobject]@{ File = $files[0]; Files = $files; MergedCount = @($files).Count
                      RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes }
+  } finally { Exit-EngineMutex $engineMutex }
 }
 
 # ---------- 输出 ----------
+
+function Get-ApplyExitCode($Result) {
+  if ($Result.BackupError) { return 3 }
+  if (@($Result.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention }).Count -gt 0) { return 2 }
+  0
+}
+
+function Get-RestoreExitCode($Result) {
+  if (@($Result.Failed).Count -gt 0) { return 4 }
+  0
+}
 
 function Write-DetectText($r) {
   Write-Output "== 硬件 =="
@@ -1895,6 +2997,17 @@ function Write-DetectText($r) {
 
 if ($Json) { try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {} }
 
+$didDispatch = [bool]($ListItems -or $Detect -or $Preview -or $ListPresets -or $SavePreset -or $DeletePreset -or $Apply -or $Restore)
+if ($didDispatch) {
+$dispatchAction = $(if ($Apply) { 'Apply' } elseif ($Restore) { 'Restore' } elseif ($Detect -or $Preview) { 'Detect' } else { 'Other' })
+$dispatchData = $null; $dispatchError = $null; $cliExitCode = 0
+try {
+  Set-TargetUserContext $UserSid $UserLocalAppData
+  if ($ResultId) {
+    $rid = [guid]::Empty
+    if (-not [guid]::TryParseExact($ResultId, 'D', [ref]$rid)) { throw 'ResultId 必须是标准 D 格式 GUID' }
+    if ($dispatchAction -eq 'Other') { throw 'ResultId 仅支持 Detect、Apply 或 Restore' }
+  }
 if ($ListItems) {
   $r = Get-OptItems $GamePath
   if ($Json) { $r | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Tier = $_.Tier; Name = $_.Name; Admin = $_.Admin; Default = $_.Default; Note = $(if ($_.Warn) { $_.Warn } else { $_.Note }) } } | ConvertTo-Json -Depth 4 }
@@ -1971,4 +3084,23 @@ elseif ($Restore) {
     foreach ($s in $r.Skipped) { Write-Output "  [还原跳过] $s" }
     foreach ($n in $r.Notes) { Write-Output "  [提示] $n" }
   }
+}
+  $dispatchData = $r
+  if ($Apply) {
+    $cliExitCode = Get-ApplyExitCode $r
+  } elseif ($Restore) { $cliExitCode = Get-RestoreExitCode $r }
+} catch {
+  $dispatchError = $_.Exception.Message
+  $cliExitCode = $(if ($Apply -and $dispatchError -match '备份.*(不可写|持久化|完整性密钥)') { 3 } else { 1 })
+  [Console]::Error.WriteLine("[错误] $dispatchError")
+} finally {
+  if ($ResultId -and $ResultId -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    try { Write-IpcResult $ResultId $dispatchAction $dispatchData $cliExitCode $dispatchError }
+    catch {
+      [Console]::Error.WriteLine("[错误] 写入提权结果失败：$($_.Exception.Message)")
+      if ($cliExitCode -eq 0) { $cliExitCode = 1 }
+    }
+  }
+}
+exit $cliExitCode
 }

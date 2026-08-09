@@ -25,3 +25,6 @@ Thumbs.db
 desktop.ini
 __pycache__/
 *.pyc
+
+# 私有周报工作台只部署到受 Basic Auth 保护的服务器，不公开到 GitHub。
+website/admin/

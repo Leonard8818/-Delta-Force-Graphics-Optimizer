@@ -1,6 +1,8 @@
 ﻿<#
-  DeltaForceBooster 更新检查模块 — v0.4
+  DeltaForceBooster 更新检查模块 — v0.5
   独立于优化引擎：负责「取清单 → 比版本 → 报告结果」+「带校验的内置下载」。
+  v0.5：下载改用 CreateNew + 独占句柄完成大小/SHA256 校验；成品与完整性 sidecar
+        落在封闭 ACL staging，交给安装器后启动第一时间再次复验。
   v0.4：更新改为一键完成——校验通过后直接静默安装并自启新版，用户不必再走安装向导。
   清单格式：{ "version", "notes", "url"(下载页), "setupUrl"(安装包), "sha256", "size" }
 
@@ -17,6 +19,14 @@
     - 网络不可达、超时、JSON 坏掉一律静默返回 $null——检查更新不许影响主程序启动。
 #>
 #requires -Version 5.1
+param(
+  [switch]$SecureStageHelper,
+  [string]$StageSource,
+  [string]$StageId,
+  [string]$StageReaderSid,
+  [string]$StageSha256,
+  [long]$StageSize = 0
+)
 
 # 清单地址：托管在自有服务器（Caddy 站点 df.ltz88.cn）。发新版时覆盖服务器上的
 # update-manifest.json，客户端下次检查即可发现。
@@ -28,12 +38,14 @@ $script:BoosterManifestUrl = 'https://df.ltz88.cn/update-manifest.json'
 # 最关键的一道闸，改动它必须走代码审查而不是改配置。
 $script:BoosterDownloadHosts = @('df.ltz88.cn')
 
-# 本模块位于 scripts\，工具根目录是它的上一级；「不再提醒」状态落在根目录 config\ 下，
-# 不放 profiles\（那里每个 *.json 都会被引擎当成用户预设方案扫出来）
+# 本模块位于 scripts\，工具根目录是它的上一级；程序代码进入 Program Files 后，运行状态
+# 改落 %LocalAppData%\DeltaForceBooster\config，不再尝试写程序目录。
 $script:BoosterUpdaterRoot = Split-Path -Parent $PSScriptRoot
+$script:BoosterUpdaterPath = $PSCommandPath
 
 function Get-BoosterUpdateConfigPath {
-  $d = Join-Path $script:BoosterUpdaterRoot 'config'
+  $la = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  $d = Join-Path $la 'DeltaForceBooster\config'
   if (-not (Test-Path -LiteralPath $d)) {
     try { New-Item -ItemType Directory -Path $d -Force | Out-Null } catch {}
   }
@@ -144,6 +156,291 @@ function Test-BoosterFileIntegrity([string]$Path, [string]$Sha256, [long]$Size) 
   } catch { & $fail "校验过程出错：$($_.Exception.Message)" }
 }
 
+function Test-BoosterUpdaterElevated {
+  $p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+  $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Assert-BoosterNoReparsePath([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path)
+  $root = [IO.Path]::GetPathRoot($full)
+  if (-not $root) { throw "路径没有有效根目录：$Path" }
+  $current = $root.TrimEnd('\')
+  $rest = $full.Substring($root.Length)
+  foreach ($part in @($rest -split '\\' | Where-Object { $_ })) {
+    if ($current -match '^[A-Za-z]:$') { $current = "$current\$part" }
+    else { $current = Join-Path $current $part }
+    if (-not (Test-Path -LiteralPath $current)) { break }
+    if ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      throw "更新 staging 路径包含 junction/symlink/reparse point：$current"
+    }
+  }
+}
+
+function Set-BoosterStagingDirectoryAcl {
+  param([string]$Path, [bool]$Writable, [Security.Principal.SecurityIdentifier]$ReaderSid, [switch]$TraverseOnly)
+  $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if (-not $ReaderSid) { $ReaderSid = $current }
+  $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+  $system = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+  $elevated = Test-BoosterUpdaterElevated
+  $owner = $(if ($elevated) { $admins } else { $current })
+  $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $none = [Security.AccessControl.PropagationFlags]::None
+  $allow = [Security.AccessControl.AccessControlType]::Allow
+  $acl = New-Object Security.AccessControl.DirectorySecurity
+  $acl.SetAccessRuleProtection($true, $false)
+  $acl.SetOwner($owner)
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($system, 'FullControl', $inherit, $none, $allow)))
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($admins, 'FullControl', $inherit, $none, $allow)))
+  $userRights = $(if ($TraverseOnly) { 'Traverse' } elseif ($Writable) { 'FullControl' } else { 'ReadAndExecute' })
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($ReaderSid, $userRights, $inherit, $none, $allow)))
+  (New-Object IO.DirectoryInfo($Path)).SetAccessControl($acl)
+}
+
+function Set-BoosterStagingFileAcl {
+  param([string]$Path, [Security.Principal.SecurityIdentifier]$ReaderSid)
+  $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if (-not $ReaderSid) { $ReaderSid = $current }
+  $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+  $system = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+  $elevated = Test-BoosterUpdaterElevated
+  $owner = $(if ($elevated) { $admins } else { $current })
+  $allow = [Security.AccessControl.AccessControlType]::Allow
+  $acl = New-Object Security.AccessControl.FileSecurity
+  $acl.SetAccessRuleProtection($true, $false)
+  $acl.SetOwner($owner)
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($system, 'FullControl', $allow)))
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($admins, 'FullControl', $allow)))
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($ReaderSid, 'ReadAndExecute', $allow)))
+  (New-Object IO.FileInfo($Path)).SetAccessControl($acl)
+}
+
+function Test-BoosterProtectedDirectoryAcl([string]$Path) {
+  try {
+    $acl = (New-Object IO.DirectoryInfo($Path)).GetAccessControl([Security.AccessControl.AccessControlSections]'Owner, Access')
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { return $false }
+    # 不要把 Modify/FullControl 这类复合枚举直接 OR 进掩码：它们也包含 Read/Execute，
+    # 会把合法的普通用户 RX ACE 误判成可写，导致第二次更新永远失败。
+    $writeMask = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544') -and
+          (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false }
+    }
+    $true
+  } catch { $false }
+}
+
+function Test-BoosterProtectedCodeFile([string]$Path) {
+  try {
+    Assert-BoosterNoReparsePath $Path
+    $acl = (New-Object IO.FileInfo($Path)).GetAccessControl([Security.AccessControl.AccessControlSections]'Owner, Access')
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18','S-1-5-32-544') -and $owner -notlike 'S-1-5-80-*') { return $false }
+    $writeMask = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      $sid = $rule.IdentityReference.Value
+      if ($rule.AccessControlType -eq 'Allow' -and $sid -notin @('S-1-5-18','S-1-5-32-544') -and $sid -notlike 'S-1-5-80-*' -and
+          (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false }
+    }
+    $true
+  } catch { $false }
+}
+
+# 提权链不能信任调用进程继承来的 ProgramData/SystemRoot 环境变量；普通用户可以在启动
+# Setup/UAC 前自行覆盖进程环境。这里全部走系统 Known Folder/API 返回的真实目录。
+function Get-BoosterTrustedProgramData {
+  $path = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+  if (-not $path) { throw '系统未提供受信 ProgramData 路径' }
+  [IO.Path]::GetFullPath($path)
+}
+
+function Get-BoosterTrustedSystemDirectory {
+  $path = [Environment]::SystemDirectory
+  if (-not $path) { throw '系统未提供受信 System32 路径' }
+  [IO.Path]::GetFullPath($path)
+}
+
+function Remove-BoosterProtectedStagingTree([string]$Path) {
+  Assert-BoosterNoReparsePath $Path
+  if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+  if (-not (Test-BoosterProtectedDirectoryAcl $Path)) { throw "旧更新 staging 目录 ACL/所有者不可信：$Path" }
+  foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "旧更新 staging 包含 junction/symlink/reparse point：$($entry.FullName)"
+    }
+    if ($entry.PSIsContainer) {
+      Remove-BoosterProtectedStagingTree $entry.FullName
+    } else {
+      if (-not (Test-BoosterProtectedCodeFile $entry.FullName)) {
+        throw "旧更新 staging 文件 ACL/所有者不可信：$($entry.FullName)"
+      }
+      Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+    }
+  }
+  Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+}
+
+function Remove-BoosterExpiredAdminStaging([string]$Root) {
+  if (-not (Test-BoosterUpdaterElevated)) { return }
+  Assert-BoosterNoReparsePath $Root
+  if (-not (Test-BoosterProtectedDirectoryAcl $Root)) { throw "更新 staging 根目录 ACL/所有者不可信：$Root" }
+  $cutoff = [DateTime]::UtcNow.AddHours(-24)
+  foreach ($item in @(Get-ChildItem -LiteralPath $Root -Force -Directory)) {
+    # 只处理本更新器创建的单层 GUID 目录；最近 24 小时目录可能仍被另一个更新流程使用。
+    if ($item.Name -notmatch '^[0-9a-fA-F]{32}$' -or $item.CreationTimeUtc -gt $cutoff) { continue }
+    Remove-BoosterProtectedStagingTree $item.FullName
+  }
+}
+
+function New-BoosterSecureStaging {
+  param([switch]$ForceProgramData, [string]$Id, [Security.Principal.SecurityIdentifier]$ReaderSid)
+  $elevated = Test-BoosterUpdaterElevated
+  if ($ForceProgramData -and -not $elevated) { throw 'ProgramData 安全 staging 只能由提权 helper 创建' }
+  if (-not $ReaderSid) { $ReaderSid = [Security.Principal.WindowsIdentity]::GetCurrent().User }
+  $baseRoot = $(if ($elevated) {
+    Get-BoosterTrustedProgramData
+  } else {
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  })
+  if (-not $baseRoot) { throw '系统未提供更新 staging 根目录' }
+  # 与 engine 的 %ProgramData%\DeltaForceBooster（backup/ipc/keys）彻底隔离；更新根需要
+  # 给原用户 Traverse/RX，而 engine 根的 exact ACL 只允许 Admin/SYSTEM，两者不能复用。
+  $programRoot = Join-Path $baseRoot $(if ($elevated) { 'DeltaForceBooster-UpdateStaging' } else { 'DeltaForceBooster' })
+  if ($elevated) {
+    Assert-BoosterNoReparsePath $programRoot
+    if (Test-Path -LiteralPath $programRoot) {
+      if (-not (Test-BoosterProtectedDirectoryAcl $programRoot)) { throw "ProgramData 根目录 ACL/所有者不可信：$programRoot" }
+    } else {
+      # .NET Framework 的 ACL 重载原子创建目录，不留下“先创建、后加固”的可抢占窗口。
+      $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+      $system = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+      $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+      $none = [Security.AccessControl.PropagationFlags]::None
+      $allow = [Security.AccessControl.AccessControlType]::Allow
+      $rootAcl = New-Object Security.AccessControl.DirectorySecurity
+      $rootAcl.SetAccessRuleProtection($true, $false); $rootAcl.SetOwner($admins)
+      $rootAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($system, 'FullControl', $inherit, $none, $allow)))
+      $rootAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($admins, 'FullControl', $inherit, $none, $allow)))
+      $rootAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($ReaderSid, 'Traverse', $inherit, $none, $allow)))
+      [IO.Directory]::CreateDirectory($programRoot, $rootAcl) | Out-Null
+    }
+    Set-BoosterStagingDirectoryAcl -Path $programRoot -Writable $false -ReaderSid $ReaderSid -TraverseOnly
+    Remove-BoosterExpiredAdminStaging $programRoot
+  }
+  $base = $(if ($elevated) { $programRoot } else { Join-Path $programRoot 'UpdateStaging' })
+  Assert-BoosterNoReparsePath $base
+  [IO.Directory]::CreateDirectory($base) | Out-Null
+  Assert-BoosterNoReparsePath $base
+  # 提权态只给 Administrators/SYSTEM 写；普通 GUI 只在完成后读取并执行。
+  Set-BoosterStagingDirectoryAcl -Path $base -Writable (-not $elevated) -ReaderSid $ReaderSid
+  if (-not $Id) { $Id = [Guid]::NewGuid().ToString('N') }
+  if ($Id -notmatch '^[0-9a-fA-F]{32}$') { throw '更新 staging Id 无效' }
+  $dir = Join-Path $base $Id.ToLowerInvariant()
+  [IO.Directory]::CreateDirectory($dir) | Out-Null
+  Set-BoosterStagingDirectoryAcl -Path $dir -Writable (-not $elevated) -ReaderSid $ReaderSid
+  Assert-BoosterNoReparsePath $dir
+  [pscustomobject]@{ Directory = $dir; Elevated = $elevated }
+}
+
+function Protect-BoosterStaging {
+  param([string]$Directory, [string[]]$Files, [bool]$Elevated, [Security.Principal.SecurityIdentifier]$ReaderSid)
+  foreach ($file in $Files) { Set-BoosterStagingFileAcl -Path $file -ReaderSid $ReaderSid }
+  Set-BoosterStagingDirectoryAcl -Path $Directory -Writable $false -ReaderSid $ReaderSid
+  if ($Elevated) {
+    # 高完整性标签再挡住管理员账号的 medium token；DACL 所有者已经是 Administrators。
+    $icacls = Join-Path (Get-BoosterTrustedSystemDirectory) 'icacls.exe'
+    & $icacls $Directory /setintegritylevel '(OI)(CI)H' 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "无法给更新 staging 设置高完整性标签（icacls 退出码 $LASTEXITCODE）" }
+  }
+}
+
+function Invoke-BoosterSecureStageHelper {
+  param(
+    [Parameter(Mandatory)][string]$Source,
+    [Parameter(Mandatory)][string]$Id,
+    [Parameter(Mandatory)][string]$ReaderSid,
+    [Parameter(Mandatory)][string]$Sha256,
+    [Parameter(Mandatory)][long]$Size
+  )
+  $stage = $null; $input = $null; $output = $null; $side = $null
+  try {
+    if (-not (Test-BoosterUpdaterElevated)) { throw '安全 staging helper 未获得管理员权限' }
+    if ($Id -notmatch '^[0-9a-fA-F]{32}$' -or "$Sha256" -notmatch '^[0-9a-fA-F]{64}$' -or $Size -le 0) {
+      throw '安全 staging helper 参数无效'
+    }
+    try { $reader = New-Object Security.Principal.SecurityIdentifier($ReaderSid) }
+    catch { throw '安全 staging helper ReaderSid 无效' }
+    if (-not $reader.IsAccountSid()) { throw '安全 staging helper ReaderSid 不是账户 SID' }
+    Assert-BoosterNoReparsePath $Source
+    $input = [IO.FileStream]::new($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+      [IO.FileShare]::ReadWrite, 65536, [IO.FileOptions]::SequentialScan)
+    if ($input.Length -ne $Size) { throw "源安装包大小不符（预期 $Size / 实际 $($input.Length)）" }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $sourceHash = ([BitConverter]::ToString($sha.ComputeHash($input))).Replace('-', '') }
+    finally { $sha.Dispose() }
+    if ($sourceHash -ne "$Sha256".ToUpperInvariant()) { throw '源安装包 SHA256 复验失败' }
+    $input.Position = 0
+
+    $stage = New-BoosterSecureStaging -ForceProgramData -Id $Id -ReaderSid $reader
+    $dest = Join-Path $stage.Directory 'DeltaForceBooster-Setup.exe'
+    $metaPath = "$dest.integrity"
+    $output = [IO.FileStream]::new($dest, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite,
+      [IO.FileShare]::None, 65536, [IO.FileOptions]::WriteThrough)
+    $input.CopyTo($output)
+    $output.Flush($true)
+    if ($output.Length -ne $Size) { throw '安全 staging 复制后的大小不符' }
+    $output.Position = 0
+    $sha2 = [Security.Cryptography.SHA256]::Create()
+    try { $destHash = ([BitConverter]::ToString($sha2.ComputeHash($output))).Replace('-', '') }
+    finally { $sha2.Dispose() }
+    if ($destHash -ne "$Sha256".ToUpperInvariant()) { throw '安全 staging 复制后的 SHA256 不符' }
+
+    $bytes = [Text.Encoding]::ASCII.GetBytes("$($destHash.ToUpperInvariant())`r`n$Size`r`n")
+    $side = [IO.FileStream]::new($metaPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    $side.Write($bytes, 0, $bytes.Length); $side.Flush($true)
+    Protect-BoosterStaging -Directory $stage.Directory -Files @($dest, $metaPath) -Elevated $true -ReaderSid $reader
+    $side.Close(); $side = $null; $output.Close(); $output = $null; $input.Close(); $input = $null
+    return 0
+  } catch {
+    try { if ($side) { $side.Close() } } catch {}
+    try { if ($output) { $output.Close() } } catch {}
+    try { if ($input) { $input.Close() } } catch {}
+    try { if ($stage -and (Test-Path -LiteralPath $stage.Directory)) { Remove-Item -LiteralPath $stage.Directory -Recurse -Force } } catch {}
+    return 1
+  }
+}
+
+function Copy-BoosterSetupToAdminStaging {
+  param([string]$Source, [string]$Sha256, [long]$Size)
+  if (-not $script:BoosterUpdaterPath -or -not (Test-Path -LiteralPath $script:BoosterUpdaterPath -PathType Leaf)) {
+    throw '更新 helper 脚本路径不存在'
+  }
+  if (-not (Test-BoosterProtectedCodeFile $script:BoosterUpdaterPath)) {
+    throw '更新 helper 脚本不在受保护代码目录，已拒绝提权执行；请从官网安装到 Program Files'
+  }
+  # helper 代码必须来自受保护的已安装 scripts\updater.ps1；启动器发布哈希也覆盖该文件。
+  $id = [Guid]::NewGuid().ToString('N')
+  $readerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $psExe = Join-Path (Get-BoosterTrustedSystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+  $args = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:BoosterUpdaterPath`"",
+    '-SecureStageHelper', '-StageSource', "`"$Source`"", '-StageId', $id, '-StageReaderSid', $readerSid,
+    '-StageSha256', "$Sha256", '-StageSize', "$Size"
+  )
+  $p = Start-Process $psExe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $args
+  if (-not $p -or $p.ExitCode -ne 0) { throw "安全 staging helper 失败或 UAC 被取消（退出码 $($p.ExitCode)）" }
+  $programData = Get-BoosterTrustedProgramData
+  $dest = Join-Path (Join-Path $programData 'DeltaForceBooster-UpdateStaging') "$id\DeltaForceBooster-Setup.exe"
+  Assert-BoosterNoReparsePath $dest
+  $chk = Test-BoosterFileIntegrity $dest $Sha256 $Size
+  if (-not $chk.Ok) { throw "安全 staging helper 结果复验失败：$($chk.Reason)" }
+  if (-not (Test-Path -LiteralPath "$dest.integrity" -PathType Leaf)) { throw '安全 staging helper 未生成完整性 sidecar' }
+  $dest
+}
+
 # 内置更新下载：URL 安检 → 流式下载（写进度、可取消）→ 完整性校验。
 # 同步函数，由界面层丢进后台 runspace 跑，进度经 Synchronized 哈希表回报——
 # PS 5.1 + WPF 下跨线程事件回调很脆，轮询共享状态最稳。
@@ -159,9 +456,14 @@ function Invoke-BoosterSetupDownload {
   )
   $finish = { param($phase, $err) $State.Phase = $phase; $State.Error = "$err"; $State.Done = $true }
   $tmpFile = $null
+  $sidecar = $null
+  $stageInfo = $null
+  $outStream = $null
+  $sideStream = $null
   try {
     $State.Received = 0; $State.Total = $Size; $State.Phase = 'downloading'
     $State.Error = ''; $State.File = ''; $State.Done = $false
+    $State.ExpectedSha256 = "$Sha256".ToUpperInvariant(); $State.ExpectedSize = $Size
 
     $verdict = Test-BoosterSetupUrl $SetupUrl
     if (-not $verdict.Allowed) { & $finish 'failed' "已拦截下载：$($verdict.Reason)"; return }
@@ -169,13 +471,11 @@ function Invoke-BoosterSetupDownload {
     if ("$Sha256" -notmatch '^[0-9a-fA-F]{64}$') { & $finish 'failed' '清单缺少合法的 SHA256，拒绝下载'; return }
     if ($Size -le 0) { & $finish 'failed' '清单缺少合法的文件大小，拒绝下载'; return }
 
-    # 临时目录自建子目录并清掉上次残留：校验通过前文件绝不落到程序目录
-    $tmpDir = Join-Path $env:TEMP 'DeltaForceBooster-Update'
-    if (Test-Path -LiteralPath $tmpDir) {
-      try { Get-ChildItem -LiteralPath $tmpDir -File | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
-    } else { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
-    # 随机文件名：上次下载的同名文件若被别的进程占着，不至于卡死这次更新
-    $tmpFile = Join-Path $tmpDir ("DFB-Setup-{0}.exe" -f [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    # GUID staging + CreateNew。非提权态保留源句柄禁止写/删，同时让管理员 helper 只读打开、
+    # 复验并复制到 Administrators-owned ProgramData；普通 GUI 最终绝不执行 user-owned 文件。
+    $stageInfo = New-BoosterSecureStaging
+    $tmpFile = Join-Path $stageInfo.Directory 'DeltaForceBooster-Setup.exe'
+    $sidecar = "$tmpFile.integrity"
 
     [Net.ServicePointManager]::SecurityProtocol = `
       [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -184,8 +484,11 @@ function Invoke-BoosterSetupDownload {
     $req.ReadWriteTimeout = $TimeoutMs
     $req.UserAgent = 'DeltaForceBooster-Updater'
     $resp = $req.GetResponse()
+    $redirectVerdict = Test-BoosterSetupUrl "$($resp.ResponseUri.AbsoluteUri)"
+    if (-not $redirectVerdict.Allowed) { throw "下载重定向已拦截：$($redirectVerdict.Reason)" }
     $inStream = $resp.GetResponseStream()
-    $outStream = [IO.File]::Create($tmpFile)
+    $outStream = [IO.FileStream]::new($tmpFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite,
+      [IO.FileShare]::Read, 65536, [IO.FileOptions]::WriteThrough)
     try {
       $buf = New-Object byte[] 65536
       while ($true) {
@@ -198,19 +501,54 @@ function Invoke-BoosterSetupDownload {
         if ([long]$State.Received -gt $Size) { & $finish 'failed' '下载内容超过清单声明的大小，已中止并删除'; break }
       }
     } finally {
-      $outStream.Close(); $inStream.Close(); $resp.Close()
+      $inStream.Close(); $resp.Close()
     }
     if ($State.Done) {
-      try { Remove-Item -LiteralPath $tmpFile -Force -ErrorAction SilentlyContinue } catch {}
+      $outStream.Close(); $outStream = $null
+      try { Remove-Item -LiteralPath $stageInfo.Directory -Recurse -Force -ErrorAction SilentlyContinue } catch {}
       return
     }
 
+    $outStream.Flush($true)
+    if ([long]$State.Received -ne $Size -or $outStream.Length -ne $Size) {
+      throw "文件大小不符（清单 $Size 字节 / 实际 $($outStream.Length) 字节）"
+    }
+    $outStream.Position = 0
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash($outStream))).Replace('-', '') }
+    finally { $sha.Dispose() }
+    if ($actualHash -ne "$Sha256".ToUpperInvariant()) { throw 'SHA256 校验不通过（文件可能在传输中被篡改）' }
+
+    if ([bool]$stageInfo.Elevated) {
+      $meta = [Text.Encoding]::ASCII.GetBytes("$($actualHash.ToUpperInvariant())`r`n$Size`r`n")
+      $sideStream = [IO.FileStream]::new($sidecar, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+        [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+      $sideStream.Write($meta, 0, $meta.Length)
+      $sideStream.Flush($true)
+      Protect-BoosterStaging -Directory $stageInfo.Directory -Files @($tmpFile, $sidecar) -Elevated $true `
+        -ReaderSid ([Security.Principal.WindowsIdentity]::GetCurrent().User)
+      $sideStream.Close(); $sideStream = $null
+      $outStream.Close(); $outStream = $null
+    } else {
+      # 父句柄仍打开且 share 只允许 Read：helper 校验/复制期间同 SID 进程也改不了或删不了源。
+      $localStage = $stageInfo.Directory
+      $secureFile = Copy-BoosterSetupToAdminStaging $tmpFile $Sha256 $Size
+      $outStream.Close(); $outStream = $null
+      try { Remove-Item -LiteralPath $localStage -Recurse -Force -ErrorAction Stop } catch {}
+      $tmpFile = $secureFile
+      $sidecar = "$tmpFile.integrity"
+      $stageInfo = [pscustomobject]@{ Directory = Split-Path -Parent $tmpFile; Elevated = $true }
+    }
+
+    # 交付路径前再按路径复验一次；安装器进程启动第一行还会根据 sidecar/参数第三次复验。
     $chk = Test-BoosterFileIntegrity $tmpFile $Sha256 $Size
-    if (-not $chk.Ok) { & $finish 'failed' $chk.Reason; return }
+    if (-not $chk.Ok) { throw $chk.Reason }
     $State.File = $tmpFile
     & $finish 'done' ''
   } catch {
-    try { if ($tmpFile -and (Test-Path -LiteralPath $tmpFile)) { Remove-Item -LiteralPath $tmpFile -Force } } catch {}
+    try { if ($sideStream) { $sideStream.Close() } } catch {}
+    try { if ($outStream) { $outStream.Close() } } catch {}
+    try { if ($stageInfo -and (Test-Path -LiteralPath $stageInfo.Directory)) { Remove-Item -LiteralPath $stageInfo.Directory -Recurse -Force } } catch {}
     & $finish 'failed' "下载失败：$($_.Exception.Message)"
   }
 }
@@ -256,4 +594,9 @@ function Test-BoosterUpdate {
       InlineDeny = $(if ($canInline) { '' } elseif (-not $urlVerdict.Allowed) { $urlVerdict.Reason } else { '清单缺少 SHA256 或文件大小，内置更新已禁用' })
     }
   } catch { $null }
+}
+
+# 仅供非提权 GUI 调起的管理员 helper 入口；正常 dot-source 本模块时开关为空，不执行。
+if ($SecureStageHelper) {
+  exit (Invoke-BoosterSecureStageHelper -Source $StageSource -Id $StageId -ReaderSid $StageReaderSid -Sha256 $StageSha256 -Size $StageSize)
 }

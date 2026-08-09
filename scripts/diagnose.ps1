@@ -1,5 +1,5 @@
 ﻿<#
-  DeltaForceBooster 诊断脚本 — v0.4
+  DeltaForceBooster 诊断脚本 — v0.5
   用途：优化后有项目没变成「已就绪」时，跑这个把真实原因打出来。
   除「电源项写入自检」（仅对已有显式值的项写回原值本身、不留改动）外全部只读。
   请用管理员身份运行（很多项非管理员读不到）。
@@ -9,6 +9,7 @@
   （-ExecutionPolicy Bypass 不能省：下载解压的脚本带网络标记，默认策略会拒绝运行）
   把完整输出复制回来即可。
 
+  v0.5：使用系统 Known Folder 中的 powercfg，并只读取受保护、已验证签名的新备份。
   v0.4：撤掉 v0.3 的「写目标值 → 删子键」自检——PowerSchemes 键 ACL 只给 SYSTEM 写权限
         （管理员组仅 ReadKey），删子键必被拒，实际会在方案里留下不进任何备份的显式值，
         输出却报「已回到继承默认态」。继承默认的项改为只读报告，诊断脚本绝不留改动。
@@ -36,10 +37,10 @@ $root = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'
 $activeGuid = Get-RegValue $root 'ActivePowerScheme'
 "活动方案 GUID（注册表）: $activeGuid"
 # 交叉核对：powercfg 视角的活动方案。两边不一致说明注册表读取路径有问题
-$pcOut = & powercfg /getactivescheme 2>&1
+$pcOut = & $script:PowerCfgExe /getactivescheme 2>&1
 "活动方案（powercfg 原话）: $("$pcOut".Trim())"
 "卓越性能模板(e9a42b02…)注册表键: $(if (Test-Path "$root\e9a42b02-d5df-448d-aa00-03f14749eb61") { '存在' } else { '不存在 —— 需要 duplicatescheme 创建' })"
-"工具自建方案 GUID 记录(config\power-scheme.json): $(if (Get-Command Get-ToolSchemeGuid -EA SilentlyContinue) { $g0 = Get-ToolSchemeGuid; if ($g0) { $g0 } else { '（无记录）' } } else { '（引擎版本过旧，无此功能）' })"
+"工具自建方案 GUID 记录($script:ConfigDir\power-scheme.json): $(if (Get-Command Get-ToolSchemeGuid -EA SilentlyContinue) { $g0 = Get-ToolSchemeGuid; if ($g0) { $g0 } else { '（无记录）' } } else { '（引擎版本过旧，无此功能）' })"
 Write-Output "--- 全部方案（原始 FriendlyName / 解析后显示名）---"
 $base, $sub = Split-RegPath $root
 $k = $base.OpenSubKey($sub)
@@ -57,11 +58,11 @@ Line '模板激活自检（判定 e9a42b02 是否为「不可直接激活的模�
 # 关键疑点：多数非工作站版 Windows 上卓越性能只是模板，注册表可见但 setactive 会失败。
 # 先试激活模板本身，把 powercfg 原话打出来，再立刻切回原方案，不留改动
 if ($activeGuid -and (Test-Path "$root\e9a42b02-d5df-448d-aa00-03f14749eb61")) {
-  $t1 = & powercfg /setactive 'e9a42b02-d5df-448d-aa00-03f14749eb61' 2>&1
+  $t1 = & $script:PowerCfgExe /setactive 'e9a42b02-d5df-448d-aa00-03f14749eb61' 2>&1
   $nowG = Get-RegValue $root 'ActivePowerScheme'
   "直接激活模板: exit=$LASTEXITCODE 输出=[$("$t1".Trim())]"
   "激活后回读 ActivePowerScheme: $nowG $(if ("$nowG" -ieq 'e9a42b02-d5df-448d-aa00-03f14749eb61') { '→ 模板可直接激活' } else { '→ 未切换成功，模板不可直接激活（需 duplicatescheme 实例化）' })"
-  & powercfg /setactive $activeGuid 2>&1 | Out-Null
+  & $script:PowerCfgExe /setactive $activeGuid 2>&1 | Out-Null
   "已切回原方案 $activeGuid（回读: $(Get-RegValue $root 'ActivePowerScheme')）"
 } else { '（模板不存在或读不到当前方案，跳过此项自检）' }
 
@@ -94,14 +95,14 @@ foreach ($p in $probe) {
       "    未显式设置（继承系统默认），优化会写入目标值 $($p.V)——此态不做写入自检，保持只读"
     } else {
       # 直接试一次真实写入，把 powercfg 的原话打出来（写的是当前值本身，等于不改动）
-      $out = & powercfg /setacvalueindex SCHEME_CURRENT $p.S $p.G $cur 2>&1
+      $out = & $script:PowerCfgExe /setacvalueindex SCHEME_CURRENT $p.S $p.G $cur 2>&1
       "    写入自检(写回原值): exit=$LASTEXITCODE $(if ($out) { "输出=$($out -join ' ')" } else { '无输出（正常）' })"
       # 再试目标值，失败会打出确切错误；成功后立刻写回原值，不留改动
-      $out2 = & powercfg /setacvalueindex SCHEME_CURRENT $p.S $p.G $p.V 2>&1
+      $out2 = & $script:PowerCfgExe /setacvalueindex SCHEME_CURRENT $p.S $p.G $p.V 2>&1
       "    写入目标值    : exit=$LASTEXITCODE $(if ($out2) { "输出=$($out2 -join ' ')" } else { '无输出（成功）' })"
       if ($LASTEXITCODE -eq 0) {
-        & powercfg /setacvalueindex SCHEME_CURRENT $p.S $p.G $cur 2>&1 | Out-Null
-        & powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+        & $script:PowerCfgExe /setacvalueindex SCHEME_CURRENT $p.S $p.G $cur 2>&1 | Out-Null
+        & $script:PowerCfgExe /setactive SCHEME_CURRENT 2>&1 | Out-Null
         "    已还原为原值 $cur"
       }
     }
@@ -116,14 +117,33 @@ foreach ($it in (Get-OptItems (Find-GamePath))) {
   "         $($st.Current)"
 }
 
-Line '最近一次备份'
-$bd = Join-Path (Split-Path -Parent $PSScriptRoot) 'backup'
-$last = Get-ChildItem $bd -Filter 'backup-*.json' -File -EA SilentlyContinue | Sort-Object Name -Desc | Select-Object -First 1
-if ($last) {
-  "文件: $($last.FullName)"
-  $b = Get-Content -LiteralPath $last.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-  "记录了 $(@($b.Ops).Count) 项改动（还原时会逆序回退这些）"
-} else { '没有找到备份文件' }
+Line '最近一次受保护备份'
+# 新备份位于 ProgramData 的管理员保护目录。诊断只通过引擎的签名/schema 校验读取，
+# 不再直接解析程序目录里可被普通用户改写的旧 JSON。
+if (-not (Test-Path -LiteralPath $script:BackupDir -PathType Container)) {
+  "没有找到受保护备份目录：$script:BackupDir"
+} else {
+  try {
+    if (-not (Test-Path -LiteralPath $script:BackupKeyFile -PathType Leaf)) {
+      throw '备份完整性密钥缺失；诊断保持只读，不会新建密钥'
+    }
+    $valid = @()
+    foreach ($f in @(Get-ChildItem -LiteralPath $script:BackupDir -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue)) {
+      try { $valid += Read-ValidatedBackup $f.FullName @() }
+      catch { "跳过未通过校验的备份 $($f.Name)：$($_.Exception.Message)" }
+    }
+    $last = @(Sort-BackupRecordsNewestFirst $valid | Select-Object -First 1)
+    if ($last.Count) {
+      $rec = $last[0]
+      "文件: $($rec.Path)"
+      "创建时间(UTC): $($rec.Document.CreatedUtc)"
+      "状态: $($rec.Document.State)；记录了 $(@($rec.Document.Ops).Count) 项写前日志（还原会校验后按最早原值回退）"
+    } else { '没有找到通过完整性校验且尚未还原的备份文件' }
+  } catch {
+    "受保护备份读取失败：$($_.Exception.Message)"
+    '请确认使用管理员身份运行本诊断脚本。'
+  }
+}
 
 Write-Output ""
 Write-Output "诊断结束。请把以上全部内容复制回去。"

@@ -1,9 +1,19 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.19.3
+  DeltaForceBooster 图形界面 — v0.20.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.20.0：①新增「自动寻找最佳配置 Beta」，以同一设备三次基线和 A/B 交替采样测试
+        G1/G2/G3 三组低风险配置，按平均帧率、1% 低帧率、P99、卡顿、温度与功耗
+        决定保留或定向回滚；②实验状态原子保存，异常退出后可继续或安全恢复，普通采样
+        与实验采样隔离；③修复更新、安装、备份还原、权限边界、多显卡识别和性能记录等
+        已知问题，旧版本必须升级后继续使用。
+  v0.19.4：①主界面改为普通权限，程序默认进入 Program Files；系统修改由短生命周期
+        管理员引擎执行，关键文件、更新暂存和事务安装均增加校验；②备份升级为受保护的
+        HMAC 写前日志，失败退出码与还原结果不再误报；③混合/多 NVIDIA 主卡、IRQ 和性能
+        采样按 PCI 位置对齐，1% 低帧率改按最慢 1% 帧的平均帧时间计算；④修复诊断报告
+        多段记录拼行及旧版嵌套记录；⑤「解决掉帧」与「显卡型号伪装」项名前加 ★。
   v0.19.3：①增加全局单实例锁，软件已经运行时再次启动只给出提示，不再打开第二个主窗口；
         ②显卡型号伪装区域改为默认展开；③随引擎 v0.16.4 将着色器缓存项改名为
         「解决掉帧：清理着色器缓存」，方便用户按问题找到对应功能。
@@ -13,7 +23,7 @@
   v0.19.1：性能汇总增加粗粒度优化强度（未使用/轻量/均衡/深度），不发送具体勾选项、
         自存方案名称或方案内容，用于同一匿名设备的优化前后配对比较。
   v0.19.0：显卡型号改从驱动/NVML 读取真实硬件，不再让伪装值污染界面和统计；游戏启动后
-        自动采样 120 秒，记录平均 FPS、1% Low、GPU 占用率、温度和功耗汇总；加入最低
+        自动采样 120 秒，记录平均帧率、1% 低帧率、GPU 占用率、温度和功耗汇总；加入最低
         支持版本策略，低于门槛的客户端不可跳过更新。
   v0.18.4：显卡软件缺失时明确指引点击官方下载按钮；自动检测到新版本时直接弹出
         更新详情，不再只显示标题栏入口。
@@ -47,15 +57,18 @@
 #>
 #requires -Version 5.1
 
-# HKLM/电源计划等系统级项需要管理员，界面统一提权一次，省去逐项判断
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+$ErrorActionPreference = 'Stop'
+
+# 长期运行的 WPF、联网更新和外部工具检测不持有管理员权限。若用户主动“以管理员身份
+# 运行”主程序，直接说明正确入口并退出；真正的系统修改只在点击按钮后由短进程提权。
+$isAdminGui = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-  Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+if ($isAdminGui) {
+  Add-Type -AssemblyName PresentationFramework
+  [Windows.MessageBox]::Show('主界面应以普通方式运行，请关闭后直接双击“启动优化工具.exe”。点击执行优化或还原时，软件会单独请求管理员权限。',
+    '三角洲行动 · 画面优化助手', 'OK', 'Information') | Out-Null
   exit
 }
-
-$ErrorActionPreference = 'Stop'
 
 # 同一台电脑只保留一个主程序实例。用全局命名 Mutex 而不是枚举 powershell.exe：启动器、
 # bat 和直接运行 ps1 最终都会经过这里，同时不会误伤用户开的其他 PowerShell 窗口。
@@ -70,12 +83,64 @@ if (-not $createdNew) {
 
 $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
+$script:UserConfigDir = $(if ($script:ConfigDir) { $script:ConfigDir } else {
+  Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DeltaForceBooster\config'
+})
+$script:TelemetryClientPath = Join-Path $script:RootDir 'scripts\telemetry-client.ps1'
+if (Test-Path -LiteralPath $script:TelemetryClientPath) { . $script:TelemetryClientPath }
+
+# v0.19.3 及更早版本把用户数据放在程序目录。GUI 仍处于原用户上下文时，只迁移明确
+# 白名单内、可解析的 JSON；不碰受保护备份（由提权引擎按旧 schema 验证后迁移签名）。
+function Copy-LegacyJsonIfMissing([string]$Source, [string]$Destination, [int]$MaxBytes = 1048576) {
+  try {
+    if ((Test-Path -LiteralPath $Destination) -or -not (Test-Path -LiteralPath $Source -PathType Leaf)) { return }
+    if ((Get-Item -LiteralPath $Source -Force).Length -gt $MaxBytes -or (Test-PathHasReparsePoint $Source)) { return }
+    $text = [IO.File]::ReadAllText($Source, [Text.Encoding]::UTF8)
+    $null = $text | ConvertFrom-Json
+    $dir = Split-Path -Parent $Destination
+    if (-not (Test-Path -LiteralPath $dir)) { [void][IO.Directory]::CreateDirectory($dir) }
+    $bytes = (New-Object Text.UTF8Encoding($true)).GetBytes($text)
+    $stream = New-Object IO.FileStream($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+                                      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+  } catch {
+    # 目标已由另一实例/新版本创建或旧文件损坏时保留目标现状，主程序继续启动。
+  }
+}
+
+function Move-LegacyUserDataForward {
+  $legacyConfig = Join-Path $script:RootDir 'config'
+  if ([IO.Path]::GetFullPath($legacyConfig).TrimEnd('\') -ine [IO.Path]::GetFullPath($script:UserConfigDir).TrimEnd('\') -and
+      (Test-Path -LiteralPath $legacyConfig -PathType Container) -and -not (Test-PathHasReparsePoint $legacyConfig)) {
+    foreach ($name in 'telemetry.json','disclaimer.json','updater.json','performance-sessions.json','power-scheme.json') {
+      Copy-LegacyJsonIfMissing (Join-Path $legacyConfig $name) (Join-Path $script:UserConfigDir $name)
+    }
+  }
+  $legacyProfiles = Join-Path $script:RootDir 'profiles'
+  if ((Test-Path -LiteralPath $legacyProfiles -PathType Container) -and -not (Test-PathHasReparsePoint $legacyProfiles)) {
+    $profileDir = $(if ($script:ProfileDir) { $script:ProfileDir } else {
+      Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DeltaForceBooster\profiles'
+    })
+    foreach ($file in @(Get-ChildItem -LiteralPath $legacyProfiles -Filter '*.json' -File -ErrorAction SilentlyContinue | Select-Object -First 100)) {
+      if ($file.Name -match '^[^\\/:*?"<>|]{1,80}\.json$') {
+        Copy-LegacyJsonIfMissing $file.FullName (Join-Path $profileDir $file.Name) 262144
+      }
+    }
+  }
+}
+Move-LegacyUserDataForward
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.19.3'
+$script:GuiVersion = '0.20.0'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
+$script:TuningModulePath = Join-Path $script:RootDir 'scripts\tuning-experiment.ps1'
+# 自动调优是可选 Beta：主功能在模块丢失时仍可启动，但 Beta 页会明确停用而不猜候选规则。
+$script:TuningModuleLoaded = $false
+if (Test-Path -LiteralPath $script:TuningModulePath -PathType Leaf) {
+  try { . $script:TuningModulePath; $script:TuningModuleLoaded = $true } catch {}
+}
 
 Add-Type -AssemblyName PresentationFramework
 
@@ -440,7 +505,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.19.3 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.20.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -475,11 +540,12 @@ $xaml = @'
       </Grid>
     </Border>
 
-    <!-- 标签页导航：优化 / 游戏内设置参考 / 运行日志 -->
+    <!-- 标签页导航：优化 / 自动调优 / 游戏内设置参考 / 运行日志 -->
     <Border Grid.Row="1" Background="{StaticResource TopBar}" BorderBrush="{StaticResource Line}"
             BorderThickness="0,0,0,1">
       <StackPanel Orientation="Horizontal" Margin="15,0,0,0">
         <Button x:Name="TabOptBtn" Content="优化" Style="{StaticResource TabBtn}" Tag="on"/>
+        <Button x:Name="TabTuneBtn" Content="自动调优 Beta" Style="{StaticResource TabBtn}" Tag=""/>
         <Button x:Name="TabRefBtn" Content="游戏内设置参考" Style="{StaticResource TabBtn}" Tag=""/>
         <Button x:Name="TabLogBtn" Style="{StaticResource TabBtn}" Tag="">
           <StackPanel Orientation="Horizontal">
@@ -649,7 +715,7 @@ $xaml = @'
           <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" IsExpanded="True" Foreground="{StaticResource TextPri}">
             <Expander.Header>
               <StackPanel Orientation="Horizontal">
-                <TextBlock Text="显卡型号伪装" Foreground="{StaticResource TextPri}" FontSize="12"/>
+                  <TextBlock Text="★ 显卡型号伪装" Foreground="{StaticResource TextPri}" FontSize="12"/>
                 <TextBlock Text="按显卡代际推荐 · 可手动选择目标型号" Style="{StaticResource Mono}" Margin="10,0,0,0"/>
               </StackPanel>
             </Expander.Header>
@@ -670,6 +736,96 @@ $xaml = @'
             <Border Style="{StaticResource Dash}"/>
           </StackPanel>
 
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+
+    <!-- 规则版个体内自动调优：不从网络/AI 接受优化项，只运行本地签名发布的三组低风险规则。 -->
+    <Grid Grid.Row="2" x:Name="TunePage" Visibility="Collapsed">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="21,10">
+        <StackPanel>
+          <Grid Margin="0,0,0,9">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+              <TextBlock Text="自动寻找最佳配置" Style="{StaticResource HeadCn}"/>
+              <TextBlock Text="DETERMINISTIC TUNING BETA" Style="{StaticResource HeadEn}"/>
+              <Border Style="{StaticResource HeadBar}"/>
+            </StackPanel>
+            <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Bottom" Margin="12,0,12,4"/>
+            <Border Grid.Column="2" Background="{StaticResource GoldDark}" BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="7,2" VerticalAlignment="Bottom">
+              <TextBlock Text="RULES / BETA" Foreground="{StaticResource Gold}" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+            </Border>
+          </Grid>
+
+          <Border Background="#FF0E2A21" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="11,8" Margin="0,0,0,9">
+            <StackPanel>
+              <TextBlock Text="固定目标：提高 1% 低帧率和流畅度" Foreground="{StaticResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="这是确定性规则实验，不是 AI。候选仅来自内置低风险库，显卡型号伪装等 risky 项永不会自动加入。" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <TextBlock Text="个体内规则实验，不代表全局最优。" Foreground="{StaticResource Gold}" FontWeight="Bold" Margin="0,3,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="11,9" Margin="0,0,0,9">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="108"/><ColumnDefinition Width="135"/><ColumnDefinition Width="112"/></Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                <TextBlock Text="固定场景标识（2–80字）" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBox x:Name="TuneSceneBox" Height="27" Margin="0,4,0,0" Padding="7,4" MaxLength="80"
+                         Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource LineHi}" BorderThickness="1" Foreground="{StaticResource TextPri}"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                <TextBlock Text="最大温升（0–7°C）" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBox x:Name="TuneTempBox" Text="3" Height="27" Margin="0,4,0,0" Padding="7,4" MaxLength="3"
+                         Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource LineHi}" BorderThickness="1" Foreground="{StaticResource TextPri}"/>
+              </StackPanel>
+              <StackPanel Grid.Column="2" Margin="0,0,10,0">
+                <TextBlock Text="功耗策略" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <CheckBox x:Name="TunePowerChk" Style="{StaticResource TacCheck}" Margin="0,6,0,0">
+                  <TextBlock Text="允许更高功耗" Foreground="{StaticResource TextPri}"/>
+                </CheckBox>
+              </StackPanel>
+              <StackPanel Grid.Column="3">
+                <TextBlock Text="最大增幅（0–20%）" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBox x:Name="TunePowerBox" Text="0" Height="27" Margin="0,4,0,0" Padding="7,4" MaxLength="4" IsEnabled="False"
+                         Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource LineHi}" BorderThickness="1" Foreground="{StaticResource TextPri}"/>
+              </StackPanel>
+            </Grid>
+          </Border>
+
+          <UniformGrid Columns="4" Margin="0,0,0,9">
+            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="实验状态" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneStatusText" Text="未创建" Foreground="{StaticResource Green}" FontWeight="Bold" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="当前方案 / 轮次" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneRoundText" Text="-" Foreground="{StaticResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="基线稳定性" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneBaselineText" Text="待采样" Foreground="{StaticResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7"><StackPanel><TextBlock Text="当前保留组合" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneCurrentText" Text="基线" Foreground="{StaticResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+          </UniformGrid>
+
+          <Grid Margin="0,0,0,9">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,6" Margin="0,0,5,0"><TextBlock x:Name="TuneG1Text" Text="G1 后台与游戏模式：待实验" Foreground="{StaticResource TextSec}" TextWrapping="Wrap"/></Border>
+            <Border Grid.Column="1" Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,6" Margin="0,0,5,0"><TextBlock x:Name="TuneG2Text" Text="G2 前台调度：待实验" Foreground="{StaticResource TextSec}" TextWrapping="Wrap"/></Border>
+            <Border Grid.Column="2" Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,6"><TextBlock x:Name="TuneG3Text" Text="G3 显示与 GPU 选择：待实验" Foreground="{StaticResource TextSec}" TextWrapping="Wrap"/></Border>
+          </Grid>
+
+          <Border Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Margin="0,0,0,9">
+            <StackPanel>
+              <Grid Background="#FF0C1915" Margin="0" Height="25">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition Width="100"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/><ColumnDefinition Width="58"/><ColumnDefinition Width="58"/><ColumnDefinition Width="58"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="#" Style="{StaticResource Mono}" Margin="8,5"/><TextBlock Grid.Column="1" Text="方案" Style="{StaticResource Mono}" Margin="5"/>
+                <TextBlock Grid.Column="2" Text="平均帧率" Style="{StaticResource Mono}" Margin="5"/><TextBlock Grid.Column="3" Text="1% 低" Style="{StaticResource Mono}" Margin="5"/>
+                <TextBlock Grid.Column="4" Text="P99 ms" Style="{StaticResource Mono}" Margin="5"/><TextBlock Grid.Column="5" Text="卡顿/分" Style="{StaticResource Mono}" Margin="5"/>
+                <TextBlock Grid.Column="6" Text="GPU%" Style="{StaticResource Mono}" Margin="5"/><TextBlock Grid.Column="7" Text="温度" Style="{StaticResource Mono}" Margin="5"/>
+                <TextBlock Grid.Column="8" Text="功耗" Style="{StaticResource Mono}" Margin="5"/><TextBlock Grid.Column="9" Text="有效性 / 原因" Style="{StaticResource Mono}" Margin="5"/>
+              </Grid>
+              <StackPanel x:Name="TuneRunPanel"/>
+            </StackPanel>
+          </Border>
+
+          <TextBlock x:Name="TuneHintText" Text="创建实验后，每次按「执行下一步」完成 120 秒同场景采样。实验可稍后继续。" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="1,0,1,8"/>
+          <StackPanel Orientation="Horizontal">
+            <Button x:Name="TuneCreateBtn" Content="创建 / 继续实验" Style="{StaticResource Primary}" Width="210"/>
+            <Button x:Name="TuneNextBtn" Content="执行下一步" Style="{StaticResource Ghost}" Width="145" Margin="9,0,0,0"/>
+            <Button x:Name="TuneStopBtn" Content="停止并回滚" Style="{StaticResource Ghost}" Width="135" Margin="9,0,0,0"/>
+          </StackPanel>
         </StackPanel>
       </ScrollViewer>
     </Grid>
@@ -770,7 +926,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.19.3 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.20.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -961,8 +1117,12 @@ foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn',
                'ReportBtn','DisclaimerBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
-               'TabOptBtn','TabRefBtn','TabLogBtn','LogBadge','LogBadgeTxt',
-               'OptPage','RefPage','LogPage','RefPanel','ActionRow',
+               'TabOptBtn','TabTuneBtn','TabRefBtn','TabLogBtn','LogBadge','LogBadgeTxt',
+               'OptPage','TunePage','RefPage','LogPage','RefPanel','ActionRow',
+               'TuneSceneBox','TuneTempBox','TunePowerChk','TunePowerBox',
+               'TuneStatusText','TuneRoundText','TuneBaselineText','TuneCurrentText',
+               'TuneG1Text','TuneG2Text','TuneG3Text','TuneRunPanel','TuneHintText',
+               'TuneCreateBtn','TuneNextBtn','TuneStopBtn',
                'ProgressPanel','ProgTrack','ProgFill','ProgText','ProgCount','CopyLogBtn','CopyLogTxt') {
   $ui[$n] = $window.FindName($n)
 }
@@ -1595,12 +1755,12 @@ function Update-StreamerPage {
 
 # 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
 # 老用户不会因为条款改了还停留在旧版本的「已同意」上
-$script:DisclaimerVersion = '4'
+$script:DisclaimerVersion = '5'
 $script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
 
 # 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
 function Get-DisclaimerConfigPath {
-  $d = Join-Path $script:RootDir 'config'
+  $d = $script:UserConfigDir
   if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
   Join-Path $d 'disclaimer.json'
 }
@@ -1633,10 +1793,11 @@ function Get-DisclaimerText {
     '未能读取完整声明文件（DISCLAIMER.md 缺失），以下是核心要点：'
     ''
     '- 个人开发的免费工具，**与腾讯公司及《三角洲行动》官方无任何关系**。'
-    '- 会修改注册表、电源计划、系统服务等系统级设置；改动前自动备份，可点「还原设置」回退，但还原不保证 100% 成功。'
+    '- 会修改注册表、电源计划、系统服务等系统级设置；可还原的设置改动会先写入受保护备份，可点「还原设置」回退；纯检测项和明确标注不可还原的操作不生成备份，还原也不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
-    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（FPS、1% Low、GPU 占用率、温度、功耗）；配置只上传未使用/轻量/均衡/深度四档，不发送具体勾选项、自存方案名称、用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。'
+    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（平均帧率、1% 低帧率、GPU 占用率、温度、功耗）；配置只上传未使用/轻量/均衡/深度四档，不发送具体勾选项、自存方案名称、用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。统计来自客户端自动采样，会做令牌、重放和异常值过滤，但不是独立实验室测量。'
+    '- 服务端定时清理：诊断报告保留 30 天、性能会话保留 90 天、匿名安装标识与按日使用明细保留 180 天。'
     '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
     ''
     '完整声明见项目根目录的 DISCLAIMER.md。'
@@ -1826,7 +1987,7 @@ $script:TelemetryUploadUrl = 'https://df.ltz88.cn/report/telemetry'
 $script:TelemetryJobs = New-Object System.Collections.ArrayList
 
 function Get-TelemetryInstallId {
-  $dir = Join-Path $script:RootDir 'config'
+  $dir = $script:UserConfigDir
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   $path = Join-Path $dir 'telemetry.json'
   try {
@@ -1837,8 +1998,12 @@ function Get-TelemetryInstallId {
     }
   } catch {}
   $id = [guid]::NewGuid().ToString()
-  $cfg = [ordered]@{ Enabled = $true; InstallId = $id; CreatedAt = (Get-Date).ToUniversalTime().ToString('o'); ConfigTier = 'baseline' }
-  [IO.File]::WriteAllText($path, ($cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
+  $cfg = [ordered]@{
+    Enabled = $true; InstallId = $id; CreatedAt = (Get-Date).ToUniversalTime().ToString('o')
+    ConfigTier = 'baseline'; DeviceToken = ''; TokenExpiresAt = 0
+  }
+  if (Get-Command Write-DfbTelemetryConfigAtomic -ErrorAction SilentlyContinue) { Write-DfbTelemetryConfigAtomic $path $cfg }
+  else { [IO.File]::WriteAllText($path, ($cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding($true))) }
   $id
 }
 
@@ -1846,7 +2011,7 @@ function Get-TelemetryInstallId {
 # 同一台匿名设备可据此把优化前后的性能会话配对，避免按每个人的独特配置拆分。
 function Get-TelemetryConfigTier {
   try {
-    $path = Join-Path $script:RootDir 'config\telemetry.json'
+    $path = Join-Path $script:UserConfigDir 'telemetry.json'
     if (-not (Test-Path -LiteralPath $path)) { return 'baseline' }
     $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
     $tier = "$($cfg.ConfigTier)".ToLowerInvariant()
@@ -1857,41 +2022,46 @@ function Get-TelemetryConfigTier {
 
 function Set-TelemetryConfigTier([string]$Tier, [switch]$Force) {
   if ($Tier -notin 'baseline','light','balanced','full') { return }
+  $mutex = $null; $locked = $false
   try {
-    $dir = Join-Path $script:RootDir 'config'
+    $mutex = New-Object Threading.Mutex($false, 'Local\DeltaForceBooster.Telemetry.Config')
+    $locked = $mutex.WaitOne([TimeSpan]::FromSeconds(10))
+    if (-not $locked) { return }
+    $dir = $script:UserConfigDir
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $path = Join-Path $dir 'telemetry.json'
     $enabled = $true
     $installId = [guid]::NewGuid().ToString()
     $createdAt = (Get-Date).ToUniversalTime().ToString('o')
     $current = 'baseline'
+    $deviceToken = ''
+    $tokenExpiresAt = 0L
     if (Test-Path -LiteralPath $path) {
       $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
       if ($cfg.Enabled -eq $false) { $enabled = $false }
       if ("$($cfg.InstallId)" -match '^[0-9a-fA-F-]{32,64}$') { $installId = "$($cfg.InstallId)" }
       if ("$($cfg.CreatedAt)") { $createdAt = "$($cfg.CreatedAt)" }
+      if ("$($cfg.DeviceToken)" -match '^v1\.') { $deviceToken = "$($cfg.DeviceToken)" }
+      try { $tokenExpiresAt = [long]$cfg.TokenExpiresAt } catch {}
       if ("$($cfg.ConfigTier)".ToLowerInvariant() -in 'baseline','light','balanced','full') {
         $current = "$($cfg.ConfigTier)".ToLowerInvariant()
       }
     }
     $rank = @{ baseline = 0; light = 1; balanced = 2; full = 3 }
     if (-not $Force -and $rank[$current] -gt $rank[$Tier]) { $Tier = $current }
-    $out = [ordered]@{ Enabled = $enabled; InstallId = $installId; CreatedAt = $createdAt; ConfigTier = $Tier }
-    [IO.File]::WriteAllText($path, ($out | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
-  } catch {}
+    $out = [ordered]@{
+      Enabled = $enabled; InstallId = $installId; CreatedAt = $createdAt; ConfigTier = $Tier
+      DeviceToken = $deviceToken; TokenExpiresAt = $tokenExpiresAt
+    }
+    if (Get-Command Write-DfbTelemetryConfigAtomic -ErrorAction SilentlyContinue) { Write-DfbTelemetryConfigAtomic $path $out }
+    else { [IO.File]::WriteAllText($path, ($out | ConvertTo-Json), (New-Object Text.UTF8Encoding($true))) }
+  } catch {} finally {
+    if ($locked) { try { $mutex.ReleaseMutex() } catch {} }
+    if ($mutex) { $mutex.Dispose() }
+  }
 }
 
 function Get-SelectedTelemetryConfigTier([int]$SelectedCount) {
-  if ($ui.PresetBox -and $ui.PresetBox.SelectedIndex -ge 0 -and
-      $ui.PresetBox.SelectedIndex -lt $script:PresetList.Count) {
-    $preset = $script:PresetList[$ui.PresetBox.SelectedIndex]
-    switch ("$($preset.Id)") {
-      'main' { return 'full' }
-      'balanced' { return 'balanced' }
-      'safe-only' { return 'light' }
-      default { $SelectedCount = @($preset.Items).Count }
-    }
-  }
   if ($SelectedCount -ge 21) { return 'full' }
   if ($SelectedCount -ge 10) { return 'balanced' }
   if ($SelectedCount -ge 1) { return 'light' }
@@ -1928,16 +2098,18 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
       ok         = [math]::Max(0, $Ok)
       failed     = [math]::Max(0, $Failed)
     }
+    if (-not (Get-Command Send-DfbTelemetryEvent -ErrorAction SilentlyContinue)) { return }
     $body = $payload | ConvertTo-Json -Compress
+    $configPath = Join-Path $script:UserConfigDir 'telemetry.json'
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript({
-      param($Url, $Body)
+      param($ModulePath, $Url, $Body, $ConfigPath)
       try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
-        Invoke-WebRequest -Uri $Url -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' `
-          -TimeoutSec 8 -UseBasicParsing | Out-Null
+        . $ModulePath
+        $payload = $Body | ConvertFrom-Json
+        Send-DfbTelemetryEvent -UploadUrl $Url -Payload $payload -ConfigPath $ConfigPath | Out-Null
       } catch {}
-    }).AddArgument($script:TelemetryUploadUrl).AddArgument($body)
+    }).AddArgument($script:TelemetryClientPath).AddArgument($script:TelemetryUploadUrl).AddArgument($body).AddArgument($configPath)
     $async = $ps.BeginInvoke()
     [void]$script:TelemetryJobs.Add([pscustomobject]@{ PowerShell = $ps; Async = $async })
   } catch {}
@@ -1950,153 +2122,272 @@ $script:MonitoredGamePids = @{}
 $script:PerformanceSampleSeconds = 120
 $script:PerformanceWarmupSeconds = 20
 
-function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
-  if ($GamePid -le 0 -or $script:MonitoredGamePids.ContainsKey($GamePid)) { return }
-  $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
-  if (-not (Test-Path -LiteralPath $presentMon)) {
-    Write-Log '性能记录未启动：缺少 tools\PresentMon.exe。'
-    return
+# Windows PowerShell 5.1 会把 ConvertFrom-Json 的顶层数组保留成单个管道对象。旧版连续
+# 写入第三段记录后，数组可能被序列化成带 value/Count 的嵌套包装；递归展开可兼容修复
+# 已经产生的本地文件，并让诊断报告始终拿到平坦的会话列表。
+function Expand-PerformanceSessions([object]$Value) {
+  foreach ($entry in @($Value)) {
+    if ($null -eq $entry) { continue }
+    if ($entry.PSObject.Properties['recordedAt']) { Write-Output $entry; continue }
+    $wrapped = $entry.PSObject.Properties['value']
+    if ($wrapped) { Expand-PerformanceSessions $wrapped.Value }
   }
-  $script:MonitoredGamePids[$GamePid] = $true
-  $installId = Get-TelemetryInstallId
-  $configTier = Get-TelemetryConfigTier
-  $sessionFile = Join-Path $script:RootDir 'config\performance-sessions.json'
-  $ps = [PowerShell]::Create()
-  [void]$ps.AddScript({
-    param($GamePid, $PresentMon, $SessionFile, $UploadUrl, $InstallId, $Version,
-          $GpuVendor, $GpuModel, $GpuVerified, $ConfigTier, $WarmupSeconds, $SampleSeconds)
-    $ErrorActionPreference = 'SilentlyContinue'
+}
 
-    function Get-Number([object]$Value) {
-      $n = 0.0
-      if ([double]::TryParse("$Value", [Globalization.NumberStyles]::Float,
-          [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) { return $n }
-      $null
-    }
-    function Get-Average($Values) {
-      $clean = @($Values | Where-Object { $null -ne $_ })
-      if (-not $clean.Count) { return 0.0 }
-      [math]::Round(($clean | Measure-Object -Average).Average, 1)
-    }
-    function Get-Maximum($Values) {
-      $clean = @($Values | Where-Object { $null -ne $_ })
-      if (-not $clean.Count) { return 0.0 }
-      [math]::Round(($clean | Measure-Object -Maximum).Maximum, 1)
-    }
+$script:PerformanceCaptureWorker = {
+  param($GamePid, $PresentMon, $SessionFile, $TelemetryModule, $TelemetryConfigPath,
+        $UploadUrl, $InstallId, $Version,
+        $GpuVendor, $GpuModel, $GpuVerified, $GpuPciLocation, $NvidiaSmi,
+        $ConfigTier, $WarmupSeconds, $SampleSeconds, $CaptureMode)
+  $ErrorActionPreference = 'SilentlyContinue'
 
-    # 避开启动加载期；若游戏提前退出就不生成空会话。
-    for ($i = 0; $i -lt $WarmupSeconds; $i++) {
-      if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { return }
-      Start-Sleep -Seconds 1
+  function Get-Number([object]$Value) {
+    $n = 0.0
+    if ([double]::TryParse("$Value", [Globalization.NumberStyles]::Float,
+        [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) { return $n }
+    $null
+  }
+  function Get-Average($Values) {
+    $clean = @($Values | Where-Object { $null -ne $_ })
+    if (-not $clean.Count) { return 0.0 }
+    [math]::Round(($clean | Measure-Object -Average).Average, 1)
+  }
+  function Get-Maximum($Values) {
+    $clean = @($Values | Where-Object { $null -ne $_ })
+    if (-not $clean.Count) { return 0.0 }
+    [math]::Round(($clean | Measure-Object -Maximum).Maximum, 1)
+  }
+  function Get-Median($Values) {
+    $clean = @($Values | ForEach-Object { [double]$_ } | Sort-Object)
+    if (-not $clean.Count) { return 0.0 }
+    $mid = [math]::Floor($clean.Count / 2)
+    if ($clean.Count % 2) { return [double]$clean[$mid] }
+    ([double]$clean[$mid - 1] + [double]$clean[$mid]) / 2.0
+  }
+  function Get-Percentile($Values, [double]$Fraction) {
+    $clean = @($Values | ForEach-Object { [double]$_ } | Sort-Object)
+    if (-not $clean.Count) { return 0.0 }
+    $index = [math]::Min($clean.Count - 1, [math]::Max(0, [math]::Ceiling($clean.Count * $Fraction) - 1))
+    [double]$clean[$index]
+  }
+  function Expand-PerformanceSessions([object]$Value) {
+    foreach ($entry in @($Value)) {
+      if ($null -eq $entry) { continue }
+      if ($entry.PSObject.Properties['recordedAt']) { Write-Output $entry; continue }
+      $wrapped = $entry.PSObject.Properties['value']
+      if ($wrapped) { Expand-PerformanceSessions $wrapped.Value }
     }
+  }
+  function New-FailedCapture([string]$Reason, [bool]$Exited) {
+    [pscustomobject][ordered]@{
+      recordedAt = [DateTime]::UtcNow.ToString('o'); startedAt = [DateTime]::UtcNow.ToString('o')
+      completedAt = [DateTime]::UtcNow.ToString('o'); durationSec = 0; frameCount = 0
+      gpuModel = "$GpuModel"; configTier = "$ConfigTier"; avgFps = 0.0; fps1Low = 0.0
+      p99FrameMs = 0.0; frameTimeMadMs = 0.0; stutter50Ms = 0; stutter100Ms = 0
+      stuttersPerMin = 0.0; focusLostSec = 0.0; gpuUtilAvg = 0.0; gpuUtilMax = 0.0
+      gpuTempAvg = 0.0; gpuTempMax = 0.0; gpuPowerAvg = 0.0; gpuPowerMax = 0.0
+      presentMonExitCode = -1; gameExitedEarly = [bool]$Exited; captureFailed = $true; captureError = $Reason
+    }
+  }
 
-    $tmp = Join-Path $env:TEMP "dfb-presentmon-$GamePid-$([guid]::NewGuid().ToString('N')).csv"
+  for ($i = 0; $i -lt $WarmupSeconds; $i++) {
+    if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) {
+      if ($CaptureMode -eq 'experiment') { New-FailedCapture '游戏在预热期退出' $true }
+      return
+    }
+    Start-Sleep -Seconds 1
+  }
+
+  $startedUtc = [DateTime]::UtcNow
+  $started = Get-Date
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) "dfb-presentmon-$GamePid-$([guid]::NewGuid().ToString('N')).csv"
+  try {
     $pm = Start-Process -FilePath $PresentMon -WindowStyle Hidden -PassThru -ArgumentList @(
       '--process_id', "$GamePid", '--output_file', "`"$tmp`"", '--timed', "$SampleSeconds",
       '--terminate_after_timed', '--terminate_on_proc_exit', '--no_console_stats',
-      '--session_name', "DFB-$GamePid")
-
-    $util = @(); $temp = @(); $power = @()
-    $started = Get-Date
-    while ($pm -and -not $pm.HasExited -and ((Get-Date) - $started).TotalSeconds -lt ($SampleSeconds + 15)) {
-      if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { break }
-      $sampled = $false
-      if ($GpuVendor -eq 'NVIDIA' -and (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) {
-        $raw = @(& nvidia-smi.exe '--query-gpu=utilization.gpu,temperature.gpu,power.draw' '--format=csv,noheader,nounits' 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $raw.Count) {
-          $parts = @("$($raw[0])" -split ',' | ForEach-Object { $_.Trim() })
-          if ($parts.Count -ge 3) {
-            $u = Get-Number $parts[0]; $t = Get-Number $parts[1]; $w = Get-Number $parts[2]
-            if ($null -ne $u) { $util += $u; $sampled = $true }
-            if ($null -ne $t) { $temp += $t }
-            if ($null -ne $w) { $power += $w }
-          }
-        }
-      }
-      # AMD / Intel 或 nvidia-smi 不可用时，退回 Windows GPU Engine 计数器。
-      if (-not $sampled) {
-        $counters = @(Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples |
-          Where-Object { $_.InstanceName -match "pid_$($GamePid)_" -and $_.InstanceName -match 'engtype_3D' }
-        if ($counters.Count) {
-          $sum = [math]::Min(100.0, [double](($counters | Measure-Object CookedValue -Sum).Sum))
-          $util += $sum
-        }
-      }
-      Start-Sleep -Seconds 2
-      try { $pm.Refresh() } catch {}
-    }
-    if ($pm -and -not $pm.HasExited) { try { $pm.Kill() } catch {} }
-    if ($pm) { try { $pm.WaitForExit(5000) | Out-Null } catch {} }
-
-    $frameMs = New-Object 'System.Collections.Generic.List[double]'
-    if (Test-Path -LiteralPath $tmp) {
-      try {
-        foreach ($row in @(Import-Csv -LiteralPath $tmp)) {
-          $ms = Get-Number $row.MsBetweenPresents
-          if ($null -ne $ms -and $ms -gt 0 -and $ms -le 1000) { $frameMs.Add([double]$ms) }
-        }
-      } catch {}
-      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-    }
-    $avgFps = 0.0; $fps1Low = 0.0
-    if ($frameMs.Count -ge 30) {
-      $avgMs = ($frameMs | Measure-Object -Average).Average
-      if ($avgMs -gt 0) { $avgFps = [math]::Round(1000.0 / $avgMs, 1) }
-      $fps = @($frameMs | ForEach-Object { 1000.0 / $_ } | Sort-Object)
-      $idx = [math]::Max(0, [math]::Floor(($fps.Count - 1) * 0.01))
-      $fps1Low = [math]::Round($fps[$idx], 1)
-    }
-
-    $session = [ordered]@{
-      recordedAt = (Get-Date).ToUniversalTime().ToString('o')
-      durationSec = [math]::Min($SampleSeconds, [math]::Round(((Get-Date) - $started).TotalSeconds))
-      gpuModel = "$GpuModel"
-      configTier = "$ConfigTier"
-      avgFps = $avgFps; fps1Low = $fps1Low
-      gpuUtilAvg = Get-Average $util; gpuUtilMax = Get-Maximum $util
-      gpuTempAvg = Get-Average $temp; gpuTempMax = Get-Maximum $temp
-      gpuPowerAvg = Get-Average $power; gpuPowerMax = Get-Maximum $power
-    }
-    if ($session.avgFps -le 0 -and $session.gpuUtilAvg -le 0) { return }
-
-    # 本地只保留最近 50 段汇总，诊断报告可直接带上；不保留逐帧 CSV。
-    try {
-      $dir = Split-Path -Parent $SessionFile
-      if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-      $old = @()
-      if (Test-Path -LiteralPath $SessionFile) { $old = @(Get-Content -LiteralPath $SessionFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
-      $all = @($old) + [pscustomobject]$session
-      if ($all.Count -gt 50) { $all = @($all | Select-Object -Last 50) }
-      [IO.File]::WriteAllText($SessionFile, ($all | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($true)))
-    } catch {}
-
-    # 真实型号未通过驱动验证时只留本地，不把可能仍受 DeviceDesc 伪装影响的名称送上榜。
-    if ($InstallId -and $GpuVerified) {
-      try {
-        $payload = [ordered]@{
-          installId = $InstallId; event = 'performance'; version = $Version
-          gpuVendor = $GpuVendor; gpuModel = $GpuModel; gpuModelVerified = [bool]$GpuVerified
-          configTier = $ConfigTier
-          durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
-          gpuUtilAvg = $session.gpuUtilAvg; gpuUtilMax = $session.gpuUtilMax
-          gpuTempAvg = $session.gpuTempAvg; gpuTempMax = $session.gpuTempMax
-          gpuPowerAvg = $session.gpuPowerAvg; gpuPowerMax = $session.gpuPowerMax
-        }
-        $body = [Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress))
-        Invoke-WebRequest -Uri $UploadUrl -Method Post -Body $body -ContentType 'application/json; charset=utf-8' `
-          -TimeoutSec 8 -UseBasicParsing | Out-Null
-      } catch {}
-    }
-  })
-  foreach ($arg in @($GamePid, $presentMon, $sessionFile, $script:TelemetryUploadUrl, $installId,
-                      $script:GuiVersion, "$($Hw.MainGpuVendor)", "$($Hw.MainGpuName)",
-                      [bool]$Hw.MainGpuNameVerified, $configTier, $script:PerformanceWarmupSeconds,
-                      $script:PerformanceSampleSeconds)) {
-    [void]$ps.AddArgument($arg)
+      '--session_name', "DFB-$GamePid-$([guid]::NewGuid().ToString('N'))")
+  } catch {
+    if ($CaptureMode -eq 'experiment') { New-FailedCapture "PresentMon 启动失败：$($_.Exception.Message)" $false }
+    return
   }
+
+  try {
+    if (-not ('DfbForegroundWindow' -as [type])) {
+      Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class DfbForegroundWindow {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+'@
+    }
+  } catch {}
+
+  $util = @(); $temp = @(); $power = @(); $focusLostSec = 0.0
+  $gameExitedEarly = $false; $lastLoop = Get-Date
+  while ($pm -and -not $pm.HasExited -and ((Get-Date) - $started).TotalSeconds -lt ($SampleSeconds + 15)) {
+    $now = Get-Date; $elapsed = [math]::Max(0, ($now - $lastLoop).TotalSeconds); $lastLoop = $now
+    if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { $gameExitedEarly = $true; break }
+    try {
+      [uint32]$foregroundPid = 0
+      [void][DfbForegroundWindow]::GetWindowThreadProcessId([DfbForegroundWindow]::GetForegroundWindow(), [ref]$foregroundPid)
+      if ([int]$foregroundPid -ne $GamePid) { $focusLostSec += $elapsed }
+    } catch {}
+    $sampled = $false
+    if ($GpuVendor -eq 'NVIDIA' -and $NvidiaSmi -and (Test-Path -LiteralPath $NvidiaSmi -PathType Leaf)) {
+      $raw = @(& $NvidiaSmi '--query-gpu=pci.bus_id,utilization.gpu,temperature.gpu,power.draw' '--format=csv,noheader,nounits' 2>$null)
+      if ($LASTEXITCODE -eq 0 -and $raw.Count) {
+        $parts = $null
+        foreach ($line in $raw) {
+          $candidate = @("$line" -split ',' | ForEach-Object { $_.Trim() })
+          if ($candidate.Count -lt 4 -or $candidate[0] -notmatch '(?:[0-9A-Fa-f]{4,8}:)?([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-7])$') { continue }
+          $key = ('{0}:{1}:{2}' -f [Convert]::ToUInt32($Matches[1],16),
+                  [Convert]::ToUInt32($Matches[2],16),[Convert]::ToUInt32($Matches[3],16))
+          if ($GpuPciLocation -and $key -eq $GpuPciLocation) { $parts = $candidate; break }
+        }
+        if (-not $parts -and -not $GpuPciLocation -and $raw.Count -eq 1) {
+          $parts = @("$($raw[0])" -split ',' | ForEach-Object { $_.Trim() })
+        }
+        if ($parts -and $parts.Count -ge 4) {
+          $u = Get-Number $parts[1]; $t = Get-Number $parts[2]; $w = Get-Number $parts[3]
+          if ($null -ne $u) { $util += $u; $sampled = $true }
+          if ($null -ne $t) { $temp += $t }
+          if ($null -ne $w) { $power += $w }
+        }
+      }
+    }
+    if (-not $sampled) {
+      $counters = @(Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples |
+        Where-Object { $_.InstanceName -match "pid_$($GamePid)_" -and $_.InstanceName -match 'engtype_3D' }
+      if ($counters.Count) { $util += [math]::Min(100.0, [double](($counters | Measure-Object CookedValue -Sum).Sum)) }
+    }
+    Start-Sleep -Seconds 2
+    try { $pm.Refresh() } catch {}
+  }
+  if ($pm -and -not $pm.HasExited) { try { $pm.Kill() } catch {} }
+  if ($pm) { try { $pm.WaitForExit(5000) | Out-Null } catch {} }
+  $presentMonExitCode = $(if ($pm -and $pm.HasExited) { [int]$pm.ExitCode } else { -1 })
+
+  $frameMs = New-Object 'System.Collections.Generic.List[double]'
+  if (Test-Path -LiteralPath $tmp) {
+    try {
+      foreach ($row in @(Import-Csv -LiteralPath $tmp)) {
+        $ms = Get-Number $row.MsBetweenPresents
+        if ($null -ne $ms -and $ms -gt 0 -and $ms -le 1000) { $frameMs.Add([double]$ms) }
+      }
+    } catch {}
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+  }
+  $completedUtc = [DateTime]::UtcNow
+  $durationSec = [math]::Min($SampleSeconds, [math]::Round(((Get-Date) - $started).TotalSeconds))
+  if ($durationSec -lt ($SampleSeconds - 5) -and -not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { $gameExitedEarly = $true }
+  $avgFps = 0.0; $fps1Low = 0.0; $p99 = 0.0; $mad = 0.0
+  if ($frameMs.Count -ge 30) {
+    $avgMs = ($frameMs | Measure-Object -Average).Average
+    if ($avgMs -gt 0) { $avgFps = [math]::Round(1000.0 / $avgMs, 1) }
+    # 1% 低帧率 = 最慢 1% 帧的平均帧时间所对应帧率。
+    $slowCount = [math]::Max(1, [math]::Ceiling($frameMs.Count * 0.01))
+    $avgSlowMs = (@($frameMs | Sort-Object -Descending | Select-Object -First $slowCount) | Measure-Object -Average).Average
+    if ($avgSlowMs -gt 0) { $fps1Low = [math]::Round(1000.0 / $avgSlowMs, 1) }
+    $p99 = [math]::Round((Get-Percentile $frameMs 0.99), 2)
+    $median = Get-Median $frameMs
+    $mad = [math]::Round((Get-Median @($frameMs | ForEach-Object { [math]::Abs([double]$_ - $median) })), 2)
+  }
+  $stutter50 = @($frameMs | Where-Object { $_ -gt 50 }).Count
+  $stutter100 = @($frameMs | Where-Object { $_ -gt 100 }).Count
+  $session = [pscustomobject][ordered]@{
+    recordedAt = $completedUtc.ToString('o'); startedAt = $startedUtc.ToString('o'); completedAt = $completedUtc.ToString('o')
+    durationSec = [int]$durationSec; frameCount = [int]$frameMs.Count
+    gpuModel = "$GpuModel"; configTier = "$ConfigTier"; avgFps = $avgFps; fps1Low = $fps1Low
+    p99FrameMs = $p99; frameTimeMadMs = $mad; stutter50Ms = [int]$stutter50; stutter100Ms = [int]$stutter100
+    stuttersPerMin = $(if ($durationSec -gt 0) { [math]::Round($stutter50 * 60.0 / $durationSec, 2) } else { 0.0 })
+    focusLostSec = [math]::Round($focusLostSec, 1)
+    gpuUtilAvg = Get-Average $util; gpuUtilMax = Get-Maximum $util
+    gpuTempAvg = Get-Average $temp; gpuTempMax = Get-Maximum $temp
+    gpuPowerAvg = Get-Average $power; gpuPowerMax = Get-Maximum $power
+    presentMonExitCode = $presentMonExitCode; gameExitedEarly = [bool]$gameExitedEarly
+    captureFailed = [bool]($frameMs.Count -eq 0 -or $presentMonExitCode -ne 0)
+    captureError = $(if ($frameMs.Count -eq 0) { 'PresentMon 未返回帧数据' } elseif ($presentMonExitCode -ne 0) { "PresentMon 退出码 $presentMonExitCode" } else { '' })
+  }
+
+  # Beta 返回显式结果，不写普通 performance_sessions，也不发 performance 事件。
+  if ($CaptureMode -eq 'experiment') { Write-Output $session; return }
+  if ($session.avgFps -le 0 -and $session.gpuUtilAvg -le 0) { return }
+
+  $sessionMutex = $null; $sessionLocked = $false; $sessionTemp = $null; $sessionBackup = $null
+  try {
+    $sessionMutex = New-Object Threading.Mutex($false, 'Local\DeltaForceBooster.PerformanceSessions')
+    $sessionLocked = $sessionMutex.WaitOne([TimeSpan]::FromSeconds(10))
+    if (-not $sessionLocked) { throw '性能记录文件正忙' }
+    $dir = Split-Path -Parent $SessionFile
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $old = @()
+    if (Test-Path -LiteralPath $SessionFile) {
+      $decoded = Get-Content -LiteralPath $SessionFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      $old = @(Expand-PerformanceSessions $decoded)
+    }
+    $all = @($old) + $session
+    if ($all.Count -gt 50) { $all = @($all | Select-Object -Last 50) }
+    $bytes = (New-Object Text.UTF8Encoding($true)).GetBytes((ConvertTo-Json -InputObject $all -Depth 5))
+    $sessionTemp = Join-Path $dir ('.performance-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $stream = New-Object IO.FileStream($sessionTemp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+                                      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    $sessionBackup = Join-Path $dir ('.performance-' + [guid]::NewGuid().ToString('N') + '.bak')
+    if (Test-Path -LiteralPath $SessionFile) { [IO.File]::Replace($sessionTemp, $SessionFile, $sessionBackup, $true) }
+    else { [IO.File]::Move($sessionTemp, $SessionFile) }
+    $sessionTemp = $null
+  } catch {} finally {
+    if ($sessionTemp -and (Test-Path -LiteralPath $sessionTemp)) { Remove-Item -LiteralPath $sessionTemp -Force -ErrorAction SilentlyContinue }
+    if ($sessionBackup -and (Test-Path -LiteralPath $sessionBackup)) { Remove-Item -LiteralPath $sessionBackup -Force -ErrorAction SilentlyContinue }
+    if ($sessionLocked) { try { $sessionMutex.ReleaseMutex() } catch {} }
+    if ($sessionMutex) { $sessionMutex.Dispose() }
+  }
+
+  if ($InstallId -and $GpuVerified) {
+    try {
+      $payload = [ordered]@{
+        installId = $InstallId; event = 'performance'; version = $Version
+        gpuVendor = $GpuVendor; gpuModel = $GpuModel; gpuModelVerified = [bool]$GpuVerified
+        configTier = $ConfigTier; durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
+        gpuUtilAvg = $session.gpuUtilAvg; gpuUtilMax = $session.gpuUtilMax
+        gpuTempAvg = $session.gpuTempAvg; gpuTempMax = $session.gpuTempMax
+        gpuPowerAvg = $session.gpuPowerAvg; gpuPowerMax = $session.gpuPowerMax
+      }
+      . $TelemetryModule
+      Send-DfbTelemetryEvent -UploadUrl $UploadUrl -Payload ([pscustomobject]$payload) -ConfigPath $TelemetryConfigPath | Out-Null
+    } catch {}
+  }
+  Write-Output $session
+}
+
+function Add-PerformanceWorkerArguments($PowerShell, [int]$GamePid, $Hw, [string]$Mode, [int]$WarmupSeconds) {
+  $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
+  $nvidiaSmi = $(if ($Hw.MainGpuVendor -eq 'NVIDIA') { Get-NvidiaSmiPath } else { $null })
+  foreach ($arg in @($GamePid, $presentMon, (Join-Path $script:UserConfigDir 'performance-sessions.json'),
+                      $script:TelemetryClientPath, (Join-Path $script:UserConfigDir 'telemetry.json'),
+                      $script:TelemetryUploadUrl, (Get-TelemetryInstallId), $script:GuiVersion,
+                      "$($Hw.MainGpuVendor)", "$($Hw.MainGpuName)", [bool]$Hw.MainGpuNameVerified,
+                      "$($Hw.MainGpuPciLocation)", "$nvidiaSmi", (Get-TelemetryConfigTier),
+                      $WarmupSeconds, $script:PerformanceSampleSeconds, $Mode)) {
+    [void]$PowerShell.AddArgument($arg)
+  }
+}
+
+function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
+  if ($GamePid -le 0 -or $script:MonitoredGamePids.ContainsKey($GamePid) -or (Test-TuningExperimentActive)) { return }
+  $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
+  if (-not (Test-Path -LiteralPath $presentMon -PathType Leaf)) {
+    Write-Log '性能记录未启动：缺少 tools\PresentMon.exe。'; return
+  }
+  $script:MonitoredGamePids[$GamePid] = $true
+  $ps = [PowerShell]::Create()
+  [void]$ps.AddScript($script:PerformanceCaptureWorker)
+  Add-PerformanceWorkerArguments $ps $GamePid $Hw 'ordinary' $script:PerformanceWarmupSeconds
   $async = $ps.BeginInvoke()
   [void]$script:PerformanceJobs.Add([pscustomobject]@{ PowerShell = $ps; Async = $async; Pid = $GamePid })
-  Write-Log "检测到游戏进程 PID $GamePid：将在启动稳定后记录 120 秒 FPS / GPU 性能汇总。"
+  Write-Log "检测到游戏进程 PID $GamePid：将在启动稳定后记录 120 秒帧率 / GPU 性能汇总。"
 }
 
 function Poll-GamePerformanceCapture {
@@ -2107,10 +2398,1083 @@ function Poll-GamePerformanceCapture {
     $script:PerformanceJobs.Remove($job) | Out-Null
     Write-Log "游戏性能记录已完成（PID $($job.Pid)），汇总已保存到本地并按隐私设置匿名上报。"
   }
-  if (-not $script:TargetExe) { return }
+  # 实验期间同一 PID 要顺序采多轮，普通“每 PID 一次”的采样必须暂停，
+  # 否则会抢 PresentMon 会话并把实验轮次写入普通 performance_sessions。
+  if ((Test-TuningExperimentActive) -or $script:TuningSampling -or -not $script:TargetExe) { return }
   $name = [IO.Path]::GetFileNameWithoutExtension($script:TargetExe)
   foreach ($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
     Start-GamePerformanceCapture $proc.Id $script:HardwareInfo
+  }
+}
+
+# ---------- 自动寻找最佳配置 Beta（个体内确定性规则实验） ----------
+
+$script:TuningExperimentDir = Join-Path $script:UserConfigDir 'experiments'
+$script:TuningActivePointer = Join-Path $script:TuningExperimentDir 'active-experiment.json'
+$script:ActiveTuningExperiment = $null
+$script:ActiveTuningStatePath = $null
+$script:TuningSampling = $false
+$script:TuningConfigGeneration = 0
+
+function Test-AllowedGameExecutable([string]$Path) {
+  if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+  [IO.Path]::GetFileName($Path) -in 'DeltaForceClient-Win64-Shipping.exe','DeltaForce.exe'
+}
+
+function Test-TuningBackupReference([string]$Path) {
+  try {
+    if (-not $Path) { return $false }
+    $root = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'DeltaForceBooster\backup'
+    $full = [IO.Path]::GetFullPath($Path); $prefix = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    $full.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and
+      [IO.Path]::GetFileName($full) -match '^backup-[0-9a-fA-F-]{36}(?:\.pending)?\.json$'
+  } catch { $false }
+}
+
+function Add-TuningStateProperty($Object, [string]$Name, $Value) {
+  if (-not $Object.PSObject.Properties[$Name]) { $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value }
+}
+
+function Initialize-TuningGuiStateFields($State) {
+  Add-TuningStateProperty $State 'phase' 'baseline'
+  Add-TuningStateProperty $State 'gamePath' ''
+  Add-TuningStateProperty $State 'configGeneration' 0
+  Add-TuningStateProperty $State 'pendingActionId' ''
+  Add-TuningStateProperty $State 'pendingResumePhase' ''
+  Add-TuningStateProperty $State 'pendingTuningCommit' $null
+  Add-TuningStateProperty $State 'initialBaselineRunIds' @()
+  Add-TuningStateProperty $State 'finalRunIds' @()
+  Add-TuningStateProperty $State 'finalComparison' $null
+  Add-TuningStateProperty $State 'groupRestartAfter' ''
+  Add-TuningStateProperty $State 'lastMessage' ''
+  foreach ($candidate in @($State.candidates)) {
+    Add-TuningStateProperty $candidate 'controlRunIds' @()
+    Add-TuningStateProperty $candidate 'candidateRunIds' @()
+    Add-TuningStateProperty $candidate 'extraAttempted' $false
+    Add-TuningStateProperty $candidate 'controlVariantId' ''
+  }
+  $State
+}
+
+function Assert-TuningGuiState($State) {
+  [void](Assert-TuningExperimentState $State)
+  [void](Initialize-TuningGuiStateFields $State)
+  $allowedPhases = @('baseline','group_control_pre','group_apply_b1','group_capture_b1','group_rollback_a',
+    'group_capture_a','group_apply_b2','group_capture_b2','group_rollback_extra_a','group_capture_extra_a',
+    'group_apply_extra_b','group_capture_extra_b','final_capture','applying','rolling_back','completed','failed')
+  if ("$($State.phase)" -notin $allowedPhases) { throw '实验阶段无效' }
+  if (-not (Test-AllowedGameExecutable "$($State.gamePath)")) { throw '实验绑定的游戏路径无效' }
+  if ([int64]$State.configGeneration -lt 0) { throw '实验配置代次无效' }
+  if (-not [bool]$State.allowHigherPower -and [double]$State.maxPowerIncreasePct -ne 0) { throw '不允许更高功耗时，功耗增幅必须为 0' }
+  if ($State.pendingActionId -and "$($State.pendingActionId)" -notmatch '^[0-9a-fA-F-]{36}$') { throw '实验动作 ID 无效' }
+  if (@($State.runs).Count -gt 300) { throw '实验运行记录过多' }
+  foreach ($candidate in @($State.candidates)) {
+    $allowedControlVariants = @('') + @('baseline') + @($State.candidates | ForEach-Object { "$($_.variantId)" })
+    if ("$($candidate.controlVariantId)" -notin $allowedControlVariants) { throw '候选组对照方案 ID 无效' }
+    if ($candidate.activeBackup -and -not (Test-TuningBackupReference "$($candidate.activeBackup)")) { throw '候选组备份引用无效' }
+    foreach ($backup in @($candidate.appliedBackups)) {
+      if (-not (Test-TuningBackupReference "$backup")) { throw '候选组备份列表无效' }
+    }
+    foreach ($rid in @($candidate.controlRunIds) + @($candidate.candidateRunIds)) {
+      if ("$rid" -notmatch '^run_[0-9a-f]{32}$' -or -not @($State.runs | Where-Object runId -eq "$rid").Count) {
+        throw '候选组运行引用无效'
+      }
+    }
+  }
+  if($State.pendingTuningCommit -and $State.pendingTuningCommit.payload){
+    if(-not (Get-Command Get-DfbTuningPayloadInfo -ErrorAction SilentlyContinue)){throw '缺少待提交遥测严格校验器'}
+    $pending=$State.pendingTuningCommit;$info=Get-DfbTuningPayloadInfo $pending.payload
+    if("$($info.ExperimentId)" -ne "$($State.experimentId)" -or "$($info.TuningType)" -ne "$($pending.telemetryType)"){
+      throw '待提交遥测归属无效'
+    }
+    if("$($pending.kind)" -eq 'run'){
+      $run=@($State.runs|Where-Object runId -eq "$($pending.entityId)")[0]
+      if("$($pending.payload.runId)" -ne (ConvertTo-TuningWireRunId $State "$($pending.entityId)") -or
+          "$($pending.payload.variantId)" -ne (ConvertTo-TuningWireVariantId $State "$($run.variantId)")){throw '待提交运行遥测业务 ID 无效'}
+      foreach($name in 'runNo','sequenceNo','durationSec','stutter50Ms','stutter100Ms'){
+        if([int64]$pending.payload.$name -ne [int64]$run.$name){throw "待提交运行遥测字段不一致：$name"}
+      }
+      foreach($name in 'avgFps','fps1Low','p99FrameMs','gpuUtilAvg','gpuTempAvg','gpuPowerAvg'){
+        if([double]$pending.payload.$name -ne [double]$run.$name){throw "待提交运行遥测字段不一致：$name"}
+      }
+      foreach($name in 'validity','invalidReason','settingsHash','environmentHash'){
+        if("$($pending.payload.$name)" -cne "$($run.$name)"){throw "待提交运行遥测字段不一致：$name"}
+      }
+      if($pending.payload.orderControlled -isnot [bool] -or [bool]$pending.payload.orderControlled -ne [bool]$run.orderControlled){throw '待提交运行顺序控制标记不一致'}
+    }else{
+      $idx=[int]$pending.candidateIndex;$candidate=$State.candidates[$idx];$library=Get-TuningCandidate "$($candidate.groupId)"
+      $groups=@($State.candidates|Select-Object -First $idx|Where-Object result -eq 'win'|ForEach-Object{"$($_.groupId)"})+@("$($candidate.groupId)")
+      $ids=@($groups|ForEach-Object{@((Get-TuningCandidate "$_").ItemIds)}|ForEach-Object{"$_".ToLowerInvariant()}|Sort-Object -Unique)
+      $expectedApply=$(if("$($pending.outcome)" -eq 'succeeded'){'succeeded'}else{'failed'})
+      if("$($pending.payload.variantId)" -ne (ConvertTo-TuningWireVariantId $State "$($pending.entityId)") -or
+          "$($pending.payload.controlVariantId)" -ne (ConvertTo-TuningWireVariantId $State "$($candidate.controlVariantId)") -or
+          "$($pending.payload.groupId)" -ne "$($candidate.groupId)" -or [int]$pending.payload.sequenceNo -ne [int]$candidate.sequenceNo -or
+          "$($pending.payload.applyResult)" -ne $expectedApply -or "$($pending.payload.status)" -ne $(if($expectedApply -eq 'succeeded'){'variant_applied'}else{'apply_failed'}) -or
+          "$($pending.payload.itemSetHash)" -ne (Get-TuningItemSetHash $ids) -or (@($pending.payload.itemIds) -join ',') -cne ($ids -join ',') -or
+          "$($pending.payload.source)" -ne "$($library.Source)" -or "$($pending.payload.riskLevel)" -ne "$($library.RiskLevel)" -or
+          [bool]$pending.payload.requiresReboot -ne [bool]$library.RequiresReboot -or [int]$pending.payload.skippedCount -ne 0 -or
+          [int]$pending.payload.appliedCount -ne $(if($expectedApply -eq 'succeeded'){$ids.Count}else{0}) -or
+          [int]$pending.payload.failedCount -ne $(if($expectedApply -eq 'failed'){$ids.Count}else{0})){
+        throw '待提交候选遥测与本地执行结果不一致'
+      }
+    }
+  }
+  $true
+}
+
+function Write-TuningPointerAtomic([string]$ExperimentId) {
+  if ($ExperimentId -notmatch '^exp_[0-9a-f]{32}$') { throw '实验 ID 无效' }
+  if (-not (Test-Path -LiteralPath $script:TuningExperimentDir)) {
+    [void][IO.Directory]::CreateDirectory($script:TuningExperimentDir)
+  }
+  $tmp = Join-Path $script:TuningExperimentDir ('.active-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $json = [pscustomobject][ordered]@{ schemaVersion = 1; experimentId = $ExperimentId } | ConvertTo-Json -Compress
+  $bytes = (New-Object Text.UTF8Encoding($true)).GetBytes($json)
+  $stream = New-Object IO.FileStream($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+  try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+  $backup = Join-Path $script:TuningExperimentDir ('.active-' + [guid]::NewGuid().ToString('N') + '.bak')
+  try {
+    if (Test-Path -LiteralPath $script:TuningActivePointer) { [IO.File]::Replace($tmp,$script:TuningActivePointer,$backup,$true) }
+    else { [IO.File]::Move($tmp,$script:TuningActivePointer) }
+  } finally {
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+function Read-TuningPointerStrict {
+  if (-not (Test-Path -LiteralPath $script:TuningActivePointer -PathType Leaf)) { return $null }
+  $file = Get-Item -LiteralPath $script:TuningActivePointer -Force
+  if ($file.Length -gt 1024 -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '活动实验指针无效' }
+  $pointer = Get-Content -LiteralPath $script:TuningActivePointer -Raw -Encoding UTF8 | ConvertFrom-Json
+  $names = @($pointer.PSObject.Properties.Name | Sort-Object)
+  if ($names.Count -ne 2 -or ($names -join ',') -ne 'experimentId,schemaVersion' -or
+      [int]$pointer.schemaVersion -ne 1 -or "$($pointer.experimentId)" -notmatch '^exp_[0-9a-f]{32}$') {
+    throw '活动实验指针格式无效'
+  }
+  "$($pointer.experimentId)"
+}
+
+function Clear-TuningPointer {
+  if (Test-Path -LiteralPath $script:TuningActivePointer -PathType Leaf) {
+    Remove-Item -LiteralPath $script:TuningActivePointer -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Test-TuningExperimentActive {
+  $script:ActiveTuningExperiment -and "$($script:ActiveTuningExperiment.status)" -notin 'completed','rolled_back','cancelled','failed'
+}
+
+function Save-TuningExperiment([switch]$Terminal) {
+  if (-not $script:ActiveTuningExperiment) { return }
+  [void](Assert-TuningGuiState $script:ActiveTuningExperiment)
+  if (-not $script:ActiveTuningStatePath) {
+    $script:ActiveTuningStatePath = Join-Path $script:TuningExperimentDir ("$($script:ActiveTuningExperiment.experimentId).json")
+  }
+  Write-TuningStateAtomic $script:ActiveTuningStatePath $script:ActiveTuningExperiment | Out-Null
+  if ($Terminal) { Clear-TuningPointer }
+  else {
+    $currentPointer=$null
+    try{$currentPointer=Read-TuningPointerStrict}catch{}
+    if("$currentPointer" -ne "$($script:ActiveTuningExperiment.experimentId)"){
+      Write-TuningPointerAtomic "$($script:ActiveTuningExperiment.experimentId)"
+    }
+  }
+}
+
+function Get-TuningDisplayMode {
+  $width = [int][Windows.SystemParameters]::PrimaryScreenWidth
+  $height = [int][Windows.SystemParameters]::PrimaryScreenHeight
+  $refresh = 0
+  try {
+    $vc = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object {
+      $_.CurrentHorizontalResolution -eq $width -and $_.CurrentVerticalResolution -eq $height
+    } | Select-Object -First 1)
+    if ($vc) { $refresh = [int]$vc.CurrentRefreshRate }
+  } catch {}
+  "${width}x${height}@$refresh"
+}
+
+function Get-TuningEnvironmentSnapshot([string]$SceneId) {
+  if (-not (Test-AllowedGameExecutable $script:TargetExe)) { throw '请先定位有效的三角洲行动主程序' }
+  $gpu = @($script:HardwareInfo.Gpus | Where-Object Name -eq "$($script:HardwareInfo.MainGpuName)" | Select-Object -First 1)
+  $driver = $(if ($gpu) { "$($gpu.Driver)" } else { '' })
+  $gameVersion = ''
+  try { $gameVersion = "$((Get-Item -LiteralPath $script:TargetExe -Force).VersionInfo.FileVersion)" } catch {}
+  [pscustomobject][ordered]@{
+    appVersion = "$script:GuiVersion"
+    windowsBuild = "$($script:HardwareInfo.Build)"
+    gpuModel = "$($script:HardwareInfo.MainGpuName)"
+    driverVersion = $driver
+    gameVersion = $gameVersion
+    displayMode = Get-TuningDisplayMode
+    sceneId = "$SceneId".Trim()
+  }
+}
+
+function Get-TuningSettingsHash {
+  $parts = New-Object System.Collections.Generic.List[string]
+  [void]$parts.Add("game=$([IO.Path]::GetFullPath($script:TargetExe).ToLowerInvariant())")
+  foreach ($candidate in @(Get-TuningCandidateLibrary)) {
+    $actual = @(Get-OptItems $script:TargetExe | Where-Object { $candidate.ItemIds -contains $_.Id })
+    foreach ($item in @($actual | Sort-Object Id)) {
+      $state = Get-ItemState $item
+      [void]$parts.Add("$($item.Id)=$([bool]$state.Ok):$($state.Text)")
+    }
+  }
+  Get-TuningSha256 ($parts -join "`n")
+}
+
+function Find-TuningGameProcess {
+  if (-not (Test-AllowedGameExecutable $script:TargetExe)) { return $null }
+  $full = [IO.Path]::GetFullPath($script:TargetExe)
+  $name = [IO.Path]::GetFileNameWithoutExtension($full)
+  foreach ($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending)) {
+    try { if ([IO.Path]::GetFullPath($proc.Path) -ieq $full) { return $proc } } catch {}
+  }
+  $null
+}
+
+function ConvertTo-TuningWireVariantId($State,[string]$LocalVariantId) {
+  if("$($State.experimentId)" -notmatch '^exp_[0-9a-f]{32}$' -or $LocalVariantId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$') {
+    throw '实验或本地方案 ID 无效'
+  }
+  $suffix='baseline'
+  if($LocalVariantId -ne 'baseline'){
+    $candidateMatches=@($State.candidates|Where-Object{"$($_.variantId)" -eq $LocalVariantId -or "$($_.groupId)" -eq $LocalVariantId})
+    if($candidateMatches.Count -ne 1 -or "$($candidateMatches[0].groupId)" -notmatch '^G[123]$'){throw '本地方案没有对应的受信候选组'}
+    $suffix="$($candidateMatches[0].groupId)"
+  }
+  "$($State.experimentId).$suffix"
+}
+
+function ConvertTo-TuningWireRunId($State,[string]$LocalRunId) {
+  if("$($State.experimentId)" -notmatch '^exp_[0-9a-f]{32}$' -or $LocalRunId -notmatch '^run_[0-9a-f]{32}$') {
+    throw '实验或本地运行 ID 无效'
+  }
+  "$($State.experimentId).$LocalRunId"
+}
+
+function Get-TuningWireItemIds($State,$Candidate) {
+  if(-not $Candidate -or "$($Candidate.groupId)" -notmatch '^G[123]$'){throw '候选组无效'}
+  $expectedControl=$(if(@($State.currentBestGroups).Count){"$((Get-TuningCandidate "$(@($State.currentBestGroups)[-1])").VariantId)"}else{'baseline'})
+  if("$($Candidate.controlVariantId)" -ne $expectedControl){throw '候选组的对照方案与当前保留组合不一致'}
+  $groups=@($State.currentBestGroups)+@("$($Candidate.groupId)")
+  if(@($groups|Select-Object -Unique).Count -ne $groups.Count){throw '候选组与已保留组重复'}
+  @($groups|ForEach-Object{@((Get-TuningCandidate "$_").ItemIds)}|ForEach-Object{"$_".ToLowerInvariant()}|Sort-Object -Unique)
+}
+
+function New-TuningTelemetryPayload {
+  param([Parameter(Mandatory)][ValidateSet('experiment_started','variant_applied','run_completed','experiment_completed')][string]$TuningType,
+        [Parameter(Mandatory)]$State, $Candidate, $Run, $Result, [string]$InstallId = '00000000-0000-0000-0000-000000000000', $Hw = $script:HardwareInfo)
+  $payload = [ordered]@{
+    installId=$InstallId;event='tuning';version="$script:GuiVersion";os="$($Hw.OS)";build="$($Hw.Build)";cpu="$($Hw.CPU)"
+    gpuVendor="$($Hw.MainGpuVendor)";gpuModel="$($Hw.MainGpuName)";gpuModelVerified=[bool]$Hw.MainGpuNameVerified
+    ramGb=[double]$Hw.RamGB;deviceType=$(if($Hw.IsLaptop){'laptop'}else{'desktop'})
+    tuningType=$TuningType;experimentId="$($State.experimentId)"
+  }
+  switch($TuningType){
+    'experiment_started'{
+      # 初始事件采用固定状态，便于“状态先落盘、入队前崩溃”后从已推进的实验状态
+      # 重建完全相同的 business payload，并复用 outbox 中的稳定 eventId。
+      $payload.status='baseline_pending';$payload.goal="$($State.goal)";$payload.riskLevel="$($State.riskLevel)"
+      $payload.allowReboot=[bool]$State.allowReboot;$payload.allowHigherPower=[bool]$State.allowHigherPower
+      $payload.maxTempIncreaseC=[double]$State.maxTempIncreaseC;$payload.maxPowerIncreasePct=[double]$State.maxPowerIncreasePct
+      $payload.gameVersion="$($State.environment.gameVersion)";$payload.driverVersion="$($State.environment.driverVersion)"
+      $payload.libraryVersion=[int]$State.libraryVersion
+      $payload.baselineVariantId=ConvertTo-TuningWireVariantId $State 'baseline'
+    }
+    'variant_applied'{
+      if(-not $Candidate -or -not $Result -or -not $Result.runtime -or -not $Result.reply){throw 'variant_applied 缺少结构化执行结果'}
+      $lib=$Result.runtime.Library;$ids=@(Get-TuningWireItemIds $State $Candidate)
+      # wire variant 表示当前活动的完整累计组合，而不是本次引擎只执行的 delta 组。
+      # 本地只有“全部成功”才进入测试；其他结果按整个 wire variant 失败上报，不产生 partial 候选。
+      $applyResult=$(if([bool]$Result.succeeded){'succeeded'}else{'failed'})
+      $applied=$(if($applyResult -eq 'succeeded'){$ids.Count}else{0})
+      $failed=$(if($applyResult -eq 'failed'){$ids.Count}else{0});$skipped=0
+      $payload.status=$(if($applyResult -eq 'failed'){'apply_failed'}else{'variant_applied'})
+      $payload.variantId=ConvertTo-TuningWireVariantId $State "$($Candidate.variantId)"
+      $payload.controlVariantId=ConvertTo-TuningWireVariantId $State "$($Candidate.controlVariantId)"
+      if(-not $Candidate.PSObject.Properties['sequenceNo'] -or [int]$Candidate.sequenceNo -lt 1 -or [int]$Candidate.sequenceNo -gt 64){throw '候选组缺少持久化的 wire 边界序号'}
+      $payload.sequenceNo=[int]$Candidate.sequenceNo;$payload.groupId="$($Candidate.groupId)"
+      $payload.itemSetHash=Get-TuningItemSetHash $ids;$payload.itemIds=@($ids);$payload.source="$($lib.Source)"
+      $payload.riskLevel="$($lib.RiskLevel)";$payload.requiresReboot=[bool]$lib.RequiresReboot
+      $payload.applyResult=$applyResult;$payload.appliedCount=[int]$applied;$payload.failedCount=[int]$failed;$payload.skippedCount=[int]$skipped
+    }
+    'run_completed'{
+      if(-not $Run){throw 'run_completed 缺少运行记录'}
+      $payload.runId=ConvertTo-TuningWireRunId $State "$($Run.runId)";$payload.variantId=ConvertTo-TuningWireVariantId $State "$($Run.variantId)";$payload.runNo=[int]$Run.runNo;$payload.sequenceNo=[int]$Run.sequenceNo
+      $payload.validity="$($Run.validity)";$payload.invalidReason="$($Run.invalidReason)";$payload.durationSec=[int]$Run.durationSec
+      $payload.avgFps=[double]$Run.avgFps;$payload.fps1Low=[double]$Run.fps1Low;$payload.p99FrameMs=[double]$Run.p99FrameMs
+      $payload.stutter50Ms=[int]$Run.stutter50Ms;$payload.stutter100Ms=[int]$Run.stutter100Ms
+      $payload.gpuUtilAvg=[double]$Run.gpuUtilAvg;$payload.gpuTempAvg=[double]$Run.gpuTempAvg;$payload.gpuPowerAvg=[double]$Run.gpuPowerAvg
+      $payload.settingsHash="$($Run.settingsHash)";$payload.environmentHash="$($Run.environmentHash)";$payload.orderControlled=[bool]$Run.orderControlled
+    }
+    'experiment_completed'{
+      $autoRollback=[bool]$(if($Result -and $Result.PSObject.Properties['autoRollback']){$Result.autoRollback}else{$false})
+      $serverResult=$(if("$($State.status)" -eq 'completed' -and "$($State.result)" -eq 'found_better'){'found_better'}
+        elseif("$($State.status)" -eq 'completed'){'no_significant_gain'}elseif("$($State.status)" -eq 'rolled_back'){'rolled_back'}
+        elseif("$($State.status)" -eq 'cancelled'){'cancelled'}else{'failed'})
+      $payload.status=$(if($serverResult -in 'found_better','no_significant_gain'){'completed'}else{$serverResult})
+      $payload.result=$serverResult
+      $payload.stopReason=$(switch -Regex ("$($State.stopReason)"){
+        'baseline|unstable'{'baseline_unstable';break}'apply'{'apply_failed';break}'environment|settings|driver|game_version'{'environment_changed';break}
+        'user|cancel'{'user_cancelled';break}'safety|constraint'{'constraints_exceeded';break}'completed'{$(if($serverResult -eq 'no_significant_gain'){'no_improvement'}else{'completed'});break}
+        default{'internal_error'} })
+      $payload.winningVariantId=$(if($serverResult -eq 'found_better'){ConvertTo-TuningWireVariantId $State "$($State.currentBestVariantId)"}else{''})
+      $payload.autoRollback=$autoRollback
+    }
+  }
+  [pscustomobject]$payload
+}
+
+function Start-TuningTelemetryOutboxFlush {
+  try {
+    if (-not (Get-Command Invoke-DfbTuningOutboxFlush -ErrorAction SilentlyContinue)) { return }
+    $configPath = Join-Path $script:UserConfigDir 'telemetry.json'
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return }
+    try {
+      $cfg = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($cfg.Enabled -eq $false) { return }
+    } catch { return }
+    Clear-CompletedTelemetryJobs
+    $running = @($script:TelemetryJobs | Where-Object {
+      $_.PSObject.Properties['Kind'] -and $_.Kind -eq 'tuning-outbox' -and -not $_.Async.IsCompleted
+    })
+    if ($running.Count) { return }
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript({
+      param($ModulePath,$Url,$ConfigPath)
+      try {
+        . $ModulePath
+        # 每次只在 outbox 锁内发送一个事件，随后释放锁；这样 UI 同步持久化下一条
+        # completion 时不会被一长串网络请求饿死。成功后再小步续排，退避则立即结束。
+        for ($i=0; $i -lt 16; $i++) {
+          $result = Invoke-DfbTuningOutboxFlush -UploadUrl $Url -ConfigPath $ConfigPath -MaxEvents 1
+          if (-not $result -or [int]$result.remaining -le 0 -or [int]$result.acknowledged -le 0) { break }
+          Start-Sleep -Milliseconds 25
+        }
+      } catch {}
+    }).AddArgument($script:TelemetryClientPath).AddArgument($script:TelemetryUploadUrl).AddArgument($configPath)
+    $async = $ps.BeginInvoke()
+    [void]$script:TelemetryJobs.Add([pscustomobject]@{ PowerShell=$ps; Async=$async; Kind='tuning-outbox' })
+  } catch {}
+}
+
+function New-TuningTelemetryEventPayload {
+  param([Parameter(Mandatory)][string]$TuningType, $State, $Candidate, $Run, $Result,
+        [switch]$RequirePersistence)
+  try {
+    if (-not $script:HardwareInfo.MainGpuNameVerified) { return $null }
+    $installId = Get-TelemetryInstallId
+    if (-not $installId) { return $null }
+    New-TuningTelemetryPayload -TuningType $TuningType -State $State -Candidate $Candidate -Run $Run -Result $Result -InstallId $installId
+  } catch {
+    if ($RequirePersistence) { throw "自动调优遥测载荷生成失败：$($_.Exception.Message)" }
+    $null
+  }
+}
+
+function Send-TuningTelemetryPayload {
+  param($Payload, [switch]$DeferFlush, [switch]$RequirePersistence)
+  if (-not $Payload) { return }
+  try {
+    if (-not (Get-Command Add-DfbTuningOutboxEvent -ErrorAction SilentlyContinue)) {
+      throw '缺少自动调优遥测 outbox 组件'
+    }
+    $configPath = Join-Path $script:UserConfigDir 'telemetry.json'
+    Add-DfbTuningOutboxEvent -Payload $Payload -ConfigPath $configPath | Out-Null
+    if (-not $DeferFlush) { Start-TuningTelemetryOutboxFlush }
+  } catch {
+    if ($RequirePersistence) { throw "自动调优事件未能持久化：$($_.Exception.Message)" }
+  }
+}
+
+function Send-TuningTelemetryEvent {
+  param([Parameter(Mandatory)][string]$TuningType, $State, $Candidate, $Run, $Result,
+        [switch]$DeferFlush, [switch]$RequirePersistence)
+  $payload = New-TuningTelemetryEventPayload -TuningType $TuningType -State $State -Candidate $Candidate -Run $Run -Result $Result -RequirePersistence:$RequirePersistence
+  Send-TuningTelemetryPayload -Payload $payload -DeferFlush:$DeferFlush -RequirePersistence:$RequirePersistence
+}
+
+function Complete-GuiTuningExperimentTerminal([bool]$AutoRollback) {
+  $state = $script:ActiveTuningExperiment
+  if (-not $state -or "$($state.status)" -notin 'completed','rolled_back','cancelled','failed') {
+    throw '只有终态实验可以执行完成收口'
+  }
+  if (-not $state.completedAt) { $state.completedAt = ConvertTo-TuningUtcText }
+  # 终态只会在待提交步骤已完成 durable enqueue 之后到达；清除 continuation，避免重启重放已完成步骤。
+  $state.pendingTuningCommit=$null
+  # 先把终态写入状态文件并保留活动指针；随后同步把 completion 原子写入 outbox。
+  # 只有两份持久数据都落盘后才清指针并异步发送，崩溃重启可按同一 eventId 去重续传。
+  Save-TuningExperiment
+  Send-TuningTelemetryEvent -TuningType 'experiment_completed' -State $state `
+    -Result ([pscustomobject]@{autoRollback=$AutoRollback}) -DeferFlush -RequirePersistence
+  Save-TuningExperiment -Terminal
+  Start-TuningTelemetryOutboxFlush
+  Update-TuningUi
+}
+
+function Update-TuningRunTable {
+  if (-not $ui.TuneRunPanel) { return }
+  $ui.TuneRunPanel.Children.Clear()
+  if (-not $script:ActiveTuningExperiment -or -not @($script:ActiveTuningExperiment.runs).Count) {
+    $empty = New-Text '还没有采样记录' $script:C.TextMut 10 -Mono
+    $empty.Margin = New-Object Windows.Thickness 9,7,9,7
+    $ui.TuneRunPanel.Children.Add($empty) | Out-Null; return
+  }
+  $allRuns = @($script:ActiveTuningExperiment.runs)
+  foreach ($run in @($allRuns | Select-Object -Last 30)) {
+    $grid = New-Object Windows.Controls.Grid; $grid.Height = 25
+    foreach ($w in 42,100,70,70,70,70,58,58,58) { $c=New-Object Windows.Controls.ColumnDefinition; $c.Width=$w; $grid.ColumnDefinitions.Add($c) }
+    $c=New-Object Windows.Controls.ColumnDefinition; $c.Width='*'; $grid.ColumnDefinitions.Add($c)
+    $index = [array]::IndexOf($allRuns,$run) + 1
+    $variant = $(if ($run.groupId -eq 'baseline') { '基线' } else { "$($run.groupId.ToUpper())/$($run.variantId)" })
+    $reason = $(if ($run.validity -eq 'valid') { '有效' } else { "$($run.validity) / $($run.invalidReason)" })
+    $values = @("$index",$variant,("{0:N1}" -f [double]$run.avgFps),("{0:N1}" -f [double]$run.fps1Low),
+      ("{0:N1}" -f [double]$run.p99FrameMs),("{0:N1}" -f [double]$run.stuttersPerMin),("{0:N1}" -f [double]$run.gpuUtilAvg),
+      ("{0:N1}" -f [double]$run.gpuTempAvg),("{0:N1}" -f [double]$run.gpuPowerAvg),$reason)
+    for($i=0;$i -lt $values.Count;$i++) {
+      $t=New-Text "$($values[$i])" $(if($run.validity -eq 'valid'){$script:C.TextSec}else{'#FFE5C46A'}) 10 -Mono
+      $t.Margin=New-Object Windows.Thickness 7,4,3,3; [Windows.Controls.Grid]::SetColumn($t,$i); $grid.Children.Add($t)|Out-Null
+    }
+    $ui.TuneRunPanel.Children.Add($grid) | Out-Null
+  }
+}
+
+function Update-TuningUi {
+  if (-not $ui.TuneStatusText) { return }
+  $state = $script:ActiveTuningExperiment; $active = [bool](Test-TuningExperimentActive)
+  $moduleReady = $script:TuningModuleLoaded -and (Get-Command Get-TuningCandidateLibrary -ErrorAction SilentlyContinue)
+  if (-not $state) {
+    $ui.TuneStatusText.Text = $(if ($moduleReady) { '未创建' } else { '规则模块缺失，请重新安装' })
+    $ui.TuneRoundText.Text='-'; $ui.TuneBaselineText.Text='待采样'; $ui.TuneCurrentText.Text='基线'
+    foreach($n in 'TuneG1Text','TuneG2Text','TuneG3Text'){ if($ui[$n]){$ui[$n].Foreground=New-Brush $script:C.TextSec} }
+  } else {
+    $statusMap = @{ baseline_pending='基线待采样'; baseline_running='基线采样中'; variant_pending='候选对照实验'; variant_running='候选采样中'; final_validation='最终组合验证'; completed='已完成'; rolled_back='已回滚'; cancelled='已取消'; failed='已停止（需处理）' }
+    $ui.TuneStatusText.Text = $(if($statusMap["$($state.status)"]){$statusMap["$($state.status)"]}else{"$($state.status)"})
+    $idx=[int]$state.candidateIndex; $phase="$($state.phase)"
+    $nextRound=@($state.runs).Count+1
+    $ui.TuneRoundText.Text = $(if($idx -lt @($state.candidates).Count){"$($state.candidates[$idx].displayName) / 第 $nextRound 轮 / $phase"}else{"最终复测 / 第 $nextRound 轮 / $phase"})
+    $baseRuns=@($state.runs|Where-Object groupId -eq 'baseline'); $base=Get-TuningBaselineSummary $baseRuns
+    $ui.TuneBaselineText.Text=$(if($base.validRuns -ge 3){"有效 $($base.validRuns) 次 · CV $($base.noisePercent)% · $(if($base.stable){'稳定'}else{'不稳定'})"}else{"有效 $($base.validRuns) / 3"})
+    $ui.TuneCurrentText.Text=$(if(@($state.currentBestGroups).Count){@($state.currentBestGroups|ForEach-Object{$_.ToUpper()}) -join ' + '}else{'基线'})
+    foreach($i in 0..2){
+      $cand=$state.candidates[$i]; $n="TuneG$($i+1)Text"; $label="G$($i+1) $($cand.displayName)"
+      $ui[$n].Text="$label：$(if($cand.result){$cand.result}elseif($cand.status){$cand.status}else{'待实验'})"
+      $ui[$n].Foreground=New-Brush $(if($cand.result -eq 'win'){$script:C.Green}elseif($cand.result -match 'rollback|no_gain|failed'){'#FFE5484D'}else{$script:C.TextSec})
+    }
+    if ($state.lastMessage) { $ui.TuneHintText.Text="$($state.lastMessage)" }
+  }
+  foreach($n in 'TuneSceneBox','TuneTempBox','TunePowerChk','TunePowerBox'){ if($ui[$n]){$ui[$n].IsEnabled=-not $active -and -not $script:Busy} }
+  $ui.TunePowerBox.IsEnabled=(-not $active -and -not $script:Busy -and [bool]$ui.TunePowerChk.IsChecked)
+  $ui.TuneCreateBtn.IsEnabled=[bool]$moduleReady -and -not $script:Busy -and -not $script:TuningSampling
+  $ui.TuneCreateBtn.Content=$(if($active){'继续当前实验'}else{'创建实验'})
+  $ui.TuneNextBtn.IsEnabled=$active -and -not $script:Busy -and -not $script:TuningSampling
+  $ui.TuneStopBtn.IsEnabled=$active -and -not $script:Busy -and -not $script:TuningSampling
+  Update-TuningRunTable
+  # 实验活动期间禁止普通系统写入、全量还原、路径变更和更新安装入口。
+  foreach($n in 'ApplyBtn','RestoreBtn','BrowseBtn','UpdateBtn','CheckUpdBtn') { if($ui[$n]){$ui[$n].IsEnabled=(-not $active -and -not $script:Busy)} }
+}
+
+function Get-ValidatedTuningCandidateRuntime([string]$GroupId) {
+  $library = Get-TuningCandidate $GroupId
+  if ("$($library.Source)" -ne 'rules' -or "$($library.RiskLevel)" -ne 'low' -or [bool]$library.RequiresReboot) {
+    throw '候选库包含超出 Beta 边界的项目'
+  }
+  $all = @(Get-OptItems $script:TargetExe)
+  $resolved = New-Object System.Collections.Generic.List[object]
+  foreach ($id in @($library.ItemIds)) {
+    $matches = @($all | Where-Object Id -eq "$id")
+    if ($matches.Count -ne 1) { throw "候选优化项不存在或重复：$id" }
+    $item = $matches[0]
+    if ("$($item.Tier)" -ne 'safe' -or [bool]$item.Reboot -or "$($item.Kind)" -in 'cache','check','npi','power','sched') {
+      throw "候选项不符合低风险/无重启边界：$id"
+    }
+    if (-not @($item.Ops).Count) { throw "候选项没有可备份操作：$id" }
+    foreach ($op in @($item.Ops)) {
+      if ("$($op.Kind)" -notin 'reg','kvstr') { throw "候选项包含 Beta 不接受的操作：$id/$($op.Kind)" }
+    }
+    if ([bool]$item.RequiresGame -and -not (Test-AllowedGameExecutable $script:TargetExe)) { throw "候选项需要有效游戏路径：$id" }
+    [void]$resolved.Add($item)
+  }
+  [pscustomobject]@{ Library=$library; Items=@($resolved) }
+}
+
+function Invoke-TuningRollbackBackup([string]$BackupFile, [string]$Reason) {
+  if (-not (Test-TuningBackupReference $BackupFile)) { throw '只允许按当前实验的受保护备份回滚' }
+  $reply = Invoke-ElevatedEngineAction -Action Restore -BackupFile $BackupFile
+  if ([int]$reply.EngineExitCode -ne 0 -or @($reply.Failed).Count -gt 0) {
+    throw "回滚失败（$Reason）：$(@($reply.Failed) -join '；')"
+  }
+  $script:TuningConfigGeneration++
+  if ($script:ActiveTuningExperiment) { $script:ActiveTuningExperiment.configGeneration = $script:TuningConfigGeneration }
+  Write-Log "自动调优已按指定备份回滚：$(Split-Path -Leaf $BackupFile)（$Reason）"
+  $reply
+}
+
+function Set-PendingTuningCommit {
+  param([Parameter(Mandatory)][ValidateSet('run','variant')][string]$Kind,
+        [Parameter(Mandatory)][string]$SourcePhase,
+        [Parameter(Mandatory)][int]$CandidateIndex,
+        [Parameter(Mandatory)][string]$EntityId,
+        $Payload,
+        [string]$ResumePhase='',
+        [string]$Outcome='',
+        [bool]$UnsafeFailure=$false,
+        [string]$Reason='')
+  $state=$script:ActiveTuningExperiment
+  if(-not $state){throw '没有活动实验可提交'}
+  if($state.pendingTuningCommit){throw '已有待提交实验步骤，已拒绝覆盖'}
+  $state.pendingTuningCommit=[pscustomobject][ordered]@{
+    schemaVersion=1;kind=$Kind;telemetryType=$(if($Kind -eq 'run'){'run_completed'}else{'variant_applied'})
+    sourcePhase=$SourcePhase;candidateIndex=$CandidateIndex;entityId=$EntityId;resumePhase=$ResumePhase
+    outcome=$Outcome;unsafeFailure=$UnsafeFailure;reason=$Reason;payload=$Payload
+  }
+  try{Save-TuningExperiment}
+  catch{
+    # 状态 Replace 可能已成功、仅后续 pointer 写失败；此时绝不能回滚内存后再次采样。
+    $persisted=$null
+    try{$persisted=Read-TuningState $script:ActiveTuningStatePath}catch{}
+    if($persisted -and $persisted.pendingTuningCommit -and "$($persisted.pendingTuningCommit.entityId)" -eq $EntityId){
+      $script:ActiveTuningExperiment=Initialize-TuningGuiStateFields $persisted
+      throw
+    }
+    $state.pendingTuningCommit=$null
+    if($Kind -eq 'run'){$state.runs=@($state.runs|Where-Object runId -ne $EntityId)}
+    throw
+  }
+  $state.pendingTuningCommit
+}
+
+function Complete-TuningVariantApplyDisposition {
+  param([Parameter(Mandatory)]$Candidate,[Parameter(Mandatory)][bool]$Succeeded,
+        [string]$Reason='',[bool]$UnsafeFailure=$false,[string]$ResumePhase='group_capture_b1')
+  $state=$script:ActiveTuningExperiment
+  if(-not $Succeeded){
+    if($Candidate.activeBackup){
+      $state.phase='rolling_back';Save-TuningExperiment
+      try{Invoke-TuningRollbackBackup "$($Candidate.activeBackup)" '候选套用验证失败'|Out-Null;$Candidate.activeBackup=''}
+      catch{$state.status='failed';$state.phase='failed';$state.stopReason='rollback_failed';$state.lastMessage=$_.Exception.Message;Complete-GuiTuningExperimentTerminal $true;throw}
+    }elseif($UnsafeFailure){
+      $state.status='failed';$state.phase='failed';$state.stopReason='apply_without_backup'
+      $state.lastMessage='套用后没有可信的指定备份，已停止。请使用普通「还原设置」或上传诊断报告。'
+      Complete-GuiTuningExperimentTerminal $false;throw $state.lastMessage
+    }
+    $state.pendingActionId='';$state.pendingResumePhase='';$state.lastMessage="已跳过 $($Candidate.displayName)：$Reason"
+    Complete-TuningCandidate $Candidate ([pscustomobject]@{result='inconclusive';reason=$Reason}) $false
+    return $false
+  }
+  $state.phase=$ResumePhase;$state.pendingActionId='';$state.pendingResumePhase=''
+  $state.status='variant_applied';$state.lastMessage="$($Candidate.displayName) 已套用并保存受保护备份，下一步采样。"
+  if("$($Candidate.groupId)" -eq 'G3'){$state.groupRestartAfter=[DateTime]::UtcNow.ToString('o')}
+  Save-TuningExperiment
+  $true
+}
+
+function Test-PendingTuningRunConsumed($State,$Pending,$Run){
+  switch("$($Pending.sourcePhase)"){
+    'baseline'{return @($State.initialBaselineRunIds) -contains "$($Run.runId)"}
+    'final_capture'{return @($State.finalRunIds) -contains "$($Run.runId)"}
+    'group_control_pre'{return @($State.candidates[[int]$Pending.candidateIndex].controlRunIds) -contains "$($Run.runId)"}
+    'group_capture_b1'{return @($State.candidates[[int]$Pending.candidateIndex].candidateRunIds) -contains "$($Run.runId)"}
+    'group_capture_a'{return @($State.candidates[[int]$Pending.candidateIndex].controlRunIds) -contains "$($Run.runId)"}
+    'group_capture_b2'{return @($State.candidates[[int]$Pending.candidateIndex].candidateRunIds) -contains "$($Run.runId)"}
+    'group_capture_extra_a'{return @($State.candidates[[int]$Pending.candidateIndex].controlRunIds) -contains "$($Run.runId)"}
+    'group_capture_extra_b'{return @($State.candidates[[int]$Pending.candidateIndex].candidateRunIds) -contains "$($Run.runId)"}
+  }
+  $false
+}
+
+function Test-PendingTuningRunCompleted($State,$Pending,$Run){
+  if(-not (Test-PendingTuningRunConsumed $State $Pending $Run)){return $false}
+  $idx=[int]$Pending.candidateIndex
+  switch("$($Pending.sourcePhase)"){
+    'baseline'{return "$($State.phase)" -ne 'baseline'}
+    'final_capture'{return "$($State.status)" -in 'completed','rolled_back','cancelled','failed'}
+    'group_control_pre'{return "$($State.phase)" -ne 'group_control_pre'}
+    'group_capture_b1'{return "$($State.phase)" -ne 'group_capture_b1'}
+    'group_capture_a'{return "$($State.phase)" -ne 'group_capture_a'}
+    'group_capture_b2'{return "$($State.candidates[$idx].status)" -eq 'complete' -or "$($State.phase)" -eq 'group_rollback_extra_a' -or [int]$State.candidateIndex -gt $idx}
+    'group_capture_extra_a'{return "$($State.phase)" -ne 'group_capture_extra_a'}
+    'group_capture_extra_b'{return "$($State.candidates[$idx].status)" -eq 'complete' -or [int]$State.candidateIndex -gt $idx}
+  }
+  $false
+}
+
+function Resume-PendingTuningCommit {
+  $state=$script:ActiveTuningExperiment;$pending=$state.pendingTuningCommit
+  if(-not $pending){return $false}
+  # Exact payload was saved with the engine/capture result. Durable idempotent enqueue is the commit point.
+  Send-TuningTelemetryPayload -Payload $pending.payload -DeferFlush -RequirePersistence
+  if("$($pending.kind)" -eq 'run'){
+    $runs=@($state.runs|Where-Object runId -eq "$($pending.entityId)")
+    if($runs.Count -ne 1){throw '待提交运行记录不存在或重复'}
+    $run=$runs[0]
+    $completed=Test-PendingTuningRunCompleted $state $pending $run
+    $resumableRollback=("$($state.phase)" -eq 'rolling_back' -and "$($pending.sourcePhase)" -in 'group_capture_b2','group_capture_extra_b','final_capture')
+    if(-not $completed -and ("$($state.phase)" -eq "$($pending.sourcePhase)" -or $resumableRollback)){
+      Advance-TuningAfterValidRun $run "$($pending.sourcePhase)" ([int]$pending.candidateIndex)
+    }elseif(-not $completed){
+      throw '待提交运行与当前实验阶段不一致，已拒绝重复采样'
+    }
+  }else{
+    $candidate=$state.candidates[[int]$pending.candidateIndex]
+    if("$($candidate.variantId)" -ne "$($pending.entityId)"){throw '待提交候选引用无效'}
+    $alreadyProcessed=("$($pending.outcome)" -eq 'succeeded' -and "$($state.phase)" -eq "$($pending.resumePhase)" -and -not $state.pendingActionId) -or
+      "$($candidate.status)" -eq 'complete' -or [int]$state.candidateIndex -gt [int]$pending.candidateIndex
+    if(-not $alreadyProcessed){
+      [void](Complete-TuningVariantApplyDisposition $candidate ("$($pending.outcome)" -eq 'succeeded') "$($pending.reason)" ([bool]$pending.unsafeFailure) "$($pending.resumePhase)")
+    }
+  }
+  $state=$script:ActiveTuningExperiment
+  if($state -and $state.pendingTuningCommit -and "$($state.pendingTuningCommit.entityId)" -eq "$($pending.entityId)"){
+    $state.pendingTuningCommit=$null;Save-TuningExperiment
+  }
+  Start-TuningTelemetryOutboxFlush
+  $true
+}
+
+function Invoke-TuningApplyCandidate($Candidate, [string]$ResumePhase) {
+  $state = $script:ActiveTuningExperiment
+  if($state.pendingTuningCommit){throw '上一个实验步骤尚未完成持久提交，请先继续恢复'}
+  $runtime = Get-ValidatedTuningCandidateRuntime "$($Candidate.groupId)"
+  $candidateIndex=[array]::IndexOf(@($state.candidates),$Candidate)
+  if($candidateIndex -lt 0){throw '候选组不属于当前实验'}
+  if($ResumePhase -eq 'group_capture_b1'){
+    # 服务端用该边界确定性选取：对照取 seq < boundary 的最后 3 次，
+    # 候选取 seq >= boundary 的前 2 次（需要时第 3 次）。必须在首次 B1 Apply 前持久化。
+    $expectedBoundary=[int](@($state.runs).Count+1)
+    if($Candidate.PSObject.Properties['sequenceNo']){
+      if([int]$Candidate.sequenceNo -ne $expectedBoundary){throw '候选组遥测边界与首次 B1 不一致'}
+    }else{Add-TuningStateProperty $Candidate 'sequenceNo' $expectedBoundary}
+  }elseif(-not $Candidate.PSObject.Properties['sequenceNo'] -or [int]$Candidate.sequenceNo -lt 1 -or [int]$Candidate.sequenceNo -gt 64){
+    throw '候选组缺少首次 B1 持久化的遥测边界'
+  }
+  $actionId = [guid]::NewGuid().ToString('D')
+  $state.phase = 'applying'; $state.pendingActionId = $actionId; $state.pendingResumePhase = $ResumePhase
+  $state.status = 'variant_running'; $state.lastMessage = "等待管理员授权，套用 $($Candidate.displayName)…"
+  Save-TuningExperiment
+  Update-TuningUi
+
+  $reply = $null
+  try {
+    $reply = Invoke-ElevatedEngineAction -Action Apply -ItemIds @($runtime.Library.ItemIds) `
+      -GamePath $script:TargetExe -ResultId $actionId
+  } catch {
+    $retryPhase=$(switch($ResumePhase){'group_capture_b1'{'group_apply_b1'}'group_capture_b2'{'group_apply_b2'}'group_capture_extra_b'{'group_apply_extra_b'}default{'group_apply_b1'}})
+    $state.phase = $retryPhase; $state.pendingActionId=''; $state.pendingResumePhase=''
+    $state.lastMessage = "候选套用未完成：$($_.Exception.Message)"
+    Save-TuningExperiment
+    throw
+  }
+
+  # 结果一返回就先持久化备份引用；验证和界面刷新都放在它之后，缩短 crash window。
+  if ($reply.Backup -and (Test-TuningBackupReference "$($reply.Backup)")) {
+    $Candidate.activeBackup = "$($reply.Backup)"
+    $script:TuningConfigGeneration++; $state.configGeneration = $script:TuningConfigGeneration
+    Save-TuningExperiment
+  }
+
+  $rows = @($reply.Results); $expected = @($runtime.Library.ItemIds)
+  $seen = @($rows | ForEach-Object { "$($_.Id)" } | Sort-Object)
+  $expectedSorted = @($expected | Sort-Object)
+  $allOk = $rows.Count -eq $expected.Count -and ($seen -join ',') -eq ($expectedSorted -join ',') -and
+           @($rows | Where-Object { -not $_.Ok -or $_.Skipped }).Count -eq 0
+  $changed = @($rows | Where-Object { $_.Ok -and $_.Changed -eq $true }).Count
+  $noReboot = @($rows | Where-Object { $_.Reboot -eq $true }).Count -eq 0
+  $validBackup = $Candidate.activeBackup -and (Test-TuningBackupReference "$($Candidate.activeBackup)")
+  $success = [int]$reply.EngineExitCode -eq 0 -and $allOk -and -not $reply.BackupError -and
+             $changed -gt 0 -and $validBackup -and $noReboot
+
+  $why=@()
+  if(-not $allOk){$why+='关键项未全部成功'}
+  if($reply.BackupError){$why+="备份错误：$($reply.BackupError)"}
+  if($changed -le 0){$why+='没有产生实际改动'}
+  if(-not $validBackup){$why+='未返回受保护备份'}
+  if(-not $noReboot){$why+='候选结果要求重启'}
+  $unsafeFailure=(-not $success -and -not $validBackup -and ($changed -gt 0 -or [bool]$reply.BackupError))
+  if($ResumePhase -eq 'group_capture_b1'){
+    $result=[pscustomobject]@{runtime=$runtime;reply=$reply;succeeded=$success;changed=$changed}
+    $payload=New-TuningTelemetryEventPayload -TuningType 'variant_applied' -State $state -Candidate $Candidate -Result $result -RequirePersistence
+    Set-PendingTuningCommit -Kind variant -SourcePhase applying -CandidateIndex $candidateIndex -EntityId "$($Candidate.variantId)" `
+      -Payload $payload -ResumePhase $ResumePhase -Outcome $(if($success){'succeeded'}else{'failed'}) `
+      -UnsafeFailure $unsafeFailure -Reason ($why -join '；')|Out-Null
+    [void](Resume-PendingTuningCommit)
+    return $success
+  }
+  if (-not $success) {
+    $disposition=Complete-TuningVariantApplyDisposition $Candidate $false ($why -join '；') $unsafeFailure $ResumePhase
+    return $disposition
+  }
+  Complete-TuningVariantApplyDisposition $Candidate $true '' $false $ResumePhase
+}
+
+function Test-TuningProcessReady($Process) {
+  $state=$script:ActiveTuningExperiment
+  if (-not $Process) { throw '未检测到已运行的目标游戏，请先启动游戏并进入固定场景' }
+  if ($state.groupRestartAfter) {
+    try {
+      if ($Process.StartTime.ToUniversalTime() -lt [DateTime]::Parse("$($state.groupRestartAfter)").ToUniversalTime()) {
+        throw '这一组改动后需要关闭并重新启动游戏，再执行采样'
+      }
+      $state.groupRestartAfter=''; Save-TuningExperiment
+    } catch [FormatException] { throw '游戏重启时间记录无效，已停止继续' }
+  }
+  $true
+}
+
+function Invoke-TuningPerformanceCapture([string]$VariantId,[string]$GroupId,[bool]$OrderControlled=$true) {
+  $state=$script:ActiveTuningExperiment
+  if($state.pendingTuningCommit){throw '上一个实验步骤尚未完成持久提交，请先继续恢复'}
+  $sourcePhase="$($state.phase)";$sourceCandidateIndex=$(if($GroupId -eq 'baseline'){-1}elseif($GroupId -eq 'final'){@($state.candidates).Count}else{[int]$state.candidateIndex})
+  if (@($script:PerformanceJobs | Where-Object { -not $_.Async.IsCompleted }).Count) {
+    throw '普通性能采样正在收尾，请等它完成后再开始实验轮次'
+  }
+  $proc=Find-TuningGameProcess; [void](Test-TuningProcessReady $proc)
+  $confirm="请确认已进入固定场景「$($state.sceneId)」，且本轮不会改分辨率、画质、帧率上限或离开前台。`n`n确认后将连续采样 120 秒。"
+  if (-not (Show-ConfirmDialog '开始采样' '120 SECOND CONTROLLED RUN' $confirm '我已就位')) { return $null }
+
+  $beforeEnv=Get-TuningEnvironmentSnapshot "$($state.sceneId)"; $beforeHash=Get-TuningEnvironmentHash $beforeEnv
+  $settingsBefore=Get-TuningSettingsHash; $generation=[int64]$script:TuningConfigGeneration
+  $presentMon=Join-Path $script:RootDir 'tools\PresentMon.exe'
+  if (-not (Test-Path -LiteralPath $presentMon -PathType Leaf)) { throw '缺少 tools\PresentMon.exe，请重新安装后再实验' }
+
+  $script:TuningSampling=$true; Set-BusyState $true
+  $state.status=$(if($GroupId -eq 'baseline'){'baseline_running'}else{'variant_running'})
+  $state.lastMessage="正在采样 $VariantId：请保持游戏在前台，不要改设置…"; Save-TuningExperiment; Update-TuningUi
+  $ps=[PowerShell]::Create(); [void]$ps.AddScript($script:PerformanceCaptureWorker)
+  Add-PerformanceWorkerArguments $ps $proc.Id $script:HardwareInfo 'experiment' 0
+  try {
+    $async=$ps.BeginInvoke()
+    while(-not $async.IsCompleted){
+      $window.Dispatcher.Invoke([action]{},[Windows.Threading.DispatcherPriority]::Background)
+      Start-Sleep -Milliseconds 100
+    }
+    $outputs=@($ps.EndInvoke($async)); $metrics=@($outputs|Where-Object{$_.PSObject.Properties['frameCount']}|Select-Object -Last 1)
+    if(-not $metrics){ throw '性能采样线程没有返回结果' }
+  } finally {
+    try{$ps.Dispose()}catch{}; $script:TuningSampling=$false; Set-BusyState $false
+  }
+
+  $sceneMatches=Show-ConfirmDialog '场景复核' 'SCENE CHECK' "本轮 120 秒是否全程保持在「$($state.sceneId)」同一场景和操作路线？`n`n如果中途切换场景，请点取消，本轮会记为 scene_changed 且不参与胜负。" '场景一致'
+  $manualSettingsMatch=Show-ConfirmDialog '设置复核' 'SETTINGS CHECK' '本轮是否没有修改游戏画质、渲染比例、帧率上限、分辨率或显示模式？`n`n如果改过，请点取消，本轮会记为 settings_changed 且不参与胜负。' '设置未变'
+  $afterEnv=Get-TuningEnvironmentSnapshot "$($state.sceneId)"; $afterHash=Get-TuningEnvironmentHash $afterEnv
+  $settingsAfter=Get-TuningSettingsHash
+  $driverMatch=("$($state.environment.driverVersion)" -eq "$($beforeEnv.driverVersion)" -and "$($beforeEnv.driverVersion)" -eq "$($afterEnv.driverVersion)")
+  $gameMatch=("$($state.environment.gameVersion)" -eq "$($beforeEnv.gameVersion)" -and "$($beforeEnv.gameVersion)" -eq "$($afterEnv.gameVersion)")
+  $settingsMatch=([bool]$manualSettingsMatch -and $generation -eq [int64]$script:TuningConfigGeneration -and $settingsBefore -eq $settingsAfter -and $beforeHash -eq $afterHash)
+  $validity=Get-TuningRunValidity -Metrics $metrics -ExpectedEnvironmentHash "$($state.environmentHash)" `
+    -ActualEnvironmentHash $afterHash -DriverMatches $driverMatch -GameVersionMatches $gameMatch -SettingsMatch $settingsMatch -SceneMatches ([bool]$sceneMatches)
+  $runNo=@($state.runs|Where-Object variantId -eq $VariantId).Count+1;$sequenceNo=@($state.runs).Count+1
+  if($runNo -gt 16 -or $sequenceNo -gt 64){throw '实验重试次数已达上限，请停止并回滚后重新创建'}
+  $run=New-TuningRunRecord -ExperimentId "$($state.experimentId)" -VariantId $VariantId -GroupId $GroupId `
+    -RunNo $runNo -SequenceNo $sequenceNo `
+    -Metrics $metrics -Validity $validity -EnvironmentHash $afterHash -SettingsHash $settingsAfter -OrderControlled $OrderControlled
+  $run | Add-Member -NotePropertyName presentMonExitCode -NotePropertyValue ([int]$metrics.presentMonExitCode)
+  $run | Add-Member -NotePropertyName gameExitedEarly -NotePropertyValue ([bool]$metrics.gameExitedEarly)
+  $run | Add-Member -NotePropertyName captureFailed -NotePropertyValue ([bool]$metrics.captureFailed)
+  # 先生成精确 wire payload，再把 run 加进活动内存；载荷/telemetry 配置失败时不会留下
+  # 一条没有 pending continuation 的幽灵 run，被下一轮误带进状态文件。
+  $payload=$(if($GroupId -ne 'final'){New-TuningTelemetryEventPayload -TuningType 'run_completed' -State $state -Run $run -RequirePersistence}else{$null})
+  $script:ActiveTuningExperiment=Add-TuningRun $state $run
+  $state=$script:ActiveTuningExperiment
+  $state.lastMessage=$(if($run.validity -eq 'valid'){"第 $($run.sequenceNo) 轮有效：平均帧率 $($run.avgFps)，1% 低帧率 $($run.fps1Low)。"}else{"本轮 $($run.validity)（$($run.invalidReason)），不参与胜负，请重试当前步骤。"})
+  # final 是非交替的本地安全复核；不把它混入服务端候选组 A/B runs，否则会污染胜出证据。
+  Set-PendingTuningCommit -Kind run -SourcePhase $sourcePhase -CandidateIndex $sourceCandidateIndex -EntityId "$($run.runId)" -Payload $payload|Out-Null
+  Update-TuningUi
+  $run
+}
+
+function Get-TuningRunsByIds($State,[object[]]$Ids) {
+  $wanted=@($Ids|ForEach-Object{"$_"})
+  @($State.runs|Where-Object{$wanted -contains "$($_.runId)"})
+}
+
+function Complete-TuningCandidate($Candidate,$Comparison,[bool]$AllowWin) {
+  $state=$script:ActiveTuningExperiment
+  $result="$($Comparison.result)"
+  if($AllowWin -and $result -eq 'win'){
+    if(-not (Test-TuningBackupReference "$($Candidate.activeBackup)")){throw '胜出候选缺少可供最终反向回滚的备份'}
+    $Candidate.status='complete';$Candidate.result='win';$Candidate.comparison=$Comparison
+    $Candidate.appliedBackups=@($Candidate.appliedBackups)+@("$($Candidate.activeBackup)")
+    $state.activeBackups=@($state.activeBackups)+@("$($Candidate.activeBackup)");$Candidate.activeBackup=''
+    $state.currentBestGroups=@($state.currentBestGroups)+@("$($Candidate.groupId)");$state.currentBestVariantId="$($Candidate.variantId)"
+    $state.lastMessage="$($Candidate.displayName) 超过设备自身噪声并通过温度/功耗约束，已保留。"
+  } else {
+    if($Candidate.activeBackup){
+      $state.phase='rolling_back';Save-TuningExperiment
+      try{Invoke-TuningRollbackBackup "$($Candidate.activeBackup)" "候选结果 $result"|Out-Null;$Candidate.activeBackup=''}
+      catch{$state.status='failed';$state.phase='failed';$state.stopReason='rollback_failed';$state.lastMessage=$_.Exception.Message;Complete-GuiTuningExperimentTerminal $true;throw}
+    }
+    $Candidate.status='complete';$Candidate.result=$(if($result -eq 'rollback'){'rollback'}else{'no_gain'});$Candidate.comparison=$Comparison
+    $state.lastMessage="$($Candidate.displayName) 未达到保留规则，已只回滚它自己的备份。"
+  }
+  $state.candidateIndex=[int]$state.candidateIndex+1
+  if([int]$state.candidateIndex -lt @($state.candidates).Count){$state.status='variant_pending';$state.phase='group_control_pre'}
+  else{$state.status='final_validation';$state.phase='final_capture'}
+  Save-TuningExperiment;Update-TuningUi
+}
+
+function Compare-CurrentTuningCandidate($Candidate,[bool]$FinalAttempt){
+  $state=$script:ActiveTuningExperiment
+  $controls=Get-TuningRunsByIds $state @($Candidate.controlRunIds)
+  $variants=Get-TuningRunsByIds $state @($Candidate.candidateRunIds)
+  $cmp=Compare-TuningVariant -ControlRuns $controls -CandidateRuns $variants `
+    -MaxTempIncreaseC ([double]$state.maxTempIncreaseC) -MaxPowerIncreasePct ([double]$state.maxPowerIncreasePct) `
+    -AllowHigherPower ([bool]$state.allowHigherPower)
+  $Candidate.comparison=$cmp;Save-TuningExperiment
+  if("$($cmp.result)" -eq 'inconclusive' -and -not $FinalAttempt){
+    $Candidate.extraAttempted=$true;$state.phase='group_rollback_extra_a';$state.lastMessage='变化还在噪声范围内，追加一次 A/B 交替采样。';Save-TuningExperiment;Update-TuningUi;return
+  }
+  Complete-TuningCandidate $Candidate $cmp $true
+}
+
+function Remove-TuningBackupFromState($State,[string]$BackupFile) {
+  $State.activeBackups=@($State.activeBackups|Where-Object{"$_" -ne $BackupFile})
+  foreach($candidate in @($State.candidates)){
+    if("$($candidate.activeBackup)" -eq $BackupFile){$candidate.activeBackup=''}
+    $candidate.appliedBackups=@($candidate.appliedBackups|Where-Object{"$_" -ne $BackupFile})
+    if("$($candidate.result)" -eq 'win' -and -not @($candidate.appliedBackups).Count){$candidate.result='rollback'}
+  }
+  $State.currentBestGroups=@($State.candidates|Where-Object result -eq 'win'|ForEach-Object{"$($_.groupId)"})
+  $State.currentBestVariantId=$(if(@($State.currentBestGroups).Count){"$((Get-TuningCandidate "$(@($State.currentBestGroups)[-1])").VariantId)"}else{'baseline'})
+}
+
+function Invoke-TuningFinalRollback {
+  $state=$script:ActiveTuningExperiment
+  $remaining=New-Object System.Collections.Generic.List[string]
+  foreach($b in @($state.activeBackups)){[void]$remaining.Add("$b")}
+  $state.phase='rolling_back';$state.lastMessage='正在按相反顺序执行最终安全回滚…';Save-TuningExperiment
+  for($i=$remaining.Count-1;$i -ge 0;$i--){
+    $backup=$remaining[$i]
+    try{
+      Invoke-TuningRollbackBackup $backup '最终安全阈值触发'|Out-Null;$remaining.RemoveAt($i)
+      Remove-TuningBackupFromState $state $backup
+      $state.lastMessage="已回滚 $([IO.Path]::GetFileName($backup))；剩余 $($remaining.Count) 份指定备份。";Save-TuningExperiment
+    }
+    catch{$state.status='failed';$state.phase='failed';$state.stopReason='final_rollback_failed';$state.lastMessage=$_.Exception.Message;Complete-GuiTuningExperimentTerminal $true;throw}
+  }
+}
+
+function Resolve-TuningFinalOutcome($State,$Comparison) {
+  $hasRetained=@($State.currentBestGroups).Count -gt 0
+  $comparisonResult="$($Comparison.result)"
+  if(-not $hasRetained){
+    return [pscustomobject]@{autoRollback=$false;status='completed';result='no_significant_gain'}
+  }
+  if($comparisonResult -in 'rollback','insufficient'){
+    return [pscustomobject]@{autoRollback=$true;status='rolled_back';result='rolled_back'}
+  }
+  if($comparisonResult -ne 'inconclusive'){
+    throw '最终安全复核返回了不应用于胜负的结果'
+  }
+  # found_better 的证据只来自前面各组 orderControlled=true 的交替 A/B；
+  # final 的非交替三轮只能否决（安全回滚），不能独立创造胜出结论。
+  [pscustomobject]@{autoRollback=$false;status='completed';result='found_better'}
+}
+
+function Advance-TuningAfterValidRun($Run,[string]$SourcePhase='',[int]$SourceCandidateIndex=-2){
+  if(-not $Run -or $Run.validity -ne 'valid'){return}
+  $state=$script:ActiveTuningExperiment;$phase=$(if($SourcePhase){$SourcePhase}else{"$($state.phase)"})
+  if($phase -eq 'baseline'){
+    $valid=@($state.runs|Where-Object{$_.groupId -eq 'baseline' -and $_.validity -eq 'valid'})
+    if($valid.Count -lt 3){return}
+    $summary=Get-TuningBaselineSummary $valid
+    if(-not $summary.stable){$state.status='failed';$state.phase='failed';$state.stopReason='unstable_baseline';$state.lastMessage="基线波动过大（CV $($summary.noisePercent)%），本次实验停止；请固定场景后重新创建。";Complete-GuiTuningExperimentTerminal $false;return}
+    $state.initialBaselineRunIds=@($valid|Select-Object -First 3|ForEach-Object{$_.runId});$state.status='variant_pending';$state.phase='group_control_pre';$state.lastMessage='基线已稳定，下一步对 G1 先做一次 A 对照复测。';Save-TuningExperiment;Update-TuningUi;return
+  }
+  if([int]$state.candidateIndex -ge @($state.candidates).Count){
+    if($phase -ne 'final_capture'){return}
+    if(@($state.finalRunIds) -notcontains "$($Run.runId)"){$state.finalRunIds=@($state.finalRunIds)+@("$($Run.runId)");Save-TuningExperiment}
+    $finalRuns=Get-TuningRunsByIds $state $state.finalRunIds
+    if(@($finalRuns|Where-Object validity -eq 'valid').Count -lt 3){return}
+    $base=Get-TuningRunsByIds $state $state.initialBaselineRunIds
+    $resumeSafetyRollback=("$($state.phase)" -eq 'rolling_back' -and $state.finalComparison -and "$($state.finalComparison.result)" -in 'rollback','insufficient')
+    if($resumeSafetyRollback){
+      # finalComparison/rollback intent 已在撤第一份备份前随 rolling_back 原子保存；即使所有
+      # activeBackups 都撤完后崩溃，也必须沿用原安全结论，不能因 currentBest 已清空翻案。
+      $cmp=$state.finalComparison
+    }elseif(@($state.currentBestGroups).Count){
+      $cmp=Compare-TuningVariant -ControlRuns $base -CandidateRuns $finalRuns -MaxTempIncreaseC ([double]$state.maxTempIncreaseC) `
+        -MaxPowerIncreasePct ([double]$state.maxPowerIncreasePct) -AllowHigherPower ([bool]$state.allowHigherPower) -SafetyOnly
+    } else {
+      # 三组都未保留时当前组合就是初始基线；仍完成三次最终复测，
+      # 但不把同一 variant 伪装成 A/B 输给比较器。
+      $cmp=[pscustomobject]@{result='inconclusive';reason='没有候选超过基线噪声'}
+    }
+    $state.finalComparison=$cmp
+    $outcome=$(if($resumeSafetyRollback){[pscustomobject]@{autoRollback=$true;status='rolled_back';result='rolled_back'}}else{Resolve-TuningFinalOutcome $state $cmp})
+    $autoRollback=[bool]$outcome.autoRollback
+    if($autoRollback){Invoke-TuningFinalRollback}
+    $state.status="$($outcome.status)";$state.phase='completed';$state.completedAt=ConvertTo-TuningUtcText
+    $state.result="$($outcome.result)"
+    $state.stopReason=$(if($autoRollback){'safety_threshold'}else{'completed'})
+    $state.lastMessage=$(if($autoRollback){'最终安全复核触发阈值或证据不完整，已按相反顺序回滚所有保留组。'}else{"实验完成：$($state.result)。胜出证据来自各组交替 A/B，最终三轮只作安全复核。个体内规则实验，不代表全局最优。"})
+    Complete-GuiTuningExperimentTerminal $autoRollback;return
+  }
+  $candidateIndex=$(if($SourceCandidateIndex -ge 0){$SourceCandidateIndex}else{[int]$state.candidateIndex})
+  $candidate=$state.candidates[$candidateIndex]
+  switch($phase){
+    'group_control_pre'{
+      $candidate.controlVariantId="$($state.currentBestVariantId)"
+      $seed=@($state.runs|Where-Object{$_.validity -eq 'valid' -and $_.variantId -eq $state.currentBestVariantId}|Select-Object -Last 3)
+      $candidate.controlRunIds=@($seed|ForEach-Object{$_.runId});$state.phase='group_apply_b1';$state.lastMessage='对照 A 已完成，下一步套用候选并采 B1。';Save-TuningExperiment
+    }
+    'group_capture_b1'{if(@($candidate.candidateRunIds) -notcontains "$($Run.runId)"){$candidate.candidateRunIds=@($candidate.candidateRunIds)+@("$($Run.runId)")};$state.phase='group_rollback_a';$state.lastMessage='B1 完成，下一步只回滚本候选，重测 A。';Save-TuningExperiment}
+    'group_capture_a'{if(@($candidate.controlRunIds) -notcontains "$($Run.runId)"){$candidate.controlRunIds=@($candidate.controlRunIds)+@("$($Run.runId)")};$state.phase='group_apply_b2';$state.lastMessage='A 复测完成，下一步再套用候选并采 B2。';Save-TuningExperiment}
+    'group_capture_b2'{if(@($candidate.candidateRunIds) -notcontains "$($Run.runId)"){$candidate.candidateRunIds=@($candidate.candidateRunIds)+@("$($Run.runId)")};Save-TuningExperiment;Compare-CurrentTuningCandidate $candidate $false}
+    'group_capture_extra_a'{if(@($candidate.controlRunIds) -notcontains "$($Run.runId)"){$candidate.controlRunIds=@($candidate.controlRunIds)+@("$($Run.runId)")};$state.phase='group_apply_extra_b';Save-TuningExperiment}
+    'group_capture_extra_b'{if(@($candidate.candidateRunIds) -notcontains "$($Run.runId)"){$candidate.candidateRunIds=@($candidate.candidateRunIds)+@("$($Run.runId)")};Save-TuningExperiment;Compare-CurrentTuningCandidate $candidate $true}
+  }
+  Update-TuningUi
+}
+
+function Invoke-NextTuningStep {
+  $state=$script:ActiveTuningExperiment
+  if(-not (Test-TuningExperimentActive)){throw '没有可继续的活动实验'}
+  if($state.pendingTuningCommit){[void](Resume-PendingTuningCommit);Update-TuningUi;return}
+  if($state.phase -eq 'applying' -and -not @($state.candidates|Where-Object activeBackup).Count){throw '上次 Apply 在备份回传前中断，已拒绝继续写系统；请使用普通还原或诊断报告'}
+  if($state.phase -eq 'baseline'){$run=Invoke-TuningPerformanceCapture 'baseline' 'baseline';if($run){[void](Resume-PendingTuningCommit)};return}
+  if([int]$state.candidateIndex -ge @($state.candidates).Count){
+    $run=Invoke-TuningPerformanceCapture "$($state.currentBestVariantId)" 'final' $false;if($run){[void](Resume-PendingTuningCommit)};return
+  }
+  $candidate=$state.candidates[[int]$state.candidateIndex]
+  switch("$($state.phase)"){
+    'group_control_pre'{
+      if(-not $candidate.controlVariantId){$candidate.controlVariantId="$($state.currentBestVariantId)";Save-TuningExperiment}
+      $run=Invoke-TuningPerformanceCapture "$($candidate.controlVariantId)" "$($candidate.groupId)";if($run){[void](Resume-PendingTuningCommit)}
+    }
+    'group_apply_b1'{[void](Invoke-TuningApplyCandidate $candidate 'group_capture_b1')}
+    'group_capture_b1'{$run=Invoke-TuningPerformanceCapture "$($candidate.variantId)" "$($candidate.groupId)";if($run){[void](Resume-PendingTuningCommit)}}
+    'group_rollback_a'{
+      try{Invoke-TuningRollbackBackup "$($candidate.activeBackup)" 'A/B 交替回到 A'|Out-Null}
+      catch{$state.status='failed';$state.phase='failed';$state.stopReason='rollback_failed';$state.lastMessage=$_.Exception.Message;Complete-GuiTuningExperimentTerminal $true;throw}
+      $candidate.activeBackup='';$state.phase='group_capture_a';if("$($candidate.groupId)" -eq 'G3'){$state.groupRestartAfter=[DateTime]::UtcNow.ToString('o')};Save-TuningExperiment
+    }
+    'group_capture_a'{$run=Invoke-TuningPerformanceCapture "$($state.currentBestVariantId)" "$($candidate.groupId)";if($run){[void](Resume-PendingTuningCommit)}}
+    'group_apply_b2'{[void](Invoke-TuningApplyCandidate $candidate 'group_capture_b2')}
+    'group_capture_b2'{$run=Invoke-TuningPerformanceCapture "$($candidate.variantId)" "$($candidate.groupId)";if($run){[void](Resume-PendingTuningCommit)}}
+    'group_rollback_extra_a'{
+      try{Invoke-TuningRollbackBackup "$($candidate.activeBackup)" '追加 A/B 交替回到 A'|Out-Null}
+      catch{$state.status='failed';$state.phase='failed';$state.stopReason='rollback_failed';$state.lastMessage=$_.Exception.Message;Complete-GuiTuningExperimentTerminal $true;throw}
+      $candidate.activeBackup='';$state.phase='group_capture_extra_a';if("$($candidate.groupId)" -eq 'G3'){$state.groupRestartAfter=[DateTime]::UtcNow.ToString('o')};Save-TuningExperiment
+    }
+    'group_capture_extra_a'{$run=Invoke-TuningPerformanceCapture "$($state.currentBestVariantId)" "$($candidate.groupId)";if($run){[void](Resume-PendingTuningCommit)}}
+    'group_apply_extra_b'{[void](Invoke-TuningApplyCandidate $candidate 'group_capture_extra_b')}
+    'group_capture_extra_b'{$run=Invoke-TuningPerformanceCapture "$($candidate.variantId)" "$($candidate.groupId)";if($run){[void](Resume-PendingTuningCommit)}}
+    default{throw "当前实验阶段不接受「下一步」：$($state.phase)"}
+  }
+  Update-TuningUi
+}
+
+function New-GuiTuningExperiment {
+  if (-not $script:TuningModuleLoaded) { throw '自动调优规则模块缺失，请重新安装软件' }
+  if (Test-TuningExperimentActive) {
+    Send-TuningTelemetryEvent -TuningType 'experiment_started' -State $script:ActiveTuningExperiment -RequirePersistence
+    return $script:ActiveTuningExperiment
+  }
+  if(@($script:PerformanceJobs|Where-Object{-not $_.Async.IsCompleted}).Count){throw '普通性能采样正在收尾，请等完成后再创建实验，避免普通会话混入 Beta 时段'}
+  if (-not (Test-AllowedGameExecutable $script:TargetExe)) { throw '请先在「优化」页定位 DeltaForceClient-Win64-Shipping.exe 或 DeltaForce.exe' }
+  $scene="$($ui.TuneSceneBox.Text)".Trim()
+  if($scene.Length -lt 2 -or $scene.Length -gt 80 -or $scene -match '[\x00-\x1f]'){throw '固定场景标识需为 2–80 个可见字符'}
+  $temp=0.0
+  if(-not [double]::TryParse("$($ui.TuneTempBox.Text)",[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::CurrentCulture,[ref]$temp) -or $temp -lt 0 -or $temp -gt 7){throw '最大温升请填 0–7°C'}
+  $allowPower=[bool]$ui.TunePowerChk.IsChecked;$power=0.0
+  if($allowPower){
+    if(-not [double]::TryParse("$($ui.TunePowerBox.Text)",[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::CurrentCulture,[ref]$power) -or $power -lt 0 -or $power -gt 20){throw '最大功耗增幅请填 0–20%'}
+  } else {$ui.TunePowerBox.Text='0'}
+  $env=Get-TuningEnvironmentSnapshot $scene
+  $state=New-TuningExperimentState -SceneId $scene -Environment $env -Goal smoothness -MaxTempIncreaseC $temp `
+    -AllowHigherPower $allowPower -MaxPowerIncreasePct $power
+  $state=Initialize-TuningGuiStateFields $state;$state.phase='baseline';$state.gamePath=[IO.Path]::GetFullPath($script:TargetExe)
+  $state.configGeneration=$script:TuningConfigGeneration;$state.candidates[0].controlVariantId='baseline'
+  $state.lastMessage='实验已创建。先完成 3 次有效基线；每轮请使用同一场景和操作路线。'
+  $script:ActiveTuningExperiment=$state;$script:ActiveTuningStatePath=Join-Path $script:TuningExperimentDir ("$($state.experimentId).json")
+  Save-TuningExperiment;Send-TuningTelemetryEvent -TuningType 'experiment_started' -State $state -RequirePersistence;Update-TuningUi
+  Write-Log "已创建自动调优实验 $($state.experimentId)，场景：$scene。"
+  $state
+}
+
+function Stop-GuiTuningExperiment {
+  $state=$script:ActiveTuningExperiment
+  if(-not (Test-TuningExperimentActive)){return}
+  if($state.pendingTuningCommit){[void](Resume-PendingTuningCommit);$state=$script:ActiveTuningExperiment;if(-not (Test-TuningExperimentActive)){return}}
+  $refs=New-Object System.Collections.Generic.List[string]
+  # activeBackups 是已保留组的旧→新链；当前候选 activeBackup 更新，必须排在最后，
+  # 下面倒序恢复时才会先撤当前候选、再 G3→G2→G1。
+  foreach($backup in @($state.activeBackups)){if(-not $refs.Contains("$backup")){[void]$refs.Add("$backup")}}
+  foreach($candidate in @($state.candidates)){if($candidate.activeBackup -and -not $refs.Contains("$($candidate.activeBackup)")){[void]$refs.Add("$($candidate.activeBackup)")}}
+  $state.phase='rolling_back';$state.lastMessage='正在按相反顺序停止实验并回滚指定备份…';Save-TuningExperiment
+  for($i=$refs.Count-1;$i -ge 0;$i--){
+    try{
+      $restored="$($refs[$i])";Invoke-TuningRollbackBackup $restored '用户停止实验'|Out-Null;$refs.RemoveAt($i)
+      Remove-TuningBackupFromState $state $restored
+      $state.lastMessage="已回滚 $([IO.Path]::GetFileName($restored))；剩余 $($refs.Count) 份指定备份。";Save-TuningExperiment
+    }
+    catch{
+      $state.status='failed';$state.phase='failed';$state.stopReason='internal_error';$state.lastMessage="停止时回滚失败，已保留未处理备份引用：$($_.Exception.Message)"
+      Complete-GuiTuningExperimentTerminal $true;throw
+    }
+  }
+  $state.activeBackups=@();$state.status='cancelled';$state.phase='completed';$state.result='cancelled';$state.stopReason='user_cancelled';$state.completedAt=ConvertTo-TuningUtcText
+  $state.lastMessage='实验已停止，本实验保留的候选已按相反顺序用指定备份回滚。'
+  Complete-GuiTuningExperimentTerminal $true
+}
+
+function Load-ActiveTuningExperiment {
+  if(-not $script:TuningModuleLoaded){Update-TuningUi;return}
+  try{
+    $id=Read-TuningPointerStrict
+    if(-not $id){Update-TuningUi;return}
+    $path=Join-Path $script:TuningExperimentDir ("$id.json")
+    $state=Read-TuningState $path
+    if(-not $state){throw '活动实验状态文件缺失'}
+    $state=Initialize-TuningGuiStateFields $state;[void](Assert-TuningGuiState $state)
+    $script:ActiveTuningExperiment=$state;$script:ActiveTuningStatePath=$path;$script:TuningConfigGeneration=[int64]$state.configGeneration
+    $script:TargetExe="$($state.gamePath)";$ui.GameText.Text=$script:TargetExe
+    $ui.TuneSceneBox.Text="$($state.sceneId)";$ui.TuneTempBox.Text="$($state.maxTempIncreaseC)";$ui.TunePowerChk.IsChecked=[bool]$state.allowHigherPower;$ui.TunePowerBox.Text="$($state.maxPowerIncreasePct)"
+    try { Send-TuningTelemetryEvent -TuningType 'experiment_started' -State $state -RequirePersistence }
+    catch {
+      # 状态文件本身有效，只是 start 事件尚未安全入队；保留指针，下一次启动/点击继续会重试。
+      Write-Log "自动调优开始事件仍待持久化：$($_.Exception.Message)"
+      Update-TuningUi
+      return
+    }
+    if($state.pendingTuningCommit){
+      try{[void](Resume-PendingTuningCommit);$state=$script:ActiveTuningExperiment}
+      catch{Write-Log "自动调优待提交步骤仍未安全入队：$($_.Exception.Message)";Update-TuningUi;return}
+    }
+    if("$($state.status)" -in 'completed','rolled_back','cancelled','failed'){
+      # 终态文件仍有活动指针，说明上次在“状态落盘 → completion 入 outbox → 清指针”之间退出。
+      # 重新收口会复用稳定 eventId；若 outbox 本身暂时写不进，保留指针供下次启动继续。
+      $autoRollback = "$($state.status)" -in 'rolled_back','cancelled' -or
+        "$($state.stopReason)" -in 'safety_threshold','rollback_failed','final_rollback_failed','internal_error'
+      try { Complete-GuiTuningExperimentTerminal ([bool]$autoRollback) }
+      catch {
+        Write-Log "自动调优完成事件仍待持久化：$($_.Exception.Message)"
+        Update-TuningUi
+        return
+      }
+      return
+    } elseif("$($state.phase)" -eq 'applying'){
+      $candidate=@($state.candidates|Where-Object activeBackup|Select-Object -First 1)
+      if(-not $candidate){
+        $state.status='failed';$state.phase='failed';$state.stopReason='apply_failed';$state.lastMessage='上次 Apply 在备份路径回传前中断。已拒绝继续写系统；请使用普通「还原设置」或上传诊断报告。'
+        Complete-GuiTuningExperimentTerminal $false
+        Show-ConfirmDialog '实验中断' 'CRASH WINDOW DETECTED' $state.lastMessage '知道了' -InfoOnly|Out-Null
+      } else {
+        $state.lastMessage='上次在 Apply 返回备份后中断。为避免猜测执行结果，请停止并回滚，或在普通还原后新建实验。';Save-TuningExperiment
+        Show-ConfirmDialog '实验需要处理' 'APPLY INTERRUPTED' $state.lastMessage '知道了' -InfoOnly|Out-Null
+      }
+    } elseif(Test-TuningExperimentActive){
+      if(Show-ConfirmDialog '发现未完成实验' 'RESUME TUNING' "场景：$($state.sceneId)`n当前：$($state.phase)`n`n是否回到「自动调优 Beta」继续？" '继续实验'){Select-Tab 'tune'}
+    }
+    Update-TuningUi
+  }catch{
+    Clear-TuningPointer;$script:ActiveTuningExperiment=$null;$script:ActiveTuningStatePath=$null;Update-TuningUi
+    Write-Log "未能恢复自动调优实验：$($_.Exception.Message)"
+    Show-ConfirmDialog '实验状态无效' 'TUNING STATE REJECTED' "已拒绝加载未通过严格校验的实验状态：`n$($_.Exception.Message)" '知道了' -InfoOnly|Out-Null
   }
 }
 
@@ -2160,12 +3524,17 @@ function New-DiagnosticReport {
 
   $lines.Add('== 最近游戏性能记录 ==')
   try {
-    $perfFile = Join-Path $script:RootDir 'config\performance-sessions.json'
+    $perfFile = Join-Path $script:UserConfigDir 'performance-sessions.json'
     if (-not (Test-Path -LiteralPath $perfFile)) { $lines.Add('（暂无记录；v0.19.0 起在游戏启动稳定后自动采样）') }
     else {
-      $sessions = @(Get-Content -LiteralPath $perfFile -Raw -Encoding UTF8 | ConvertFrom-Json | Select-Object -Last 5)
+      # Windows PowerShell 5.1 的 ConvertFrom-Json 会把顶层 JSON 数组作为一个管道对象输出；
+      # 若直接接 Select-Object，foreach 会拿到整个数组并把每个属性展开成空格拼接的一行。
+      # 先结束管道并显式数组化，确保每段性能记录都是独立对象。
+      $decodedSessions = Get-Content -LiteralPath $perfFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      $sessions = @(Expand-PerformanceSessions $decodedSessions)
+      if ($sessions.Count -gt 5) { $sessions = @($sessions | Select-Object -Last 5) }
       foreach ($s in $sessions) {
-        $lines.Add("$($s.recordedAt)｜$($s.gpuModel)｜$($s.durationSec)s｜平均 $($s.avgFps) FPS｜1% Low $($s.fps1Low) FPS")
+        $lines.Add("$($s.recordedAt)｜$($s.gpuModel)｜$($s.durationSec)s｜平均帧率 $($s.avgFps) 帧/秒｜1% 低帧率 $($s.fps1Low) 帧/秒")
         $lines.Add("     GPU 占用 $($s.gpuUtilAvg)% / 峰值 $($s.gpuUtilMax)%｜温度 $($s.gpuTempAvg)°C / 峰值 $($s.gpuTempMax)°C｜功耗 $($s.gpuPowerAvg)W / 峰值 $($s.gpuPowerMax)W")
       }
     }
@@ -2183,18 +3552,11 @@ function New-DiagnosticReport {
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
   $lines.Add('')
 
-  $lines.Add('== 最近一次备份的项目 ==')
-  try {
-    $bak = Get-ChildItem (Join-Path $script:RootDir 'backup') -Filter 'backup-*.json' -File -ErrorAction SilentlyContinue |
-           Sort-Object Name -Descending | Select-Object -First 1
-    if (-not $bak) { $lines.Add('（无备份）') }
-    else {
-      # 只列项目名，不带任何原值
-      $b = Get-Content -LiteralPath $bak.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      $lines.Add("文件：$($bak.Name)（$(@($b.Ops).Count) 项，$($b.Time)）")
-      foreach ($op in @($b.Ops)) { $lines.Add("  - $(Get-RestoreOpLabel $op)") }
-    }
-  } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
+  $lines.Add('== 系统还原备份 ==')
+  # v0.19.4 起备份含注册表/文件原值，存放在仅管理员可读的 ProgramData 目录并带 HMAC。
+  # 普通权限 GUI 不为生成诊断报告而扩大权限或读取原值；执行/还原结果已记录在运行日志。
+  $lines.Add("位置：$script:BackupDir（受保护；仅管理员引擎验证和读取）")
+  $lines.Add('本次执行产生的备份文件名与结果见下方运行日志。')
   $lines.Add('')
 
   $lines.Add('== 运行日志 ==')
@@ -2340,7 +3702,7 @@ function Show-GpuGuideDialog($Hw) {
 $script:Busy = $false
 
 function Select-Tab([string]$Which) {
-  foreach ($t in @(@('opt', 'TabOptBtn', 'OptPage'), @('ref', 'TabRefBtn', 'RefPage'), @('log', 'TabLogBtn', 'LogPage'))) {
+  foreach ($t in @(@('opt', 'TabOptBtn', 'OptPage'), @('tune', 'TabTuneBtn', 'TunePage'), @('ref', 'TabRefBtn', 'RefPage'), @('log', 'TabLogBtn', 'LogPage'))) {
     $on = ($Which -eq $t[0])
     $ui[$t[1]].Tag = $(if ($on) { 'on' } else { '' })
     $ui[$t[2]].Visibility = $(if ($on) { 'Visible' } else { 'Collapsed' })
@@ -2349,6 +3711,7 @@ function Select-Tab([string]$Which) {
   $ui.ActionRow.Visibility = $(if ($Which -eq 'opt') { 'Visible' } else { 'Collapsed' })
   # 每次切入都重建：数据文件可能是界面启动之后才生成的
   if ($Which -eq 'ref') { Update-StreamerPage }
+  if ($Which -eq 'tune') { Update-TuningUi }
   # 看过就不用再提示了
   if ($Which -eq 'log') { Set-LogBadge 0 }
 }
@@ -2363,7 +3726,8 @@ function Set-BusyState([bool]$On) {
   # 执行期间禁用一切入口防重复点击；窗口关闭由 CloseBtn 与主窗口 Closing 双重拦截
   $script:Busy = $On
   foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','ReportBtn','BrowseBtn',
-                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabRefBtn','UpdateBtn') {
+                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabTuneBtn','TabRefBtn','UpdateBtn',
+                 'TuneCreateBtn','TuneNextBtn','TuneStopBtn') {
     if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
   }
   # 更新恰好在执行优化/还原时被检测到：先不打断系统修改，收尾后立即补弹详情
@@ -2371,6 +3735,7 @@ function Set-BusyState([bool]$On) {
       "$script:UpdatePromptedVersion" -ne "$($script:UpdateInfo.Version)") {
     [void]$window.Dispatcher.BeginInvoke([action]{ Show-DetectedUpdateDialog })
   }
+  Update-TuningUi
 }
 
 function Update-ApplyProgress($p) {
@@ -2402,6 +3767,169 @@ function Update-RestoreProgress($p) {
     if ($w -gt 0 -and $p.Total -gt 0) { $ui.ProgFill.Width = [math]::Max(0, $w * $p.Index / $p.Total) }
   }
   $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+}
+
+# 纯检测和用户着色器缓存不需要、也不应获得管理员权限。尤其用户缓存目录可由同权限
+# 进程调整目录结构；保持普通用户 token，即使发生竞态也不会扩大到用户本来无权删除的位置。
+function Invoke-LocalNoBackupItems([object[]]$Items) {
+  $results = New-Object System.Collections.Generic.List[object]
+  foreach ($it in @($Items)) {
+    try {
+      if ($it.Kind -eq 'cache') {
+        $cache = Clear-ShaderCache
+        if (@($cache.Cleared).Count -eq 0 -and @($cache.Failed).Count -eq 0) {
+          [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $true
+            Msg = '无缓存可清理（本机没有找到着色器缓存文件）' })
+        } elseif (@($cache.Failed).Count -gt 0 -and @($cache.Cleared).Count -eq 0) {
+          [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false
+            Msg = "$(@($cache.Failed) -join '；')——请关闭游戏与显卡驱动面板后重试" })
+        } else {
+          $msg = "$(@($cache.Cleared) -join '；')；此项不产生备份，也无需还原（缓存会由驱动自动重建）"
+          if (@($cache.Failed).Count -gt 0) { $msg += "；另有 $(@($cache.Failed) -join '；')" }
+          [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = $msg })
+        }
+      } elseif ($it.Kind -eq 'check') {
+        $state = & $it.Check
+        [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($state.Ok -eq $true)
+          Skipped = $false; Attention = ($state.Ok -ne $true); Msg = "纯检测：$($state.Text)" })
+      } else {
+        throw "普通权限执行器不接受项目类型：$($it.Kind)"
+      }
+    } catch {
+      [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false; Msg = $_.Exception.Message })
+    }
+  }
+  @($results)
+}
+
+# GUI 始终以普通用户运行。只有用户明确点击「执行优化」或「还原设置」后，才把核心引擎
+# 作为短生命周期管理员子进程启动；结果写入受保护的 ProgramData IPC 文件，再由 GUI 只读。
+# 这避免让整个 WPF/网络/更新流程长期持有管理员权限。
+function Test-ProtectedProgramRoot {
+  try {
+    $root = [IO.Path]::GetFullPath($script:RootDir).TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $false }
+    if ($root.StartsWith('\\')) { return $false }
+
+    # 路径链上出现 junction / symbolic link 时，提权进程可能被引到程序目录之外。
+    $cursor = Get-Item -LiteralPath $root -Force
+    while ($cursor) {
+      if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+      $cursor = $cursor.Parent
+    }
+
+    # 非管理员 GUI 若能在程序根目录新建文件，说明同权限进程也能在 UAC 前替换引擎。
+    # 探针用 CreateNew，且无论结果如何都清理；受保护目录会抛 UnauthorizedAccessException。
+    $probe = Join-Path $root ('.dfb-write-probe-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+      $fs = New-Object IO.FileStream($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+                                    [IO.FileShare]::None, 1, [IO.FileOptions]::WriteThrough)
+      $fs.Dispose()
+      Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+      return $false
+    } catch {
+      $err = $_.Exception
+      while ($err) {
+        if ($err -is [UnauthorizedAccessException]) { return $true }
+        $err = $err.InnerException
+      }
+      return $false
+    } finally {
+      if ($probe -and (Test-Path -LiteralPath $probe)) {
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+      }
+    }
+  } catch { return $false }
+}
+
+function ConvertTo-PsSingleQuotedLiteral([string]$Value) {
+  "'" + $(if ($null -eq $Value) { '' } else { $Value.Replace("'", "''") }) + "'"
+}
+
+function Invoke-ElevatedEngineAction {
+  param(
+    [Parameter(Mandatory)][ValidateSet('Apply','Restore')][string]$Action,
+    [string[]]$ItemIds,
+    [string]$GamePath,
+    [bool]$AllowRisky = $false,
+    [string]$GpuSpoofModel,
+    [string]$BackupFile,
+    [string]$ResultId
+  )
+  if (-not (Test-ProtectedProgramRoot)) {
+    throw '当前程序仍在普通软件可修改的旧目录中。请运行最新版安装器，把软件迁移到 Program Files 后再执行系统优化或还原。'
+  }
+  $engine = Join-Path $script:RootDir 'scripts\delta-booster.ps1'
+  if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) { throw '核心优化引擎缺失，请重新安装软件' }
+
+  $resultId = $(if ($ResultId) { "$ResultId" } else { [guid]::NewGuid().ToString('D') })
+  if ($resultId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw '管理员执行结果 ID 无效'
+  }
+  $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+  $userLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  if (-not $programData -or -not $userLocalAppData) { throw '系统未提供用户数据目录' }
+  $resultFile = Join-Path (Join-Path $programData 'DeltaForceBooster\ipc') ($resultId + '.json')
+  $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $userLocalAppData = [IO.Path]::GetFullPath($userLocalAppData)
+  $parts = New-Object System.Collections.Generic.List[string]
+  $parts.Add('& ' + (ConvertTo-PsSingleQuotedLiteral $engine))
+  $parts.Add('-' + $Action)
+  $parts.Add('-ResultId ' + (ConvertTo-PsSingleQuotedLiteral $resultId))
+  # UAC 可能由另一管理员账户批准；显式传入原交互用户上下文，避免 HKCU/LocalAppData
+  # 被错误地改到管理员账户。引擎会将 HKCU 映射到 HKEY_USERS\<SID> 并校验路径。
+  $parts.Add('-UserSid ' + (ConvertTo-PsSingleQuotedLiteral $userSid))
+  $parts.Add('-UserLocalAppData ' + (ConvertTo-PsSingleQuotedLiteral $userLocalAppData))
+  if ($Action -eq 'Apply') {
+    $itemLiterals = @($ItemIds | ForEach-Object { ConvertTo-PsSingleQuotedLiteral "$_" })
+    $parts.Add('-Items @(' + ($itemLiterals -join ',') + ')')
+    if ($GamePath) { $parts.Add('-GamePath ' + (ConvertTo-PsSingleQuotedLiteral $GamePath)) }
+    if ($GpuSpoofModel) { $parts.Add('-GpuSpoofModel ' + (ConvertTo-PsSingleQuotedLiteral $GpuSpoofModel)) }
+    if ($AllowRisky) { $parts.Add('-Risky') }
+  } elseif ($BackupFile) {
+    # Beta 回滚必须指向它自己刚刚生成的备份，绝不退化为“还原全部”。
+    if (-not (Test-TuningBackupReference $BackupFile)) { throw '指定的实验备份路径无效' }
+    $parts.Add('-BackupFile ' + (ConvertTo-PsSingleQuotedLiteral ([IO.Path]::GetFullPath($BackupFile))))
+  }
+  $command = ($parts -join ' ') + '; exit $LASTEXITCODE'
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+  # UAC 边界上的可执行文件必须从系统 Known Folder 得到；SystemRoot 环境变量由调用方
+  # 继承，若直接信任会让普通进程把管理员 helper 引到自定义目录。
+  $windowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if (-not $windowsDir) { throw '系统未提供 Windows 目录' }
+  $powershellExe = Join-Path $windowsDir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+  try {
+    $proc = Start-Process -FilePath $powershellExe -Verb RunAs -WindowStyle Hidden -PassThru `
+      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded)
+  } catch {
+    if ($_.Exception.Message -match 'canceled|cancelled|取消') { throw '已取消管理员授权，本次没有执行任何系统修改' }
+    throw "管理员执行进程启动失败：$($_.Exception.Message)"
+  }
+  while (-not $proc.HasExited) {
+    $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Background)
+    Start-Sleep -Milliseconds 80
+    $proc.Refresh()
+  }
+
+  # 引擎会在退出前 Flush(true) 并原子发布结果；仍短暂重试以容忍杀毒软件扫描造成的共享延迟。
+  $deadline = [DateTime]::UtcNow.AddSeconds(5)
+  while (-not (Test-Path -LiteralPath $resultFile) -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 80
+  }
+  if (-not (Test-Path -LiteralPath $resultFile)) {
+    throw "管理员执行进程未返回可信结果（退出码 $($proc.ExitCode)）"
+  }
+  try { $reply = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json }
+  catch { throw "管理员执行结果读取失败：$($_.Exception.Message)" }
+  if ([int]$reply.SchemaVersion -ne 1 -or "$($reply.ResultId)" -ne $resultId -or "$($reply.Action)" -ne $Action) {
+    throw '管理员执行结果校验失败'
+  }
+  if ($null -eq $reply.Data) {
+    throw $(if ("$($reply.Error)") { "$($reply.Error)" } else { "执行失败（退出码 $($reply.ExitCode)）" })
+  }
+  $reply.Data | Add-Member -NotePropertyName EngineExitCode -NotePropertyValue ([int]$reply.ExitCode) -Force
+  $reply.Data
 }
 
 # 主题化确认/信息对话框：原生 MessageBox 白底系统样式与深色主题完全不搭（用户实测吐槽），
@@ -2502,7 +4030,10 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
 # 重启调用单独包一层：验证脚本可整体替换成 mock 走完整个交互链路，
 # 保证任何测试都不会真的把机器重启掉
 function Invoke-SystemReboot {
-  Start-Process shutdown.exe -ArgumentList '/r', '/t', '5'
+  $windowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if (-not $windowsDir) { throw '系统未提供 Windows 目录' }
+  $shutdownExe = Join-Path $windowsDir 'System32\shutdown.exe'
+  Start-Process -FilePath $shutdownExe -Verb RunAs -WindowStyle Hidden -ArgumentList '/r', '/t', '5'
 }
 
 # 执行完成后的醒目重启提醒：此前只在日志末尾一行小字，用户根本注意不到（实机反馈）。
@@ -2673,14 +4204,16 @@ function Show-NameDialog {
 }
 
 # 安装器日志：静默安装出问题时这是唯一的现场（主程序此刻已经退了）
-$script:SetupLogPath = Join-Path $script:RootDir 'config\update-setup.log'
+$script:SetupLogPath = Join-Path $script:UserConfigDir 'update-setup.log'
 
 # 真正启动安装器的唯一出口：验证时整体替换成桩，绝不真的覆盖自身。
-# /waitpid 让安装器等本进程退出后再覆盖文件，/runafter 让它装完自启新版；
-# 装回 $script:RootDir 而不是默认位置——用户可能把程序装在任意目录
-function Invoke-BoosterSetupRun([string]$SetupFile, [string]$TargetDir, [string]$LogFile) {
+# /waitpid 让安装器等本进程退出后再切换版本，/runafter 让它装完自启新版；
+# SHA256 与大小同时传入，安装器在提权后重新从文件句柄校验，封闭下载后的替换窗口。
+function Invoke-BoosterSetupRun([string]$SetupFile, [string]$TargetDir, [string]$LogFile,
+                                [string]$Sha256, [long]$Size) {
   Start-Process -FilePath $SetupFile -PassThru -ArgumentList @(
-    '/silent', "/dir=`"$TargetDir`"", "/waitpid=$PID", '/runafter', "/log=`"$LogFile`"")
+    '/silent', "/dir=`"$TargetDir`"", "/waitpid=$PID", '/runafter', "/log=`"$LogFile`"",
+    "/sha256=$Sha256", "/size=$Size")
 }
 
 # 安装阶段的不确定进度：安装在另一个进程里跑，拿不到百分比，只能转圈
@@ -2718,6 +4251,10 @@ function Reset-UpdDialogButtons {
 # 下载源限白名单 https（见 scripts\updater.ps1），清单缺校验信息或任一环节失败都
 # 退回「浏览器打开下载页」的旧行为。下载/安装永远由用户点击触发，检查只负责提醒。
 function Show-UpdateDialog($UpdInfo) {
+  if (Test-TuningExperimentActive) {
+    Write-Log '自动调优实验活动期间不安装更新；可稍后继续实验，或先「停止并回滚」。'
+    return $false
+  }
   $uxaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -2920,7 +4457,7 @@ function Show-UpdateDialog($UpdInfo) {
     $script:UpdUi.CurText.Text += " · 此版本已停止支持，需升级后继续使用"
   }
   if ($UpdInfo.CanInline) {
-    $script:UpdUi.InlineNote.Text = '「立即更新」全程自动：从官方源（df.ltz88.cn）下载 → 校验完整性 → 原地安装到当前目录 → 自动打开新版本，中途不需要你再操作。自存方案 / 备份 / 运行状态不会被覆盖。'
+    $script:UpdUi.InlineNote.Text = '「立即更新」全程自动：从官方源（df.ltz88.cn）下载 → 双重校验完整性 → 事务安装 → 自动打开新版本。旧版若仍在下载文件夹，会自动迁移到 Program Files；自存方案、备份和运行状态会保留。'
   } else {
     # 清单缺 sha256/size 或 setupUrl 过不了白名单安检：内置更新不可用，退回旧行为并留痕
     $script:UpdUi.UpdBtn.Visibility = 'Collapsed'
@@ -2960,9 +4497,11 @@ function Show-UpdateDialog($UpdInfo) {
       Start-UpdInstallSpinner
       $script:UpdUi.DlPanel.Visibility = 'Collapsed'
       try {
+        if (Test-TuningExperimentActive) { throw '自动调优实验已激活，更新安装已拦截' }
         # 安装器要覆盖本程序的文件，必须等本进程退出——把 /waitpid 交给它，
         # 我们启动完立刻自退，等待逻辑放在安装器侧（这边退出后就没人能干活了）
-        $proc = Invoke-BoosterSetupRun $st.File $script:RootDir $script:SetupLogPath
+        $proc = Invoke-BoosterSetupRun $st.File $script:RootDir $script:SetupLogPath `
+                  "$($script:UpdDlgInfo.Sha256)" ([long]$script:UpdDlgInfo.Size)
         if (-not $proc) { throw '安装程序未能启动' }
         Write-Log "安装程序已启动（PID $($proc.Id)），本程序即将退出，安装完成后新版本会自动打开。"
         # 交棒完成，放行关窗：拦截关窗的守卫是拦用户的，别把自己也拦在里面。
@@ -2998,6 +4537,7 @@ function Show-UpdateDialog($UpdInfo) {
 
   $script:UpdUi.UpdBtn.Add_Click({
     if ($script:DlState -and -not $script:DlState.Done) { return }
+    if (Test-TuningExperimentActive) { Write-Log '自动调优实验期间已拦截更新安装。'; return }
     $script:DlState = [hashtable]::Synchronized(@{
       Received = 0L; Total = [long]$script:UpdDlgInfo.Size; Phase = 'downloading'
       Error = ''; File = ''; Cancel = $false; Done = $false
@@ -3072,7 +4612,7 @@ function Show-UpdateDialog($UpdInfo) {
 # 自动检查发现新版时的统一弹窗出口。同一版本每次程序运行只自动弹一次；用户选了
 # 「稍后再说」仍可点标题栏入口重看，勾「不再提醒」则后续启动也不再自动提示。
 function Show-DetectedUpdateDialog {
-  if (-not $script:UpdateInfo -or $script:Busy -or $script:UpdateDialogOpen) { return }
+  if (-not $script:UpdateInfo -or $script:Busy -or $script:UpdateDialogOpen -or (Test-TuningExperimentActive)) { return }
   $ver = "$($script:UpdateInfo.Version)"
   if (-not $ver -or "$script:UpdatePromptedVersion" -eq $ver) { return }
   $script:UpdatePromptedVersion = $ver
@@ -3238,6 +4778,8 @@ $window.Add_ContentRendered({
       $ui.GameText.Text = '未定位 — 点「重新定位」手动选择游戏主程序'
       Write-Log '未自动找到游戏，部分优化项需要手动指定路径'
     }
+    # 硬件和默认游戏路径准备好后再恢复实验；状态中的固定路径优先且会严格复验。
+    Load-ActiveTuningExperiment
     Update-ItemList
     Update-PresetList
     # 启动即默认选中主推方案（实机诉求「进去之后默认直接选择主推全套」）：
@@ -3246,8 +4788,15 @@ $window.Add_ContentRendered({
       if ($script:PresetList[$fi].Id -eq 'main') { $ui.PresetBox.SelectedIndex = $fi; break }
     }
     $ui.ScanState.Text = '检测完成'
-    Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
+    Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」。可还原修改会为受保护备份请求一次管理员权限；带 * 的项目标本身也需要管理员权限。'
     Send-AnonymousTelemetry 'launch' $hw
+    # tuning 事件使用独立的持久 outbox。启动先恢复历史队列，运行中定时唤醒到期重试；
+    # 普通 launch/apply/restore 遥测仍保持原来的即时异步发送路径。
+    Start-TuningTelemetryOutboxFlush
+    $script:TuningTelemetryTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:TuningTelemetryTimer.Interval = [TimeSpan]::FromSeconds(30)
+    $script:TuningTelemetryTimer.Add_Tick({ Start-TuningTelemetryOutboxFlush })
+    $script:TuningTelemetryTimer.Start()
     Start-UpdateCheck
     # 运行期间定时复查：DispatcherTimer 在 UI 线程触发，真正的网络请求仍在后台 runspace，
     # 静默失败的约定不变——断网/超时都不会打扰主界面
@@ -3271,6 +4820,7 @@ $ui.TitleBar.Add_MouseLeftButtonDown({ $window.DragMove() })
 $ui.MinBtn.Add_Click({ $window.WindowState = 'Minimized' })
 $ui.UpdateBtn.Add_Click({
   if (-not $script:UpdateInfo) { return }
+  if (Test-TuningExperimentActive) { Write-Log '自动调优实验期间不安装更新，请先停止并回滚。'; return }
   # 用户在详情框里勾了「不再提醒此版本」就把入口收起，和跳过语义保持一致
   if (Show-UpdateDialog $script:UpdateInfo) { $ui.UpdateBtn.Visibility = 'Collapsed' }
 })
@@ -3278,37 +4828,74 @@ $ui.UpdateBtn.Add_Click({
 # WM_CLOSE（如安装器 CloseMainWindow）和 Alt+F4 都不经过它——执行/还原中途被关会
 # 留下写了一半的系统改动，必须在 Closing 事件里统一拦截
 $window.Add_Closing({
-  if ($script:Busy) {
+  if ($script:TuningSampling) {
+    $_.Cancel = $true
+    Write-Log '自动调优正在采样，请等本轮结束后再关闭；非采样阶段可直接关闭稍后继续。'
+  } elseif ($script:Busy) {
     $_.Cancel = $true
     Write-Log '正在执行优化/还原，请等本轮结束后再关闭。'
   } else {
     if ($script:PerformanceTimer) { $script:PerformanceTimer.Stop() }
+    if ($script:TuningTelemetryTimer) { $script:TuningTelemetryTimer.Stop() }
   }
 })
 $ui.CloseBtn.Add_Click({
+  if ($script:TuningSampling) { Write-Log '自动调优正在采样，请等本轮结束后再关闭。'; return }
   if ($script:Busy) { Write-Log '正在执行优化，请等本轮执行结束后再关闭。'; return }
   $window.Close()
 })
 
 $ui.TabOptBtn.Add_Click({ Select-Tab 'opt' })
+$ui.TabTuneBtn.Add_Click({ Select-Tab 'tune' })
 $ui.TabRefBtn.Add_Click({ Select-Tab 'ref' })
 $ui.TabLogBtn.Add_Click({ Select-Tab 'log' })
 
 $ui.BrowseBtn.Add_Click({
+  if (Test-TuningExperimentActive) { Write-Log '自动调优实验期间已锁定游戏路径。'; return }
   $dlg = New-Object Microsoft.Win32.OpenFileDialog
-  $dlg.Filter = '游戏主程序 (*.exe)|*.exe'
+  $dlg.Filter = '三角洲行动主程序|DeltaForceClient-Win64-Shipping.exe;DeltaForce.exe|EXE 文件 (*.exe)|*.exe'
   $dlg.Title = '选择三角洲行动主程序（如 DeltaForceClient-Win64-Shipping.exe）'
   if ($dlg.ShowDialog()) {
+    if (-not (Test-AllowedGameExecutable $dlg.FileName)) {
+      Show-ConfirmDialog '选择错误' 'INVALID GAME EXECUTABLE' '只能选择已存在的 DeltaForceClient-Win64-Shipping.exe 或 DeltaForce.exe。请不要选择启动器、捷径或其他 EXE。' '知道了' -InfoOnly | Out-Null
+      return
+    }
     $script:TargetExe = $dlg.FileName
+    $script:TuningConfigGeneration++
     $ui.GameText.Text = $script:TargetExe
     Update-ItemList
     Write-Log "目标程序已更新：$script:TargetExe"
   }
 })
 
+$ui.TunePowerChk.Add_Click({
+  if(-not $ui.TunePowerChk.IsChecked){$ui.TunePowerBox.Text='0'}
+  $ui.TunePowerBox.IsEnabled=[bool]$ui.TunePowerChk.IsChecked -and -not (Test-TuningExperimentActive) -and -not $script:Busy
+})
+$ui.TuneCreateBtn.Add_Click({
+  try{
+    if(Test-TuningExperimentActive){Select-Tab 'tune';$script:ActiveTuningExperiment.lastMessage='已继续当前实验，点「执行下一步」按状态机前进。';Save-TuningExperiment;Update-TuningUi;return}
+    [void](New-GuiTuningExperiment)
+  }catch{Write-Log "创建自动调优实验失败：$($_.Exception.Message)";Show-ConfirmDialog '创建失败' 'TUNING NOT STARTED' $_.Exception.Message '知道了' -InfoOnly|Out-Null}
+})
+$ui.TuneNextBtn.Add_Click({
+  try{Set-BusyState $true;Invoke-NextTuningStep}
+  catch{Write-Log "自动调优下一步未完成：$($_.Exception.Message)";Show-ConfirmDialog '步骤未完成' 'TUNING STEP STOPPED' $_.Exception.Message '知道了' -InfoOnly|Out-Null}
+  finally{Set-BusyState $false;Update-TuningUi}
+})
+$ui.TuneStopBtn.Add_Click({
+  if(-not (Show-ConfirmDialog '停止并回滚' 'STOP TUNING' '停止当前实验，并按相反顺序只回滚它保留的指定备份？' '停止并回滚')){return}
+  try{Set-BusyState $true;Stop-GuiTuningExperiment;Write-Log '自动调优实验已停止并回滚。'}
+  catch{Write-Log "自动调优停止/回滚失败：$($_.Exception.Message)";Show-ConfirmDialog '回滚未完成' 'ROLLBACK STOPPED' $_.Exception.Message '知道了' -InfoOnly|Out-Null}
+  finally{Set-BusyState $false;Update-TuningUi}
+})
+
 $ui.RefreshBtn.Add_Click({ Update-ItemList; Write-Log '状态已刷新。' })
 
-$ui.CheckUpdBtn.Add_Click({ Start-ManualUpdateCheck })
+$ui.CheckUpdBtn.Add_Click({
+  if(Test-TuningExperimentActive){Write-Log '自动调优实验期间已暂停主动更新入口。';return}
+  Start-ManualUpdateCheck
+})
 
 # 全选/全不选（实机诉求）：勾选态只圈「可执行」的项——已就绪项重复执行只会撑大备份；
 # 全不选则一视同仁清空。这等同手动改勾选，方案选中态一并清掉（勾选已不再等于该方案）
@@ -3368,9 +4955,10 @@ $ui.ReportBtn.Add_Click({
       "将把以下内容上传到作者的服务器（$script:ReportUploadUrl），仅用于排查你反馈的问题："
       ''
       '· 硬件型号与系统版本（CPU / 显卡 / 内存 / Windows 版本）'
+      '· 已定位的游戏主程序路径（用户名和机器名会脱敏）'
       '· 各优化项的当前状态'
       '· 本次运行日志'
-      '· 最近一次备份的项目清单（只有项目名，不含注册表原值）'
+      '· 受保护备份的位置，以及本次日志中的备份文件名与执行结果（不会读取注册表原值）'
       '· 本工具的版本号'
       ''
       "路径中的用户名、机器名已替换为 <user> / <pc>。报告大小约 $kb KB。"
@@ -3453,6 +5041,7 @@ $ui.DelPresetBtn.Add_Click({
 
 $ui.ApplyBtn.Add_Click({
   try {
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间已锁定配置，请使用实验「下一步」，或先停止并回滚' }
     $ids = @($ui.ItemPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
              ForEach-Object { $_.Child.Children[0].Tag })
     # 危险区域的勾选此前被整个忽略（勾了也不执行、不提示）：单独收集，走独立的
@@ -3460,7 +5049,6 @@ $ui.ApplyBtn.Add_Click({
     $riskyIds = @($ui.RiskyPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
                   ForEach-Object { $_.Child.Children[0].Tag })
     if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
-    $applyTier = Get-SelectedTelemetryConfigTier ($ids.Count + $riskyIds.Count)
     $optAll = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
     if ($riskyIds.Count -gt 0) {
       $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
@@ -3476,7 +5064,7 @@ $ui.ApplyBtn.Add_Click({
       }
     }
     $names = @($optAll | Where-Object { $ids -contains $_.Id } | ForEach-Object { $_.Name })
-    $msg = "将执行以下 $($ids.Count) 项优化（改动前自动备份，可一键还原）：`n`n" +
+    $msg = "将执行以下 $($ids.Count) 项优化（可还原的设置会先写入受保护备份）：`n`n" +
            (@($names | ForEach-Object { "· $_" }) -join "`n")
     if (-not (Show-ConfirmDialog '确认执行' 'CONFIRM APPLY' $msg '执行优化')) { return }
     Set-BusyState $true
@@ -3485,15 +5073,45 @@ $ui.ApplyBtn.Add_Click({
     $ui.ProgText.Text = '准备执行…'
     $ui.ProgCount.Text = ''
     Write-Log "开始执行 $($ids.Count) 项优化…"
-    # 进度回调逐项刷新界面并实时落日志，不再等全部跑完才一次性输出
-    # AllowRisky 只在用户刚通过高风险二次确认时才为真，绝不默认放行
-    $r = Invoke-Apply $ids $script:TargetExe ($riskyIds.Count -gt 0) ${function:Update-ApplyProgress} $script:SelectedGpuSpoofModel
+    $selectedItems = @($optAll | Where-Object { $ids -contains $_.Id })
+    $localItems = @($selectedItems | Where-Object { $_.Kind -in 'cache','check' })
+    $elevatedIds = @($selectedItems | Where-Object { $_.Kind -notin 'cache','check' } | ForEach-Object { $_.Id })
+    $localResults = @()
+    if ($elevatedIds.Count -gt 0) {
+      # 先完成 UAC 批次，再做不可回滚的本地缓存清理。这样用户取消 UAC 时，本轮不会
+      # 已经悄悄删掉缓存，却收到「没有执行任何系统修改」的误导提示。
+      # GUI 保持普通权限；只有真正修改系统/受保护设置的项目才显示 UAC。
+      # AllowRisky 只在用户刚通过高风险二次确认时才为真，绝不默认放行。
+      $ui.ProgText.Text = '等待管理员授权…'
+      $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+      $r = Invoke-ElevatedEngineAction -Action Apply -ItemIds $elevatedIds -GamePath $script:TargetExe `
+           -AllowRisky ($riskyIds.Count -gt 0) -GpuSpoofModel $script:SelectedGpuSpoofModel
+    } else {
+      $r = [pscustomobject]@{ Results = @(); Backup = $null; BackupError = $null
+                              UnrecordedNames = @(); EngineExitCode = 0 }
+    }
+    if ($localItems.Count -gt 0) {
+      $ui.ProgText.Text = '正在执行普通权限检测 / 缓存清理…'
+      $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+      $localResults = @(Invoke-LocalNoBackupItems $localItems)
+      $r.Results = @($r.Results) + @($localResults)
+    }
+    $resultRows = @($r.Results)
+    for ($ri = 0; $ri -lt $resultRows.Count; $ri++) {
+      Update-ApplyProgress ([pscustomobject]@{ Stage = 'done'; Index = ($ri + 1); Total = $resultRows.Count; Result = $resultRows[$ri] })
+    }
     $okN = @($r.Results | Where-Object Ok).Count
     $attList = @($r.Results | Where-Object Attention)
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
     $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention })
     $total = @($r.Results).Count
-    if ($okN -gt 0) { Set-TelemetryConfigTier $applyTier }
+    # 档位按本轮真正成功且产生改动的项目数计算，不按预设名/勾选数夸大；检测、缓存、
+    # Attention 与 Skipped 都不算。Set-TelemetryConfigTier 会保留历史上达到过的更高档位。
+    $changedIds = @($r.Results | Where-Object { $_.Ok -and $_.Changed -eq $true -and -not $_.Attention } |
+                    ForEach-Object { $_.Id })
+    $changedCount = @($selectedItems | Where-Object { $changedIds -contains $_.Id -and $_.Kind -notin 'check','cache' }).Count
+    if ($changedCount -gt 0) { $script:TuningConfigGeneration++ }
+    if ($changedCount -gt 0) { Set-TelemetryConfigTier (Get-SelectedTelemetryConfigTier $changedCount) }
     Send-AnonymousTelemetry 'apply' $script:HardwareInfo $okN $failList.Count
     # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到；
     # 体检发现的问题单列——那是检测项立功了，混进「失败」会让用户误以为工具坏了
@@ -3544,22 +5162,30 @@ $ui.ApplyBtn.Add_Click({
         } else { Write-Log '已取消重启，稍后请自行重启电脑以让优化完全生效。' }
       } else { Write-Log '你选择了稍后重启，优化项将在下次重启后完全生效。' }
     }
-  } catch { Write-Log "执行失败：$($_.Exception.Message)" }
+  } catch {
+    $err = $_.Exception.Message
+    Write-Log "执行失败：$err"
+    Show-ConfirmDialog '执行未完成' 'APPLY NOT COMPLETED' $err '知道了' -InfoOnly | Out-Null
+  }
   finally { Set-BusyState $false }
 })
 
 $ui.RestoreBtn.Add_Click({
   try {
-    if (-not (Show-ConfirmDialog '确认还原' 'CONFIRM RESTORE' '按最近一次备份还原全部改动？还原后各项会回到优化前的状态。' '还原设置')) { return }
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间禁止普通全量还原；请使用「停止并回滚」只处理本实验备份' }
+    if (-not (Show-ConfirmDialog '确认还原' 'CONFIRM RESTORE' '合并所有尚未还原的备份，把系统设置恢复到第一次优化前的原始状态？' '还原设置')) { return }
     Set-BusyState $true
     # 此前同步跑完才刷新，界面「卡一下」就结束，用户不知道还原有没有在干活（实测吐槽）；
     # 现在和执行优化共用进度面板，逐项推进 + 结束弹明确的完成提示
     $ui.ProgressPanel.Visibility = 'Visible'
     $ui.ProgFill.Width = 0
-    $ui.ProgText.Text = '正在还原…'
+    $ui.ProgText.Text = '等待管理员授权…'
     $ui.ProgCount.Text = ''
     $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
-    $r = Invoke-Restore $null ${function:Update-RestoreProgress}
+    $r = Invoke-ElevatedEngineAction -Action Restore
+    $script:TuningConfigGeneration++
+    $w = $ui.ProgTrack.ActualWidth - 2
+    if ($w -gt 0) { $ui.ProgFill.Width = $w }
     $failN = @($r.Failed).Count
     $skipN = @($r.Skipped).Count
     if ($failN -eq 0) { Set-TelemetryConfigTier 'baseline' -Force }
@@ -3581,7 +5207,11 @@ $ui.RestoreBtn.Add_Click({
              elseif ($skipN -gt 0) { "`n`n其余全部还原成功，各项已回到优化前的状态。" }
              else { "`n`n全部还原成功，各项已回到优化前的状态。" })
     Show-ConfirmDialog '还原完成' 'RESTORE DONE' $sum '知道了' -InfoOnly | Out-Null
-  } catch { Write-Log "还原失败：$($_.Exception.Message)" }
+  } catch {
+    $err = $_.Exception.Message
+    Write-Log "还原失败：$err"
+    Show-ConfirmDialog '还原未完成' 'RESTORE NOT COMPLETED' $err '知道了' -InfoOnly | Out-Null
+  }
   finally { Set-BusyState $false }
 })
 

@@ -1,11 +1,15 @@
 import importlib.util
+import datetime as dt
 import json
 import os
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
+import uuid
 
 
 MODULE_PATH = os.path.join(os.path.dirname(__file__), "report_server.py")
@@ -21,17 +25,20 @@ class TelemetryTests(unittest.TestCase):
         SERVER.DB_PATH = os.path.join(self.temp.name, "telemetry.db")
         SERVER.REPORT_DIR = os.path.join(self.temp.name, "reports")
         SERVER.TELEMETRY_PEPPER = "test-pepper"
+        SERVER.ADMIN_API_TOKEN = ""
+        SERVER._hits.clear()
+        SERVER._hits_last_sweep = 0.0
         os.makedirs(SERVER.REPORT_DIR)
         SERVER._init_db()
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def payload(self, install_id, event="launch"):
+    def payload(self, install_id, event="launch", version="0.19.4"):
         return {
             "installId": install_id,
             "event": event,
-            "version": "0.18.0",
+            "version": version,
             "os": "Windows 11 Pro",
             "build": "26100",
             "cpu": "Example CPU",
@@ -44,93 +51,539 @@ class TelemetryTests(unittest.TestCase):
             "failed": 1,
         }
 
-    def test_unique_users_and_daily_events(self):
+    def performance_payload(self, install_id, tier="baseline", avg_fps=100, fps_1_low=70):
+        data = self.payload(install_id, "performance")
+        data.update({
+            "configTier": tier,
+            "durationSec": 120,
+            "avgFps": avg_fps,
+            "fps1Low": fps_1_low,
+            "gpuUtilAvg": 80,
+            "gpuUtilMax": 90,
+            "gpuTempAvg": 70,
+            "gpuTempMax": 75,
+            "gpuPowerAvg": 150,
+            "gpuPowerMax": 170,
+        })
+        return data
+
+    def authenticate(self, payload, now, token=None, event_id=None):
+        token = token or SERVER._issue_device_token(payload["installId"], now)["deviceToken"]
+        payload.update({
+            "deviceToken": token,
+            "eventId": event_id or str(uuid.uuid4()),
+            "sentAt": now,
+        })
+        return payload
+
+    def seed_weekly_client(
+        self, client_hash, first_day, active_day, version="1.0.0",
+        gpu="NVIDIA Test GPU", device_type="desktop", authenticated=True,
+        launches=1, applies=0, restores=0, apply_ok=0, apply_failed=0,
+        restore_ok=0, restore_failed=0,
+    ):
+        first_seen = int(dt.datetime.combine(first_day, dt.time.min, tzinfo=dt.timezone.utc).timestamp())
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO clients (
+                           client_hash, first_seen, last_seen, app_version, gpu_model,
+                           gpu_model_verified, device_type, authenticated_last_seen
+                       ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (client_hash, first_seen, first_seen, version, gpu, device_type, first_seen if authenticated else 0),
+                )
+                conn.execute(
+                    """INSERT INTO daily_usage (
+                           day, client_hash, launches, applies, restores, apply_ok,
+                           apply_failed, restore_ok, restore_failed
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (active_day.isoformat(), client_hash, launches, applies, restores,
+                     apply_ok, apply_failed, restore_ok, restore_failed),
+                )
+        finally:
+            conn.close()
+
+    def seed_weekly_performance(
+        self, client_hash, day, tier, avg_fps, fps_1_low,
+        gpu="NVIDIA Test GPU", authenticated=True, temperature=70, power=150,
+    ):
+        recorded_at = int(dt.datetime.combine(day, dt.time(hour=12), tzinfo=dt.timezone.utc).timestamp())
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO performance_sessions (
+                           client_hash, recorded_at, day, app_version, gpu_model,
+                           config_tier, duration_sec, avg_fps, fps_1_low,
+                           gpu_temp_avg, gpu_power_avg, authenticated
+                       ) VALUES (?, ?, ?, '1.0.0', ?, ?, 120, ?, ?, ?, ?, ?)""",
+                    (client_hash, recorded_at, day.isoformat(), gpu, tier, avg_fps,
+                     fps_1_low, temperature, power, 1 if authenticated else 0),
+                )
+        finally:
+            conn.close()
+
+    def tuning_start_payload(self, install_id, experiment_id):
+        data = self.payload(install_id, "tuning", "0.20.0")
+        data.update({
+            "tuningType": "experiment_started",
+            "experimentId": experiment_id,
+            "status": "baseline_pending",
+            "goal": "smoothness",
+            "riskLevel": "low",
+            "allowReboot": False,
+            "allowHigherPower": False,
+            "maxTempIncreaseC": 3,
+            "maxPowerIncreasePct": 0,
+            "libraryVersion": 1,
+            "gameVersion": "1.0",
+            "driverVersion": "600.00",
+            "baselineVariantId": experiment_id + ".baseline",
+        })
+        return data
+
+    def tuning_variant_payload(
+        self, install_id, experiment_id, group_id="G1", variant_id=None,
+        control_variant_id=None, sequence_no=5, item_ids=None,
+    ):
+        item_ids = list(SERVER.TUNING_GROUP_ITEMS[group_id]) if item_ids is None else list(item_ids)
+        data = self.payload(install_id, "tuning", "0.20.0")
+        data.update({
+            "tuningType": "variant_applied",
+            "experimentId": experiment_id,
+            "status": "variant_applied",
+            "variantId": variant_id or experiment_id + "." + group_id,
+            "controlVariantId": control_variant_id or experiment_id + ".baseline",
+            "sequenceNo": sequence_no,
+            "groupId": group_id,
+            "itemSetHash": SERVER._tuning_item_set_hash(item_ids),
+            "itemIds": item_ids,
+            "source": "rules",
+            "riskLevel": "low",
+            "requiresReboot": False,
+            "applyResult": "succeeded",
+            "appliedCount": len(item_ids),
+            "failedCount": 0,
+            "skippedCount": 0,
+        })
+        return data
+
+    def tuning_run_payload(
+        self, install_id, experiment_id, variant_id, run_id,
+        validity="valid", invalid_reason="", avg_fps=110, fps_1_low=70,
+        temperature=70, power=150, p99_frame_ms=18, stutter_50ms=2,
+        stutter_100ms=0, order_controlled=True, run_no=1, sequence_no=1,
+        settings_hash=None, environment_hash=None,
+    ):
+        data = self.payload(install_id, "tuning", "0.20.0")
+        data.update({
+            "tuningType": "run_completed",
+            "experimentId": experiment_id,
+            "runId": run_id,
+            "variantId": variant_id,
+            "runNo": run_no,
+            "sequenceNo": sequence_no,
+            "validity": validity,
+            "invalidReason": invalid_reason,
+            "durationSec": 120 if validity == "valid" else 30,
+            "avgFps": avg_fps,
+            "fps1Low": fps_1_low,
+            "p99FrameMs": p99_frame_ms,
+            "stutter50Ms": stutter_50ms,
+            "stutter100Ms": stutter_100ms,
+            "gpuUtilAvg": 85,
+            "gpuTempAvg": temperature,
+            "gpuPowerAvg": power,
+            "settingsHash": settings_hash or "a" * 64,
+            "environmentHash": environment_hash or "b" * 64,
+            "orderControlled": order_controlled,
+        })
+        return data
+
+    def tuning_complete_payload(
+        self, install_id, experiment_id, result="found_better", winning_variant_id=None,
+        auto_rollback=False,
+    ):
+        status = {
+            "found_better": "completed",
+            "no_significant_gain": "completed",
+            "rolled_back": "rolled_back",
+            "cancelled": "cancelled",
+            "failed": "failed",
+        }[result]
+        data = self.payload(install_id, "tuning", "0.20.0")
+        data.update({
+            "tuningType": "experiment_completed",
+            "experimentId": experiment_id,
+            "status": status,
+            "result": result,
+            "stopReason": "completed" if result in ("found_better", "no_significant_gain") else "no_improvement",
+            "winningVariantId": winning_variant_id or "",
+            "autoRollback": auto_rollback,
+        })
+        return data
+
+    def seed_qualified_tuning_experiment(
+        self, client_hash, experiment_id, timestamp, group_id="G1", retained=True,
+    ):
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + "." + group_id
+        items = list(SERVER.TUNING_GROUP_ITEMS[group_id])
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT OR IGNORE INTO clients (
+                           client_hash, first_seen, last_seen, app_version, gpu_model,
+                           gpu_model_verified, device_type, authenticated_last_seen
+                       ) VALUES (?, ?, ?, '0.20.0', 'NVIDIA Test GPU', 1, 'desktop', ?)""",
+                    (client_hash, timestamp, timestamp, timestamp),
+                )
+                conn.execute(
+                    """INSERT INTO tuning_experiments (
+                           experiment_id, client_hash, created_at, completed_at, status,
+                           goal, risk_level, max_temp_increase, max_power_increase,
+                           library_version, app_version, gpu_model, baseline_variant_id,
+                           winning_variant_id, result
+                        ) VALUES (?, ?, ?, ?, 'completed', 'smoothness', 'low', 3, 0, 1,
+                                  '0.20.0', 'NVIDIA Test GPU', ?, ?, ?)""",
+                    (
+                        experiment_id, client_hash, timestamp, timestamp + 100, baseline,
+                        variant if retained else None,
+                        "found_better" if retained else "no_significant_gain",
+                    ),
+                )
+                conn.execute(
+                    """INSERT INTO tuning_variants (
+                           variant_id, experiment_id, sequence_no, group_id, display_name,
+                           item_set_hash, item_ids_json, source, risk_level, status
+                       ) VALUES (?, ?, 0, 'baseline', 'baseline', ?, '[]', 'manual', 'low', 'baseline')""",
+                    (baseline, experiment_id, SERVER._tuning_item_set_hash([])),
+                )
+                conn.execute(
+                    """INSERT INTO tuning_variants (
+                           variant_id, experiment_id, sequence_no, group_id, display_name,
+                           item_set_hash, item_ids_json, source, risk_level, status,
+                           control_variant_id, apply_result, applied_count
+                        ) VALUES (?, ?, 5, ?, ?, ?, ?, 'rules', 'low',
+                                 'variant_applied', ?, 'succeeded', ?)""",
+                    (
+                        variant, experiment_id, group_id, group_id,
+                        SERVER._tuning_item_set_hash(items), json.dumps(items), baseline,
+                        len(items),
+                    ),
+                )
+                run_specs = [
+                    (baseline, 1, 100, 60, 70, "a" * 64),
+                    (baseline, 2, 101, 61, 70, "a" * 64),
+                    (baseline, 3, 99, 59, 70, "a" * 64),
+                    (baseline, 4, 100, 60, 70, "a" * 64),
+                    (variant, 1, 110, 72, 71, "c" * 64),
+                    (baseline, 5, 100, 60, 70, "a" * 64),
+                    (variant, 2, 111, 73, 71, "c" * 64),
+                ]
+                for sequence, (variant_id, run_no, avg, low, temp, settings_hash) in enumerate(run_specs, 1):
+                    conn.execute(
+                        """INSERT INTO tuning_runs (
+                               run_id, experiment_id, variant_id, run_no, sequence_no,
+                               started_at, completed_at, validity, duration_sec, avg_fps,
+                               fps_1_low, p99_frame_ms, stutter_50ms, stutter_100ms,
+                               gpu_temp_avg, settings_hash, environment_hash, order_controlled
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'valid', 120, ?, ?, 18, 1, 0,
+                                     ?, ?, ?, 1)""",
+                        (
+                            experiment_id + ".run-" + str(sequence), experiment_id,
+                            variant_id, run_no, sequence, timestamp, timestamp + 100,
+                            avg, low, temp, settings_hash, "b" * 64,
+                        ),
+                    )
+        finally:
+            conn.close()
+
+    def test_legacy_usage_is_accepted_but_weighted_down(self):
         now = 1786248000
         first = "11111111-1111-4111-8111-111111111111"
         second = "22222222-2222-4222-8222-222222222222"
-        SERVER._record_telemetry(self.payload(first), now)
-        SERVER._record_telemetry(self.payload(first), now + 60)
-        SERVER._record_telemetry(self.payload(first, "apply"), now + 120)
-        SERVER._record_telemetry(self.payload(second), now + 180)
+        SERVER._record_telemetry(self.payload(first, version="0.19.3"), now)
+        SERVER._record_telemetry(self.payload(first, version="0.19.3"), now + 60)
+        SERVER._record_telemetry(self.payload(first, "apply", "0.19.3"), now + 120)
+        SERVER._record_telemetry(self.payload(second, version="0.19.3"), now + 180)
         stats = SERVER._build_stats(now + 180)
         self.assertEqual(2, stats["totals"]["users"])
-        self.assertEqual(2, stats["totals"]["active15m"])
         self.assertEqual(3, stats["totals"]["launchesToday"])
         self.assertEqual(1, stats["totals"]["appliesToday"])
-        self.assertEqual(5, stats["period"]["apply_ok"])
-        self.assertEqual(1, stats["period"]["apply_failed"])
-        self.assertEqual("0.18.0", stats["versions"][0]["label"])
-        self.assertEqual(2, stats["versions"][0]["value"])
-        self.assertEqual("NVIDIA GeForce RTX 4070 SUPER", stats["gpus"][0]["label"])
+        self.assertEqual(0, stats["dataQuality"]["authenticatedClients"])
+        self.assertEqual(0.5, stats["dataQuality"]["weightedUsers"])
+        self.assertEqual(0.8, stats["dataQuality"]["weightedLaunches"])
+        self.assertEqual(0.5, stats["versions"][0]["value"])
 
-    def test_performance_session_aggregates(self):
+    def test_token_binding_timestamp_and_replay_protection(self):
         now = 1786248000
-        data = self.payload("55555555-5555-4555-8555-555555555555", "performance")
-        data.update({
-            "durationSec": 120,
-            "avgFps": 144.2,
-            "fps1Low": 93.5,
-            "gpuUtilAvg": 97.1,
-            "gpuUtilMax": 100,
-            "gpuTempAvg": 72.4,
-            "gpuTempMax": 76,
-            "gpuPowerAvg": 151.7,
-            "gpuPowerMax": 180.2,
-        })
-        SERVER._record_telemetry(data, now)
-        unverified = dict(data)
-        unverified.update({"installId": "66666666-6666-4666-8666-666666666666", "gpuModel": "NVIDIA GeForce GTX 1050 Ti", "gpuModelVerified": False})
-        SERVER._record_telemetry(unverified, now + 1)
-        stats = SERVER._build_stats(now)
-        self.assertEqual(1, stats["performance"]["sessions"])
-        self.assertEqual(144.2, stats["performance"]["avgFps"])
-        self.assertEqual(93.5, stats["performance"]["fps1Low"])
-        self.assertEqual(97.1, stats["performance"]["gpuUtil"])
-        self.assertEqual(1, stats["performanceByGpu"][0]["sessions"])
+        first = "33333333-3333-4333-8333-333333333333"
+        second = "44444444-4444-4444-8444-444444444444"
+        token_info = SERVER._issue_device_token(first, now)
+        with self.assertRaises(SERVER.TelemetryAuthError):
+            SERVER._record_telemetry(self.payload(first), now)
+        data = self.authenticate(self.payload(first), now, token_info["deviceToken"])
+        result = SERVER._record_telemetry(data, now)
+        self.assertTrue(result["trusted"])
+        with self.assertRaises(SERVER.TelemetryReplayError):
+            SERVER._record_telemetry(data, now + 1)
 
-    def test_performance_improvement_uses_coarse_tiers_and_paired_clients(self):
+        wrong_device = self.authenticate(self.payload(second), now, token_info["deviceToken"])
+        with self.assertRaises(SERVER.TelemetryAuthError):
+            SERVER._record_telemetry(wrong_device, now)
+
+        stale = self.authenticate(self.payload(first), now, token_info["deviceToken"])
+        stale["sentAt"] = now - SERVER.TELEMETRY_CLOCK_SKEW - 1
+        with self.assertRaises(SERVER.TelemetryAuthError):
+            SERVER._record_telemetry(stale, now)
+
+    def test_performance_filters_and_daily_limit(self):
+        now = 1786248000
+        install_id = "55555555-5555-4555-8555-555555555555"
+        short = self.authenticate(self.performance_payload(install_id), now)
+        short["durationSec"] = SERVER.PERFORMANCE_MIN_DURATION - 1
+        with self.assertRaises(SERVER.TelemetryPerformanceError):
+            SERVER._record_telemetry(short, now)
+
+        impossible = self.authenticate(self.performance_payload(install_id, avg_fps=60, fps_1_low=90), now)
+        with self.assertRaises(SERVER.TelemetryPerformanceError):
+            SERVER._record_telemetry(impossible, now)
+
+        out_of_range = self.authenticate(self.performance_payload(install_id), now)
+        out_of_range["gpuTempAvg"] = 999
+        with self.assertRaises(SERVER.TelemetryPerformanceError):
+            SERVER._record_telemetry(out_of_range, now)
+
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        for offset in range(SERVER.PERFORMANCE_DAILY_LIMIT):
+            data = self.authenticate(self.performance_payload(install_id), now + offset, token)
+            SERVER._record_telemetry(data, now + offset)
+        over_limit = self.authenticate(self.performance_payload(install_id), now + 30, token)
+        with self.assertRaises(SERVER.TelemetryDailyLimitError):
+            SERVER._record_telemetry(over_limit, now + 30)
+
+    def test_performance_uses_trusted_median_and_minimum_sample(self):
+        now = 1786248000
+        values = [100, 101, 102, 103, 900]
+        for index, value in enumerate(values):
+            install_id = "%08d-0000-4000-8000-%012d" % (index + 1, index + 1)
+            data = self.performance_payload(install_id, avg_fps=value, fps_1_low=min(value, 70 + index))
+            if index:
+                data["gpuTempAvg"] = 0
+                data["gpuTempMax"] = 0
+            SERVER._record_telemetry(self.authenticate(data, now + index), now + index)
+
+        legacy_id = "66666666-6666-4666-8666-666666666666"
+        legacy = self.performance_payload(legacy_id, avg_fps=500, fps_1_low=400)
+        legacy["version"] = "0.19.3"
+        SERVER._record_telemetry(legacy, now + 10)
+        stats = SERVER._build_stats(now + 10)
+        self.assertEqual(5, stats["performance"]["sessions"])
+        self.assertTrue(stats["performance"]["published"])
+        self.assertEqual(102.0, stats["performance"]["avgFps"])
+        self.assertEqual(72.0, stats["performance"]["fps1Low"])
+        self.assertIsNone(stats["performance"]["gpuTemp"])
+        self.assertEqual(1, stats["dataQuality"]["legacyPerformanceSessionsExcluded"])
+        self.assertEqual(5, stats["performanceByGpu"][0]["sessions"])
+        self.assertEqual("median", stats["dataQuality"]["aggregation"])
+
+        other_temp = tempfile.TemporaryDirectory()
+        try:
+            SERVER.DB_PATH = os.path.join(other_temp.name, "small.db")
+            SERVER._init_db()
+            one_id = "77777777-7777-4777-8777-777777777777"
+            one = self.authenticate(self.performance_payload(one_id), now)
+            SERVER._record_telemetry(one, now)
+            small = SERVER._build_stats(now)
+            self.assertEqual(1, small["performance"]["sessions"])
+            self.assertFalse(small["performance"]["published"])
+            self.assertIsNone(small["performance"]["avgFps"])
+            self.assertEqual([], small["performanceByGpu"])
+        finally:
+            SERVER.DB_PATH = os.path.join(self.temp.name, "telemetry.db")
+            other_temp.cleanup()
+
+    def test_repeated_sessions_from_one_device_do_not_publish_aggregate(self):
         now = 1786248000
         install_id = "77777777-7777-4777-8777-777777777777"
-        baseline = self.payload(install_id, "performance")
-        baseline.update({
-            "configTier": "baseline", "durationSec": 120,
-            "avgFps": 100, "fps1Low": 70, "gpuUtilAvg": 80,
-            "gpuTempAvg": 75, "gpuPowerAvg": 150,
-        })
-        optimized = dict(baseline)
-        optimized.update({
-            "configTier": "full", "avgFps": 120, "fps1Low": 85,
-            "gpuUtilAvg": 90, "gpuTempAvg": 72, "gpuPowerAvg": 145,
-        })
-        SERVER._record_telemetry(baseline, now)
-        SERVER._record_telemetry(optimized, now + 60)
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        for index in range(SERVER.PERFORMANCE_MIN_SAMPLES):
+            payload = self.authenticate(
+                self.performance_payload(install_id, avg_fps=100 + index),
+                now + index,
+                token,
+            )
+            SERVER._record_telemetry(payload, now + index)
+        stats = SERVER._build_stats(now + SERVER.PERFORMANCE_MIN_SAMPLES)
+        self.assertEqual(SERVER.PERFORMANCE_MIN_SAMPLES, stats["performance"]["sessions"])
+        self.assertEqual(1, stats["performance"]["clients"])
+        self.assertFalse(stats["performance"]["published"])
+        self.assertIsNone(stats["performance"]["avgFps"])
 
-        # 没有同一匿名设备的基线时只进入配置绝对值，不进入“提升”配对。
-        unpaired = dict(optimized)
-        unpaired.update({"installId": "88888888-8888-4888-8888-888888888888", "avgFps": 180})
-        SERVER._record_telemetry(unpaired, now + 120)
+    def test_paired_improvement_uses_median_and_minimum_comparisons(self):
+        now = 1786248000
+        deltas = [10, 20, 20, 30, 400]
+        for index, delta in enumerate(deltas):
+            install_id = "%08d-1111-4111-8111-%012d" % (index + 10, index + 10)
+            token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+            baseline = self.authenticate(self.performance_payload(install_id, "baseline", 100, 60), now, token)
+            optimized = self.authenticate(
+                self.performance_payload(install_id, "full", 100 + delta, 70), now + 60, token
+            )
+            SERVER._record_telemetry(baseline, now)
+            SERVER._record_telemetry(optimized, now + 60)
 
-        stats = SERVER._build_stats(now + 120)
+        stats = SERVER._build_stats(now + 60)
         improvement = stats["performanceImprovement"]
-        self.assertEqual(1, improvement["comparisons"])
-        self.assertEqual(1, improvement["matchedClients"])
+        self.assertEqual(5, improvement["comparisons"])
+        self.assertTrue(improvement["published"])
         self.assertEqual(20.0, improvement["fpsDelta"])
-        self.assertEqual(15.0, improvement["fps1LowDelta"])
-        self.assertEqual(10.0, improvement["gpuUtilDelta"])
-        self.assertEqual(-3.0, improvement["gpuTempDelta"])
-        self.assertEqual(-5.0, improvement["gpuPowerDelta"])
-
         by_tier = {row["tier"]: row for row in stats["performanceByConfig"]}
-        self.assertEqual({"baseline", "light", "balanced", "full"}, set(by_tier))
-        self.assertEqual(2, by_tier["full"]["sessions"])
-        self.assertEqual(1, by_tier["full"]["comparisons"])
+        self.assertTrue(by_tier["full"]["published"])
+        self.assertEqual(5, by_tier["full"]["comparisons"])
         self.assertEqual("深度（21+ 项）", by_tier["full"]["label"])
 
+    def test_maintenance_removes_expired_data_without_new_upload(self):
+        now = 1786248000
+        old_report = os.path.join(SERVER.REPORT_DIR, "DFB-ABCD.txt")
+        fresh_report = os.path.join(SERVER.REPORT_DIR, "DFB-EFGH.txt")
+        for path in (old_report, fresh_report):
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write("diagnostic")
+        os.utime(old_report, (now - (SERVER.KEEP_DAYS + 1) * 86400,) * 2)
+        os.utime(fresh_report, (now,) * 2)
+
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO performance_sessions (client_hash, recorded_at, day) VALUES ('old', ?, '2000-01-01')",
+                    (now - (SERVER.PERFORMANCE_KEEP_DAYS + 1) * 86400,),
+                )
+                conn.execute(
+                    "INSERT INTO performance_sessions (client_hash, recorded_at, day) VALUES ('fresh', ?, '2099-01-01')",
+                    (now,),
+                )
+                conn.execute(
+                    "INSERT INTO telemetry_replays VALUES ('old', 'event-old', ?)",
+                    (now - (SERVER.REPLAY_KEEP_DAYS + 1) * 86400,),
+                )
+                conn.execute("INSERT INTO telemetry_replays VALUES ('fresh', 'event-fresh', ?)", (now,))
+                old_seen = now - (SERVER.TELEMETRY_KEEP_DAYS + 1) * 86400
+                conn.execute(
+                    "INSERT INTO clients (client_hash, first_seen, last_seen) VALUES ('expired-client', ?, ?)",
+                    (old_seen, old_seen),
+                )
+                conn.execute(
+                    "INSERT INTO clients (client_hash, first_seen, last_seen) VALUES ('fresh-client', ?, ?)",
+                    (now, now),
+                )
+                old_day = time.strftime("%Y-%m-%d", time.gmtime(old_seen))
+                fresh_day = time.strftime("%Y-%m-%d", time.gmtime(now))
+                conn.execute(
+                    "INSERT INTO daily_usage (day, client_hash, launches) VALUES (?, 'expired-client', 1)",
+                    (old_day,),
+                )
+                conn.execute(
+                    "INSERT INTO daily_usage (day, client_hash, launches) VALUES (?, 'fresh-client', 1)",
+                    (fresh_day,),
+                )
+        finally:
+            conn.close()
+
+        result = SERVER._run_maintenance(now)
+        self.assertEqual(
+            {
+                "reports": 1,
+                "performanceSessions": 1,
+                "replayIds": 1,
+                "dailyUsage": 1,
+                "clients": 1,
+            },
+            result,
+        )
+        self.assertFalse(os.path.exists(old_report))
+        self.assertTrue(os.path.exists(fresh_report))
+        conn = SERVER._connect()
+        try:
+            self.assertEqual(["fresh"], [row[0] for row in conn.execute("SELECT client_hash FROM performance_sessions")])
+            self.assertEqual(["event-fresh"], [row[0] for row in conn.execute("SELECT event_id FROM telemetry_replays")])
+            self.assertEqual(["fresh-client"], [row[0] for row in conn.execute("SELECT client_hash FROM clients")])
+            self.assertEqual(["fresh-client"], [row[0] for row in conn.execute("SELECT client_hash FROM daily_usage")])
+        finally:
+            conn.close()
+
+    def test_client_ip_only_trusts_loopback_proxy_and_uses_last_valid_hop(self):
+        class FakeHandler:
+            def __init__(self, peer, forwarded):
+                self.client_address = (peer, 12345)
+                self.headers = {"X-Forwarded-For": forwarded}
+
+        proxied = FakeHandler("127.0.0.1", "198.51.100.9, 203.0.113.7")
+        self.assertEqual("203.0.113.7", SERVER._client_ip(proxied))
+        direct = FakeHandler("192.0.2.10", "198.51.100.9")
+        self.assertEqual("192.0.2.10", SERVER._client_ip(direct))
+        malformed = FakeHandler("127.0.0.1", "not-an-ip")
+        self.assertEqual("127.0.0.1", SERVER._client_ip(malformed))
+
+    def test_http_registration_telemetry_statuses_and_protected_stats(self):
+        SERVER.ADMIN_API_TOKEN = "test-admin-token"
+        httpd = SERVER.http.server.ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
+
+        def post(path, payload):
+            request = urllib.request.Request(
+                base + path,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, json.load(response)
+
+        try:
+            install_id = "88888888-8888-4888-8888-888888888888"
+            status, registration = post("/report/telemetry/register", {"installId": install_id})
+            self.assertEqual(200, status)
+            self.assertTrue(registration["deviceToken"].startswith("v1."))
+
+            now = int(time.time())
+            event_id = str(uuid.uuid4())
+            data = self.authenticate(self.payload(install_id), now, registration["deviceToken"], event_id)
+            status, result = post("/report/telemetry", data)
+            self.assertEqual(200, status)
+            self.assertTrue(result["trusted"])
+            with self.assertRaises(urllib.error.HTTPError) as replay:
+                post("/report/telemetry", data)
+            self.assertEqual(409, replay.exception.code)
+
+            legacy_id = "99999999-9999-4999-8999-999999999999"
+            status, legacy = post("/report/telemetry", self.payload(legacy_id, version="0.19.3"))
+            self.assertEqual(200, status)
+            self.assertFalse(legacy["trusted"])
+            self.assertIn("deviceToken", legacy)
+
+            request = urllib.request.Request(base + "/api/stats", headers={"X-DFB-Admin-Token": "test-admin-token"})
+            with urllib.request.urlopen(request, timeout=3) as response:
+                stats = json.load(response)
+            self.assertEqual(2, stats["totals"]["users"])
+            self.assertEqual("client_self_reported", stats["dataQuality"]["source"])
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(base + "/api/stats", timeout=3)
+            self.assertEqual(403, denied.exception.code)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=3)
+
     def test_rejects_identifying_or_oversized_fields(self):
-        bad = self.payload("not-a-guid")
         with self.assertRaises(ValueError):
-            SERVER._record_telemetry(bad, 1786248000)
-        good = self.payload("33333333-3333-4333-8333-333333333333")
+            SERVER._record_telemetry(self.payload("not-a-guid"), 1786248000)
+        good = self.payload("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", version="0.19.3")
         good["gpuModel"] = "x" * 1000
         SERVER._record_telemetry(good, 1786248000)
         conn = SERVER._connect()
@@ -140,41 +593,1591 @@ class TelemetryTests(unittest.TestCase):
             conn.close()
         self.assertEqual(160, len(value))
 
-    def test_http_telemetry_and_protected_stats(self):
-        SERVER.ADMIN_API_TOKEN = "test-admin-token"
+    def test_weekly_date_and_filter_validation(self):
+        self.assertEqual(dt.date(2026, 7, 27), SERVER._parse_week_start("2026-07-27"))
+        known_now = int(dt.datetime(2026, 8, 10, 12, tzinfo=dt.timezone.utc).timestamp())
+        self.assertEqual(dt.date(2026, 8, 3), SERVER._parse_week_start(None, known_now))
+        with self.assertRaises(ValueError):
+            SERVER._parse_week_start("2026-07-28")
+        with self.assertRaises(ValueError):
+            SERVER._parse_week_start("2026-7-27")
+        with self.assertRaises(ValueError):
+            SERVER._parse_weekly_query("/api/weekly?weekStart=2026-07-27&weekStart=2026-07-20")
+        with self.assertRaises(ValueError):
+            SERVER._parse_weekly_query("/api/weekly?gpu=" + "x" * 161)
+        week, filters, live = SERVER._parse_weekly_query(
+            "/api/weekly?weekStart=2026-07-27&version=1.0.0&validOnly=1&live=1"
+        )
+        self.assertEqual(dt.date(2026, 7, 27), week)
+        self.assertEqual("1.0.0", filters["version"])
+        self.assertTrue(filters["validOnly"])
+        self.assertTrue(live)
+
+    def test_weekly_week_over_week_and_trusted_pairing(self):
+        previous = dt.date(2026, 7, 20)
+        current = dt.date(2026, 7, 27)
+        for index in range(5):
+            previous_client = "previous-%d" % index
+            current_client = "current-%d" % index
+            self.seed_weekly_client(previous_client, previous, previous, launches=1)
+            self.seed_weekly_performance(previous_client, previous, "baseline", 100, 60)
+            self.seed_weekly_performance(previous_client, previous, "full", 110, 65)
+            self.seed_weekly_client(current_client, current, current, launches=2, applies=1, apply_ok=1)
+            self.seed_weekly_performance(current_client, current, "baseline", 100, 60)
+            self.seed_weekly_performance(current_client, current, "full", 120, 75, temperature=68, power=145)
+
+        self.seed_weekly_client("legacy-outlier", current, current, authenticated=False, launches=0)
+        self.seed_weekly_performance(
+            "legacy-outlier", current, "baseline", 10, 5, authenticated=False
+        )
+        self.seed_weekly_performance(
+            "legacy-outlier", current, "full", 900, 800, authenticated=False
+        )
+
+        report = SERVER._build_weekly_report(current, now=1785700000)
+        self.assertEqual(10, report["core"]["launches"]["current"])
+        self.assertEqual(5, report["core"]["launches"]["previous"])
+        self.assertEqual(100.0, report["core"]["launches"]["changePct"])
+        self.assertEqual(10, report["core"]["performanceSessions"]["current"])
+        comparison = report["performanceComparison"]["overall"]
+        self.assertTrue(comparison["published"])
+        self.assertEqual(5, comparison["pairs"])
+        self.assertEqual(20.0, comparison["fpsDelta"]["median"])
+        self.assertEqual(15.0, comparison["fps1LowDelta"]["median"])
+        self.assertEqual(2, report["dataQuality"]["unauthenticatedPerformanceSessionsExcluded"])
+        self.assertEqual(8, len(report["trends"]))
+        self.assertEqual(
+            ["newUsers", "activeUsers"],
+            [row["key"] for row in report["usageComparison"][:2]],
+        )
+        self.assertEqual(report["trends"][-1]["applyDevices"], report["trends"][-1]["applies"])
+        self.assertEqual(report["trends"][-1]["pairs"], report["trends"][-1]["pairedClients"])
+
+    def test_weekly_performance_requires_five_independent_devices(self):
+        week = dt.date(2026, 7, 27)
+        for index in range(4):
+            client = "repeat-%d" % index
+            self.seed_weekly_client(client, week, week)
+            for _ in range(3):
+                self.seed_weekly_performance(client, week, "baseline", 100, 60)
+            self.seed_weekly_performance(client, week, "balanced", 120, 75)
+        report = SERVER._build_weekly_report(week)
+        self.assertEqual(16, report["performanceOverall"]["sessions"])
+        self.assertEqual(4, report["performanceOverall"]["clients"])
+        self.assertFalse(report["performanceOverall"]["published"])
+        self.assertIsNone(report["performanceOverall"]["avgFps"])
+        self.assertEqual(4, report["performanceComparison"]["overall"]["pairs"])
+        self.assertFalse(report["performanceComparison"]["overall"]["published"])
+        self.assertIsNone(report["performanceComparison"]["overall"]["fpsDelta"]["median"])
+        self.assertFalse(report["gpuRanking"][0]["conclusionPublished"])
+
+    def test_weekly_filters_use_latest_client_profile(self):
+        week = dt.date(2026, 7, 27)
+        self.seed_weekly_client(
+            "desktop-v1", week, week, version="1.0.0", device_type="desktop", launches=2
+        )
+        self.seed_weekly_client(
+            "laptop-v2", week, week, version="2.0.0", gpu="NVIDIA Laptop GPU",
+            device_type="laptop", launches=7, applies=1, apply_ok=3,
+            apply_failed=1, restores=1, restore_ok=3, restore_failed=1,
+        )
+        filtered = SERVER._build_weekly_report(
+            week,
+            {"version": "2.0.0", "gpu": "NVIDIA Laptop GPU", "deviceType": "laptop", "validOnly": True},
+        )
+        self.assertEqual(1, filtered["core"]["activeUsers"]["current"])
+        self.assertEqual(7, filtered["core"]["launches"]["current"])
+        self.assertEqual("2.0.0", filtered["filters"]["version"])
+        self.assertEqual(25.0, filtered["versionAdoption"][0]["applyFailureRate"])
+        self.assertEqual(25.0, filtered["versionAdoption"][0]["restoreFailureRate"])
+        self.assertEqual({"1.0.0", "2.0.0"}, {
+            row["value"] for row in filtered["filterOptions"]["versions"]
+        })
+
+    def test_weekly_snapshot_auth_conflict_overwrite_and_stable_read(self):
+        week = dt.date(2026, 7, 27)
+        self.seed_weekly_client("snapshot-client", week, week, launches=1)
+        SERVER.ADMIN_API_TOKEN = "weekly-admin"
         httpd = SERVER.http.server.ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         base = "http://127.0.0.1:%d" % httpd.server_address[1]
-        try:
-            raw = json.dumps(self.payload("44444444-4444-4444-8444-444444444444")).encode("utf-8")
-            request = urllib.request.Request(base + "/report/telemetry", data=raw, headers={"Content-Type": "application/json"})
+
+        def get(path, authorized=True):
+            headers = {"X-DFB-Admin-Token": "weekly-admin"} if authorized else {}
+            request = urllib.request.Request(base + path, headers=headers)
             with urllib.request.urlopen(request, timeout=3) as response:
-                self.assertEqual(200, response.status)
+                return response.status, json.load(response)
+
+        def post(payload, authorized=True):
+            headers = {"Content-Type": "application/json"}
+            if authorized:
+                headers["X-DFB-Admin-Token"] = "weekly-admin"
             request = urllib.request.Request(
-                base + "/report/upload",
-                data="synthetic diagnostic".encode("utf-8"),
-                headers={"Content-Type": "text/plain; charset=utf-8"},
+                base + "/api/weekly/snapshot",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
             )
             with urllib.request.urlopen(request, timeout=3) as response:
-                report_result = json.load(response)
-            self.assertRegex(report_result["code"], r"^DFB-[A-Z2-9]{4}$")
-            request = urllib.request.Request(base + "/api/stats", headers={"X-DFB-Admin-Token": "test-admin-token"})
-            with urllib.request.urlopen(request, timeout=3) as response:
-                stats = json.load(response)
-            self.assertEqual(1, stats["totals"]["users"])
-            self.assertEqual(1, stats["diagnosticReports"]["count"])
-            with self.assertRaises(urllib.error.HTTPError) as denied:
-                urllib.request.urlopen(base + "/api/stats", timeout=3)
-            self.assertEqual(403, denied.exception.code)
+                return response.status, json.load(response)
+
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as denied_get:
+                get("/api/weekly?weekStart=2026-07-27", authorized=False)
+            self.assertEqual(403, denied_get.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as denied_post:
+                post({"weekStart": "2026-07-27"}, authorized=False)
+            self.assertEqual(403, denied_post.exception.code)
+
+            status, created = post({"weekStart": "2026-07-27", "overwrite": False})
+            self.assertEqual(201, status)
+            self.assertFalse(created["overwritten"])
+            _, snapshot = get("/api/weekly?weekStart=2026-07-27")
+            self.assertTrue(snapshot["week"]["snapshot"]["used"])
+            self.assertEqual(1, snapshot["core"]["launches"]["current"])
+
+            conn = SERVER._connect()
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE daily_usage SET launches=9 WHERE client_hash='snapshot-client'"
+                    )
+            finally:
+                conn.close()
+            _, still_snapshot = get("/api/weekly?weekStart=2026-07-27")
+            self.assertEqual(1, still_snapshot["core"]["launches"]["current"])
+            _, live = get("/api/weekly?weekStart=2026-07-27&live=1")
+            self.assertEqual(9, live["core"]["launches"]["current"])
+            self.assertFalse(live["week"]["snapshot"]["used"])
+
+            with self.assertRaises(urllib.error.HTTPError) as conflict:
+                post({"weekStart": "2026-07-27", "overwrite": False})
+            self.assertEqual(409, conflict.exception.code)
+            status, replaced = post({"weekStart": "2026-07-27", "overwrite": True})
+            self.assertEqual(200, status)
+            self.assertTrue(replaced["overwritten"])
+            _, refreshed = get("/api/weekly?weekStart=2026-07-27")
+            self.assertEqual(9, refreshed["core"]["launches"]["current"])
         finally:
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=3)
 
+    def test_tuning_item_set_hash_matches_windows_client_golden_vector(self):
+        self.assertEqual(
+            "298650b980078d6a0b9d61f874b485db8588523c079e0efadc7a51406074961f",
+            SERVER._tuning_item_set_hash(["dvr-off", "game-mode"]),
+        )
+
+    def test_tuning_library_version_v1_is_persisted_and_unknown_is_rejected(self):
+        now = 1786248000
+        install_id = "07070707-0707-4707-8707-070707070707"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-library-v1"
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(install_id, experiment_id), now, token), now
+        )
+        unknown = self.tuning_start_payload(install_id, "exp-library-unknown")
+        unknown["libraryVersion"] = 2
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(
+                self.authenticate(unknown, now + 1, token), now + 1
+            )
+        conn = SERVER._connect()
+        try:
+            self.assertEqual(1, conn.execute(
+                "SELECT library_version FROM tuning_experiments WHERE experiment_id=?",
+                (experiment_id,),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        week = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+        week -= dt.timedelta(days=week.weekday())
+        tuning = SERVER._build_weekly_report(week, now=now + 2)["tuning"]
+        self.assertEqual(1, tuning["libraryVersion"])
+        self.assertEqual([1], tuning["dataQuality"]["acceptedLibraryVersions"])
+
+    def test_tuning_cv_and_dynamic_threshold_match_client_rule(self):
+        self.assertAlmostEqual(10.0, SERVER._tuning_cv([90, 100, 110]), places=8)
+        now = 1786248000
+        install_id = "08080808-0808-4808-8808-080808080808"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-dynamic-threshold"
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + ".G1"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=150, fps_1_low=94, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=150, fps_1_low=98, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=150, fps_1_low=102, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=150, fps_1_low=106, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-1", avg_fps=150, fps_1_low=107.5, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-a1", avg_fps=150, fps_1_low=94, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-2", avg_fps=150, fps_1_low=107.5, run_no=2, sequence_no=7),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-a2", avg_fps=150, fps_1_low=102, run_no=6, sequence_no=8),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-3", avg_fps=150, fps_1_low=107.5, run_no=3, sequence_no=9),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            comparison = SERVER._load_tuning_comparison(conn, experiment, variant)
+            self.assertEqual(4.54, comparison["baselineNoisePct"])
+            self.assertAlmostEqual(6.81, comparison["thresholdPct"], places=8)
+            self.assertAlmostEqual(5.392156862745098, comparison["fps1LowDeltaPct"], places=8)
+            self.assertEqual(
+                [experiment_id + ".candidate-1", experiment_id + ".candidate-2", experiment_id + ".candidate-3"],
+                comparison["candidateRunIds"],
+            )
+            self.assertFalse(comparison["deterministicWin"])
+        finally:
+            conn.close()
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_complete_payload(
+                        install_id, experiment_id, "found_better", variant
+                    ),
+                    now + len(events), token,
+                ),
+                now + len(events),
+            )
+
+    def test_tuning_rounding_matches_powershell_boundary_rules(self):
+        self.assertEqual(10.0, SERVER._tuning_cv([30, 30.5, 36.5, 30]))
+        now = 1786248000
+        install_id = "13131313-1313-4313-8313-131313131313"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-rounding-boundaries"
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + ".G1"
+        candidate_one = self.tuning_run_payload(
+            install_id, experiment_id, variant, experiment_id + ".candidate-1",
+            avg_fps=110, fps_1_low=40, stutter_50ms=1, run_no=1, sequence_no=5,
+        )
+        candidate_one["durationSec"] = 119
+        candidate_two = self.tuning_run_payload(
+            install_id, experiment_id, variant, experiment_id + ".candidate-2",
+            avg_fps=110, fps_1_low=40, stutter_50ms=1, run_no=2, sequence_no=7,
+        )
+        candidate_two["durationSec"] = 119
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=30, stutter_50ms=1, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=30.5, stutter_50ms=1, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=30, stutter_50ms=1, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=36.5, stutter_50ms=1, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+            candidate_one,
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-a1", avg_fps=100, fps_1_low=30, stutter_50ms=1, run_no=5, sequence_no=6),
+            candidate_two,
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            comparison = SERVER._load_tuning_comparison(conn, experiment, variant)
+            self.assertEqual(10.0, comparison["baselineNoisePct"])
+            self.assertEqual(0.0, comparison["stutterDeltaPct"])
+            self.assertTrue(comparison["deterministicWin"])
+        finally:
+            conn.close()
+        completed_at = now + len(events)
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "found_better", variant
+                ),
+                completed_at, token,
+            ),
+            completed_at,
+        )
+
+    def test_tuning_g1_checks_initial_baseline_environment_and_settings(self):
+        now = 1786248000
+        install_id = "14141414-1414-4414-8414-141414141414"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        for case_index, mismatch_field in enumerate(("environmentHash", "settingsHash")):
+            experiment_id = "exp-g1-mismatch-" + mismatch_field.lower()
+            baseline = experiment_id + ".baseline"
+            variant = experiment_id + ".G1"
+            first = self.tuning_run_payload(
+                install_id, experiment_id, baseline, experiment_id + ".base-1",
+                avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1,
+            )
+            first[mismatch_field] = "c" * 64
+            events = [
+                self.tuning_start_payload(install_id, experiment_id),
+                first,
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=60, run_no=2, sequence_no=2),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=60, run_no=3, sequence_no=3),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+                self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+                self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-1", avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+                self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-2", avg_fps=110, fps_1_low=70, run_no=2, sequence_no=7),
+            ]
+            for offset, payload in enumerate(events):
+                timestamp = now + case_index * 20 + offset
+                SERVER._record_telemetry(
+                    self.authenticate(payload, timestamp, token), timestamp
+                )
+            conn = SERVER._connect()
+            try:
+                experiment = conn.execute(
+                    "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+                ).fetchone()
+                self.assertIsNone(
+                    SERVER._load_tuning_comparison(conn, experiment, variant), mismatch_field
+                )
+            finally:
+                conn.close()
+
+    def test_tuning_requires_auth_and_rejects_unknown_or_invalid_fields(self):
+        now = 1786248000
+        install_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        experiment_id = "exp-auth-validation"
+        with self.assertRaises(SERVER.TelemetryAuthError):
+            SERVER._record_telemetry(self.tuning_start_payload(install_id, experiment_id), now)
+
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        bad_path = self.authenticate(self.tuning_start_payload(install_id, experiment_id), now, token)
+        bad_path["gamePath"] = "C:/private/game.exe"
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(bad_path, now)
+
+        valid_start = self.authenticate(
+            self.tuning_start_payload(install_id, experiment_id), now + 1, token
+        )
+        result = SERVER._record_telemetry(valid_start, now + 1)
+        self.assertTrue(result["tuningAccepted"])
+        self.assertEqual("experiment_started", result["tuningType"])
+
+        bad_items = self.tuning_variant_payload(install_id, experiment_id)
+        bad_items["itemIds"].append("unknown-item")
+        bad_items = self.authenticate(bad_items, now + 2, token)
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(bad_items, now + 2)
+
+        invalid_reason = self.tuning_run_payload(
+            install_id, experiment_id, experiment_id + ".baseline", "run-invalid-reason",
+            validity="invalid", invalid_reason="made_up_reason",
+        )
+        invalid_reason = self.authenticate(invalid_reason, now + 3, token)
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(invalid_reason, now + 3)
+
+        conn = SERVER._connect()
+        try:
+            self.assertEqual(0, conn.execute("SELECT COUNT(*) FROM performance_sessions").fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_http_tuning_auth_and_validation_statuses(self):
+        now = int(time.time())
+        install_id = "abababab-abab-4aba-8aba-abababababab"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        httpd = SERVER.http.server.ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
+
+        def post(payload):
+            request = urllib.request.Request(
+                base + "/report/telemetry",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            return urllib.request.urlopen(request, timeout=3)
+
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+                post(self.tuning_start_payload(install_id, "exp-http-unauth"))
+            self.assertEqual(401, unauthenticated.exception.code)
+
+            invalid = self.tuning_variant_payload(install_id, "exp-http-invalid")
+            invalid["itemIds"] = ["unknown-item"]
+            invalid["itemSetHash"] = "0" * 64
+            invalid = self.authenticate(invalid, now, token)
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                post(invalid)
+            self.assertEqual(422, rejected.exception.code)
+
+            experiment_id = "exp-http-conflict"
+            with post(self.authenticate(
+                self.tuning_start_payload(install_id, experiment_id), now + 1, token
+            )) as accepted:
+                self.assertEqual(200, accepted.status)
+            changed = self.tuning_start_payload(install_id, experiment_id)
+            changed["goal"] = "average_fps"
+            changed = self.authenticate(changed, now + 2, token)
+            with self.assertRaises(urllib.error.HTTPError) as conflict:
+                post(changed)
+            self.assertEqual(409, conflict.exception.code)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=3)
+
+    def test_tuning_primary_keys_are_idempotent_and_cannot_be_taken_over(self):
+        now = 1786248000
+        first_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        second_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        first_token = SERVER._issue_device_token(first_id, now)["deviceToken"]
+        second_token = SERVER._issue_device_token(second_id, now)["deviceToken"]
+        experiment_id = "exp-owner-001"
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(first_id, experiment_id), now, first_token), now
+        )
+        takeover = self.authenticate(
+            self.tuning_start_payload(second_id, experiment_id), now + 1, second_token
+        )
+        with self.assertRaises(SERVER.TelemetryOwnershipError):
+            SERVER._record_telemetry(takeover, now + 1)
+
+        variant_id = experiment_id + ".G1"
+        for offset in (2, 3):
+            event = self.authenticate(
+                self.tuning_variant_payload(first_id, experiment_id, variant_id=variant_id),
+                now + offset, first_token,
+            )
+            SERVER._record_telemetry(event, now + offset)
+        run_id = "run-owner-001"
+        first_run = self.authenticate(
+            self.tuning_run_payload(first_id, experiment_id, variant_id, run_id, avg_fps=110),
+            now + 4, first_token,
+        )
+        SERVER._record_telemetry(first_run, now + 4)
+        repeated_run = self.authenticate(
+            self.tuning_run_payload(first_id, experiment_id, variant_id, run_id, avg_fps=110),
+            now + 5, first_token,
+        )
+        SERVER._record_telemetry(repeated_run, now + 5)
+        changed_run = self.authenticate(
+            self.tuning_run_payload(first_id, experiment_id, variant_id, run_id, avg_fps=115),
+            now + 6, first_token,
+        )
+        with self.assertRaises(SERVER.TelemetryConflictError):
+            SERVER._record_telemetry(changed_run, now + 6)
+
+        second_experiment = "exp-owner-002"
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(first_id, second_experiment), now + 7, first_token),
+            now + 7,
+        )
+        stolen_variant = self.authenticate(
+            self.tuning_variant_payload(first_id, second_experiment, variant_id=variant_id),
+            now + 8, first_token,
+        )
+        with self.assertRaises(SERVER.TelemetryOwnershipError):
+            SERVER._record_telemetry(stolen_variant, now + 8)
+
+        conn = SERVER._connect()
+        try:
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM tuning_variants WHERE variant_id=?", (variant_id,)
+            ).fetchone()[0])
+            row = conn.execute(
+                "SELECT avg_fps, completed_at FROM tuning_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            self.assertEqual(110, row[0])
+            self.assertEqual(now + 4, row[1])
+            self.assertEqual(now + 2, conn.execute(
+                "SELECT applied_at FROM tuning_variants WHERE variant_id=?", (variant_id,)
+            ).fetchone()[0])
+            owner = conn.execute(
+                "SELECT client_hash FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()[0]
+            self.assertEqual(SERVER._client_hash(first_id), owner)
+        finally:
+            conn.close()
+
+    def test_tuning_namespaced_variant_ids_allow_multiple_complete_experiments(self):
+        now = 1786248000
+        installs = (
+            "01010101-0101-4101-8101-010101010101",
+            "02020202-0202-4202-8202-020202020202",
+        )
+        experiment_ids = []
+        for device_index, install_id in enumerate(installs):
+            token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+            experiment_id = "exp_" + ("%032x" % (device_index + 1))
+            baseline_id = experiment_id + ".baseline"
+            variant_id = experiment_id + ".background_low_risk"
+            self.assertLessEqual(len(variant_id), 96)
+            experiment_ids.append(experiment_id)
+            events = [
+                self.tuning_start_payload(install_id, experiment_id),
+                self.tuning_run_payload(
+                    install_id, experiment_id, baseline_id, experiment_id + ".base-1",
+                    avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1,
+                ),
+                self.tuning_run_payload(
+                    install_id, experiment_id, baseline_id, experiment_id + ".base-2",
+                    avg_fps=101, fps_1_low=61, run_no=2, sequence_no=2,
+                ),
+                self.tuning_run_payload(
+                    install_id, experiment_id, baseline_id, experiment_id + ".base-3",
+                    avg_fps=99, fps_1_low=59, run_no=3, sequence_no=3,
+                ),
+                self.tuning_run_payload(
+                    install_id, experiment_id, baseline_id, experiment_id + ".control-pre",
+                    avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4,
+                ),
+                self.tuning_variant_payload(
+                    install_id, experiment_id, variant_id=variant_id, sequence_no=5,
+                ),
+                self.tuning_run_payload(
+                    install_id, experiment_id, variant_id, experiment_id + ".candidate-1",
+                    avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5,
+                ),
+                self.tuning_run_payload(
+                    install_id, experiment_id, baseline_id, experiment_id + ".control-a1",
+                    avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6,
+                ),
+                self.tuning_run_payload(
+                    install_id, experiment_id, variant_id, experiment_id + ".candidate-2",
+                    avg_fps=111, fps_1_low=71, run_no=2, sequence_no=7,
+                ),
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "found_better", variant_id,
+                ),
+            ]
+            for offset, payload in enumerate(events):
+                timestamp = now + device_index * 20 + offset
+                SERVER._record_telemetry(
+                    self.authenticate(payload, timestamp, token), timestamp
+                )
+
+        conn = SERVER._connect()
+        try:
+            self.assertEqual(2, conn.execute(
+                "SELECT COUNT(*) FROM tuning_experiments WHERE result='found_better'"
+            ).fetchone()[0])
+            self.assertEqual(4, conn.execute(
+                "SELECT COUNT(*) FROM tuning_variants"
+            ).fetchone()[0])
+            for experiment_id in experiment_ids:
+                rows = conn.execute(
+                    "SELECT variant_id FROM tuning_variants WHERE experiment_id=? ORDER BY sequence_no",
+                    (experiment_id,),
+                ).fetchall()
+                self.assertEqual(2, len(rows))
+                self.assertTrue(all(row[0].startswith(experiment_id + ".") for row in rows))
+        finally:
+            conn.close()
+
+    def test_tuning_terminal_state_and_business_payloads_are_immutable(self):
+        now = 1786248000
+        install_id = "03030303-0303-4303-8303-030303030303"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-terminal-immutable"
+        start = self.tuning_start_payload(install_id, experiment_id)
+        SERVER._record_telemetry(self.authenticate(start, now, token), now)
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(install_id, experiment_id), now + 1, token),
+            now + 1,
+        )
+
+        completion = self.tuning_complete_payload(
+            install_id, experiment_id, "no_significant_gain", auto_rollback=False
+        )
+        SERVER._record_telemetry(self.authenticate(completion, now + 2, token), now + 2)
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "no_significant_gain", auto_rollback=False
+                ),
+                now + 3, token,
+            ),
+            now + 3,
+        )
+
+        changed_completion = self.tuning_complete_payload(
+            install_id, experiment_id, "rolled_back", auto_rollback=True
+        )
+        with self.assertRaises(SERVER.TelemetryConflictError):
+            SERVER._record_telemetry(
+                self.authenticate(changed_completion, now + 4, token), now + 4
+            )
+        changed_start = self.tuning_start_payload(install_id, experiment_id)
+        changed_start["goal"] = "average_fps"
+        with self.assertRaises(SERVER.TelemetryConflictError):
+            SERVER._record_telemetry(
+                self.authenticate(changed_start, now + 5, token), now + 5
+            )
+        with self.assertRaises(SERVER.TelemetryConflictError):
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_variant_payload(install_id, experiment_id), now + 6, token
+                ),
+                now + 6,
+            )
+        with self.assertRaises(SERVER.TelemetryConflictError):
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_run_payload(
+                        install_id, experiment_id, experiment_id + ".baseline",
+                        "run-after-terminal", avg_fps=100, fps_1_low=60,
+                    ),
+                    now + 7, token,
+                ),
+                now + 7,
+            )
+
+        conn = SERVER._connect()
+        try:
+            row = conn.execute(
+                "SELECT created_at, completed_at, result FROM tuning_experiments WHERE experiment_id=?",
+                (experiment_id,),
+            ).fetchone()
+            self.assertEqual((now, now + 2, "no_significant_gain"), tuple(row))
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM tuning_variants WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM tuning_runs WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_tuning_success_counts_and_found_better_require_qualified_runs(self):
+        now = 1786248000
+        install_id = "04040404-0404-4404-8404-040404040404"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+
+        incomplete_id = "exp-zero-applied"
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(install_id, incomplete_id), now, token), now
+        )
+        invalid_success = self.tuning_variant_payload(install_id, incomplete_id)
+        invalid_success["appliedCount"] = 0
+        invalid_success["skippedCount"] = len(invalid_success["itemIds"])
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(
+                self.authenticate(invalid_success, now + 1, token), now + 1
+            )
+
+        no_runs_id = "exp-no-qualified-runs"
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(install_id, no_runs_id), now + 2, token), now + 2
+        )
+        no_runs_variant = no_runs_id + ".G1"
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_variant_payload(install_id, no_runs_id, variant_id=no_runs_variant),
+                now + 3, token,
+            ),
+            now + 3,
+        )
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_complete_payload(
+                        install_id, no_runs_id, "found_better", no_runs_variant
+                    ),
+                    now + 4, token,
+                ),
+                now + 4,
+            )
+
+        partial_id = "exp-partial-not-winner"
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(install_id, partial_id), now + 5, token), now + 5
+        )
+        partial_variant = partial_id + ".G1"
+        partial = self.tuning_variant_payload(
+            install_id, partial_id, variant_id=partial_variant
+        )
+        partial["applyResult"] = "partial"
+        partial["appliedCount"] = 1
+        partial["failedCount"] = 1
+        SERVER._record_telemetry(self.authenticate(partial, now + 6, token), now + 6)
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_complete_payload(
+                        install_id, partial_id, "found_better", partial_variant
+                    ),
+                    now + 7, token,
+                ),
+                now + 7,
+            )
+
+    def test_no_gain_rejects_a_win_and_cancelled_is_not_effectiveness_data(self):
+        now = 1786248000
+        install_id = "18181818-1818-4818-8818-181818181818"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-no-gain-false-negative"
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + ".G1"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=60, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=60, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b1", avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b2", avg_fps=110, fps_1_low=70, run_no=2, sequence_no=7),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            completed_at = now + len(events)
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_complete_payload(
+                        install_id, experiment_id, "no_significant_gain"
+                    ),
+                    completed_at, token,
+                ),
+                completed_at,
+            )
+        cancelled_at = now + len(events) + 1
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(install_id, experiment_id, "cancelled"),
+                cancelled_at, token,
+            ),
+            cancelled_at,
+        )
+        conn = SERVER._connect()
+        try:
+            day = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+            comparisons = SERVER._qualified_tuning_comparisons(
+                conn, day, day + dt.timedelta(days=1), SERVER._default_weekly_filters()
+            )
+            self.assertEqual([], comparisons)
+            row = conn.execute(
+                "SELECT status, result FROM tuning_experiments WHERE experiment_id=?",
+                (experiment_id,),
+            ).fetchone()
+            self.assertEqual(("cancelled", "cancelled"), tuple(row))
+        finally:
+            conn.close()
+
+    def test_winner_must_be_the_endpoint_of_a_valid_control_chain(self):
+        now = 1786248000
+        install_id = "19191919-1919-4919-8919-191919191919"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-invalid-winner-chain"
+        baseline = experiment_id + ".baseline"
+        g1_variant = experiment_id + ".G1"
+        g2_variant = experiment_id + ".G2"
+        g2_items = sorted(
+            set(SERVER.TUNING_GROUP_ITEMS["G1"]) | set(SERVER.TUNING_GROUP_ITEMS["G2"])
+        )
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=60, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=60, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g1-control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=g1_variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g1-b1", avg_fps=90, fps_1_low=50, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g1-a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g1-b2", avg_fps=90, fps_1_low=50, run_no=2, sequence_no=7),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g2-control-pre", avg_fps=90, fps_1_low=50, run_no=3, sequence_no=8),
+            self.tuning_variant_payload(install_id, experiment_id, group_id="G2", variant_id=g2_variant, control_variant_id=g1_variant, sequence_no=9, item_ids=g2_items),
+            self.tuning_run_payload(install_id, experiment_id, g2_variant, experiment_id + ".g2-b1", avg_fps=99, fps_1_low=55, run_no=1, sequence_no=9),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g2-a1", avg_fps=90, fps_1_low=50, run_no=4, sequence_no=10),
+            self.tuning_run_payload(install_id, experiment_id, g2_variant, experiment_id + ".g2-b2", avg_fps=99, fps_1_low=55, run_no=2, sequence_no=11),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            self.assertTrue(
+                SERVER._load_tuning_comparison(conn, experiment, g1_variant)["hardRollback"]
+            )
+            self.assertTrue(
+                SERVER._load_tuning_comparison(conn, experiment, g2_variant)["deterministicWin"]
+            )
+            self.assertEqual(
+                baseline, SERVER._resolve_tuning_retained_variant(conn, experiment)
+            )
+        finally:
+            conn.close()
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            completed_at = now + len(events)
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_complete_payload(
+                        install_id, experiment_id, "found_better", g2_variant
+                    ),
+                    completed_at, token,
+                ),
+                completed_at,
+            )
+        no_gain_at = now + len(events) + 1
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "no_significant_gain"
+                ),
+                no_gain_at, token,
+            ),
+            no_gain_at,
+        )
+        conn = SERVER._connect()
+        try:
+            day = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+            comparisons = SERVER._qualified_tuning_comparisons(
+                conn, day, day + dt.timedelta(days=1), SERVER._default_weekly_filters()
+            )
+            self.assertEqual(["G1"], [row["groupId"] for row in comparisons])
+            self.assertTrue(comparisons[0]["hardRollback"])
+        finally:
+            conn.close()
+
+    def test_found_better_recomputes_decline_constraints_stutter_and_direction(self):
+        now = 1786248000
+        install_id = "09090909-0909-4909-8909-090909090909"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+
+        def rejected_case(name, first_metrics, second_metrics, baseline_stutter=2):
+            experiment_id = "exp-server-win-" + name
+            baseline = experiment_id + ".baseline"
+            variant = experiment_id + ".G1"
+            offset_base = {
+                "decline": 0, "temperature": 10, "power": 20,
+                "stutter-zero": 30, "direction": 40,
+            }[name]
+            events = [
+                self.tuning_start_payload(install_id, experiment_id),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, stutter_50ms=baseline_stutter, run_no=1, sequence_no=1),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=101, fps_1_low=61, stutter_50ms=baseline_stutter, run_no=2, sequence_no=2),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=99, fps_1_low=59, stutter_50ms=baseline_stutter, run_no=3, sequence_no=3),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=60, stutter_50ms=baseline_stutter, run_no=4, sequence_no=4),
+                self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+                self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-1", run_no=1, sequence_no=5, **first_metrics),
+                self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-a1", avg_fps=100, fps_1_low=60, stutter_50ms=baseline_stutter, run_no=5, sequence_no=6),
+                self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-2", run_no=2, sequence_no=7, **second_metrics),
+            ]
+            for offset, payload in enumerate(events):
+                timestamp = now + offset_base + offset
+                SERVER._record_telemetry(
+                    self.authenticate(payload, timestamp, token), timestamp
+                )
+            conn = SERVER._connect()
+            try:
+                experiment = conn.execute(
+                    "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+                ).fetchone()
+                comparison = SERVER._load_tuning_comparison(conn, experiment, variant)
+            finally:
+                conn.close()
+            with self.assertRaises(SERVER.TelemetryTuningError):
+                timestamp = now + offset_base + len(events)
+                SERVER._record_telemetry(
+                    self.authenticate(
+                        self.tuning_complete_payload(
+                            install_id, experiment_id, "found_better", variant
+                        ),
+                        timestamp, token,
+                    ),
+                    timestamp,
+                )
+            return comparison
+
+        decline = rejected_case(
+            "decline",
+            {"avg_fps": 90, "fps_1_low": 50},
+            {"avg_fps": 92, "fps_1_low": 52},
+        )
+        self.assertTrue(decline["hardRollback"])
+        self.assertLess(decline["fps1LowDeltaPct"], -5)
+
+        temperature = rejected_case(
+            "temperature",
+            {"avg_fps": 110, "fps_1_low": 70, "temperature": 74},
+            {"avg_fps": 111, "fps_1_low": 71, "temperature": 74},
+        )
+        self.assertTrue(temperature["hardRollback"])
+        self.assertGreater(temperature["gpuTempDeltaC"], 3)
+
+        power = rejected_case(
+            "power",
+            {"avg_fps": 110, "fps_1_low": 70, "power": 160},
+            {"avg_fps": 111, "fps_1_low": 71, "power": 160},
+        )
+        self.assertTrue(power["hardRollback"])
+        self.assertGreater(power["gpuPowerDeltaPct"], 0)
+
+        stutter = rejected_case(
+            "stutter-zero",
+            {"avg_fps": 110, "fps_1_low": 70, "stutter_50ms": 1},
+            {"avg_fps": 111, "fps_1_low": 71, "stutter_50ms": 1},
+            baseline_stutter=0,
+        )
+        self.assertTrue(stutter["hardRollback"])
+        self.assertFalse(stutter["deterministicWin"])
+
+        direction = rejected_case(
+            "direction",
+            {"avg_fps": 110, "fps_1_low": 50},
+            {"avg_fps": 110, "fps_1_low": 80},
+        )
+        self.assertIsNone(direction)
+
+    def test_tuning_control_chain_compares_candidate_to_current_best(self):
+        now = 1786248000
+        install_id = "05050505-0505-4505-8505-050505050505"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-control-chain"
+        baseline = experiment_id + ".baseline"
+        g1_variant = experiment_id + ".G1"
+        g2_variant = experiment_id + ".G2"
+        g1_items = list(SERVER.TUNING_GROUP_ITEMS["G1"])
+        g2_items = sorted(set(g1_items) | set(SERVER.TUNING_GROUP_ITEMS["G2"]))
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(
+                install_id, experiment_id, baseline, experiment_id + ".base-1",
+                avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, baseline, experiment_id + ".base-2",
+                avg_fps=101, fps_1_low=61, run_no=2, sequence_no=2,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, baseline, experiment_id + ".base-3",
+                avg_fps=99, fps_1_low=59, run_no=3, sequence_no=3,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, baseline, experiment_id + ".g1-control-pre",
+                avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4,
+            ),
+            self.tuning_variant_payload(
+                install_id, experiment_id, variant_id=g1_variant,
+                control_variant_id=baseline, sequence_no=5,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, g1_variant, experiment_id + ".g1-1",
+                avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, baseline, experiment_id + ".g1-control-a1",
+                avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, g1_variant, experiment_id + ".g1-2",
+                avg_fps=110, fps_1_low=70, run_no=2, sequence_no=7,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, g1_variant, experiment_id + ".g2-control-pre",
+                avg_fps=110, fps_1_low=70, run_no=3, sequence_no=8,
+            ),
+            self.tuning_variant_payload(
+                install_id, experiment_id, group_id="G2", variant_id=g2_variant,
+                control_variant_id=g1_variant, sequence_no=9, item_ids=g2_items,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, g2_variant, experiment_id + ".g2-1",
+                avg_fps=119, fps_1_low=78, run_no=1, sequence_no=9,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, g1_variant, experiment_id + ".g2-control-a1",
+                avg_fps=110, fps_1_low=70, run_no=4, sequence_no=10,
+            ),
+            self.tuning_run_payload(
+                install_id, experiment_id, g2_variant, experiment_id + ".g2-2",
+                avg_fps=121, fps_1_low=80, run_no=2, sequence_no=11,
+            ),
+            self.tuning_complete_payload(
+                install_id, experiment_id, "found_better", g2_variant,
+            ),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            comparison = SERVER._load_tuning_comparison(conn, experiment, g2_variant)
+            self.assertEqual(g1_variant, comparison["controlVariantId"])
+            self.assertAlmostEqual(9.09, comparison["avgFpsDeltaPct"], places=2)
+            self.assertAlmostEqual(12.86, comparison["fps1LowDeltaPct"], places=2)
+            day = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+            comparisons = SERVER._qualified_tuning_comparisons(
+                conn, day, day + dt.timedelta(days=1), SERVER._default_weekly_filters()
+            )
+            by_group = {row["groupId"]: row for row in comparisons}
+            self.assertTrue(by_group["G1"]["retained"])
+            self.assertTrue(by_group["G2"]["retained"])
+            self.assertFalse(by_group["G1"]["rolledBack"])
+            self.assertFalse(by_group["G2"]["rolledBack"])
+        finally:
+            conn.close()
+
+    def test_tuning_membership_is_frozen_by_candidate_boundaries(self):
+        now = 1786248000
+        install_id = "15151515-1515-4515-8515-151515151515"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-membership-boundaries"
+        baseline = experiment_id + ".baseline"
+        g1_variant = experiment_id + ".G1"
+        g2_variant = experiment_id + ".G2"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=55, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=60, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=60, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g1-control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=g1_variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g1-b1", avg_fps=90, fps_1_low=50, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g1-a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g1-b2", avg_fps=92, fps_1_low=52, run_no=2, sequence_no=7),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g2-control-pre", avg_fps=100, fps_1_low=60, run_no=6, sequence_no=8),
+            self.tuning_variant_payload(install_id, experiment_id, group_id="G2", variant_id=g2_variant, control_variant_id=baseline, sequence_no=9),
+            self.tuning_run_payload(install_id, experiment_id, g2_variant, experiment_id + ".g2-b1", avg_fps=105.5, fps_1_low=63.2, run_no=1, sequence_no=9),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g2-a1", avg_fps=100, fps_1_low=60, run_no=7, sequence_no=10),
+            self.tuning_run_payload(install_id, experiment_id, g2_variant, experiment_id + ".g2-b2", avg_fps=105.5, fps_1_low=63.2, run_no=2, sequence_no=11),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            g1_before = SERVER._load_tuning_comparison(conn, experiment, g1_variant)
+            g2 = SERVER._load_tuning_comparison(conn, experiment, g2_variant)
+            self.assertTrue(g1_before["hardRollback"])
+            self.assertEqual(
+                [experiment_id + ".base-2", experiment_id + ".base-3", experiment_id + ".g1-control-pre", experiment_id + ".g1-a1"],
+                g1_before["controlRunIds"],
+            )
+            self.assertEqual(
+                [experiment_id + ".g1-b1", experiment_id + ".g1-b2"],
+                g1_before["candidateRunIds"],
+            )
+            self.assertTrue(g2["deterministicWin"])
+            self.assertEqual(
+                [experiment_id + ".g1-control-pre", experiment_id + ".g1-a1", experiment_id + ".g2-control-pre", experiment_id + ".g2-a1"],
+                g2["controlRunIds"],
+            )
+        finally:
+            conn.close()
+
+        late_run = self.tuning_run_payload(
+            install_id, experiment_id, g1_variant, experiment_id + ".g1-late",
+            avg_fps=300, fps_1_low=300, run_no=3, sequence_no=12,
+        )
+        SERVER._record_telemetry(
+            self.authenticate(late_run, now + len(events), token), now + len(events)
+        )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            g1_after = SERVER._load_tuning_comparison(conn, experiment, g1_variant)
+            for key in (
+                "controlRunIds", "candidateRunIds", "fps1LowDeltaPct",
+                "avgFpsDeltaPct", "hardRollback", "deterministicWin",
+            ):
+                self.assertEqual(g1_before[key], g1_after[key], key)
+            self.assertNotIn(experiment_id + ".g1-late", g1_after["candidateRunIds"])
+        finally:
+            conn.close()
+        completed_at = now + len(events) + 1
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "found_better", g2_variant
+                ),
+                completed_at, token,
+            ),
+            completed_at,
+        )
+
+    def test_tuning_inconclusive_membership_uses_alternating_a2_b3(self):
+        now = 1786248000
+        install_id = "16161616-1616-4616-8616-161616161616"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-membership-extra"
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + ".G1"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=60, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=60, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b1", avg_fps=110, fps_1_low=63, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".a1", avg_fps=100, fps_1_low=54, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b2", avg_fps=110, fps_1_low=66, run_no=2, sequence_no=7),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".a2", avg_fps=100, fps_1_low=60, run_no=6, sequence_no=8),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b3", avg_fps=110, fps_1_low=70, run_no=3, sequence_no=9),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            comparison = SERVER._load_tuning_comparison(conn, experiment, variant)
+            self.assertEqual(
+                [experiment_id + ".base-2", experiment_id + ".base-3", experiment_id + ".control-pre", experiment_id + ".a1", experiment_id + ".a2"],
+                comparison["controlRunIds"],
+            )
+            self.assertEqual(
+                [experiment_id + ".b1", experiment_id + ".b2", experiment_id + ".b3"],
+                comparison["candidateRunIds"],
+            )
+            self.assertEqual(4.56, comparison["baselineNoisePct"])
+            self.assertTrue(comparison["deterministicWin"])
+        finally:
+            conn.close()
+        completed_at = now + len(events)
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "found_better", variant
+                ),
+                completed_at, token,
+            ),
+            completed_at,
+        )
+
+    def test_tuning_rejects_non_alternating_run_membership(self):
+        now = 1786248000
+        install_id = "17171717-1717-4717-8717-171717171717"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-membership-order"
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + ".G1"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=100, fps_1_low=60, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=100, fps_1_low=60, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b1", avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".b2", avg_fps=110, fps_1_low=70, run_no=2, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=7),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            self.assertIsNone(SERVER._load_tuning_comparison(conn, experiment, variant))
+        finally:
+            conn.close()
+        with self.assertRaises(SERVER.TelemetryTuningError):
+            completed_at = now + len(events)
+            SERVER._record_telemetry(
+                self.authenticate(
+                    self.tuning_complete_payload(
+                        install_id, experiment_id, "found_better", variant
+                    ),
+                    completed_at, token,
+                ),
+                completed_at,
+            )
+
+    def test_tuning_group_rollbacks_follow_final_winner_items(self):
+        now = 1786248000
+        install_id = "06060606-0606-4606-8606-060606060606"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-winner-items"
+        baseline = experiment_id + ".baseline"
+        g1_variant = experiment_id + ".G1"
+        g2_variant = experiment_id + ".G2"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=101, fps_1_low=61, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=99, fps_1_low=59, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g1-control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=g1_variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g1-1", avg_fps=90, fps_1_low=50, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g1-control-a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, g1_variant, experiment_id + ".g1-2", avg_fps=92, fps_1_low=52, run_no=2, sequence_no=7),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g2-control-pre", avg_fps=100, fps_1_low=60, run_no=6, sequence_no=8),
+            self.tuning_variant_payload(
+                install_id, experiment_id, group_id="G2", variant_id=g2_variant,
+                control_variant_id=baseline, sequence_no=9,
+            ),
+            self.tuning_run_payload(install_id, experiment_id, g2_variant, experiment_id + ".g2-1", avg_fps=110, fps_1_low=70, run_no=1, sequence_no=9),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".g2-control-a1", avg_fps=100, fps_1_low=60, run_no=7, sequence_no=10),
+            self.tuning_run_payload(install_id, experiment_id, g2_variant, experiment_id + ".g2-2", avg_fps=111, fps_1_low=71, run_no=2, sequence_no=11),
+            self.tuning_complete_payload(install_id, experiment_id, "found_better", g2_variant),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+
+        conn = SERVER._connect()
+        try:
+            day = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+            comparisons = SERVER._qualified_tuning_comparisons(
+                conn, day, day + dt.timedelta(days=1), SERVER._default_weekly_filters()
+            )
+            by_group = {row["groupId"]: row for row in comparisons}
+            self.assertTrue(by_group["G1"]["rolledBack"])
+            self.assertFalse(by_group["G1"]["retained"])
+            self.assertFalse(by_group["G2"]["rolledBack"])
+            self.assertTrue(by_group["G2"]["retained"])
+            self.assertEqual(0, conn.execute(
+                "SELECT auto_rollback FROM tuning_experiments WHERE experiment_id=?",
+                (experiment_id,),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_weekly_group_ranking_excludes_failed_experiments(self):
+        now = int(dt.datetime(2026, 7, 28, 12, tzinfo=dt.timezone.utc).timestamp())
+        install_id = "10101010-1010-4010-8010-101010101010"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        experiment_id = "exp-failed-exclusion"
+        baseline = experiment_id + ".baseline"
+        variant = experiment_id + ".G1"
+        events = [
+            self.tuning_start_payload(install_id, experiment_id),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-2", avg_fps=101, fps_1_low=61, run_no=2, sequence_no=2),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".base-3", avg_fps=99, fps_1_low=59, run_no=3, sequence_no=3),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(install_id, experiment_id, variant_id=variant, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-1", avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5),
+            self.tuning_run_payload(install_id, experiment_id, baseline, experiment_id + ".control-a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+            self.tuning_run_payload(install_id, experiment_id, variant, experiment_id + ".candidate-2", avg_fps=111, fps_1_low=71, run_no=2, sequence_no=7),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, token), now + offset
+            )
+        conn = SERVER._connect()
+        try:
+            experiment = conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone()
+            self.assertTrue(SERVER._load_tuning_comparison(
+                conn, experiment, variant
+            )["deterministicWin"])
+        finally:
+            conn.close()
+        SERVER._record_telemetry(
+            self.authenticate(
+                self.tuning_complete_payload(
+                    install_id, experiment_id, "failed", auto_rollback=False
+                ),
+                now + len(events), token,
+            ),
+            now + len(events),
+        )
+        week = dt.date(2026, 7, 27)
+        tuning = SERVER._build_weekly_report(week, now=now + 20)["tuning"]
+        self.assertEqual(1, tuning["summary"]["completed"]["current"])
+        self.assertEqual(0, tuning["summary"]["valid"]["current"])
+        self.assertEqual(0, tuning["groupRanking"][0]["validIndependentExperiments"])
+        self.assertFalse(tuning["groupRanking"][0]["conclusionPublished"])
+
+    def test_tuning_conclusion_requires_twenty_distinct_devices(self):
+        week = dt.date(2026, 7, 27)
+        timestamp = int(dt.datetime(2026, 7, 28, 12, tzinfo=dt.timezone.utc).timestamp())
+        for index in range(20):
+            self.seed_qualified_tuning_experiment(
+                "single-device", "exp-same-device-%02d" % index, timestamp + index
+            )
+        group = SERVER._build_weekly_report(week, now=timestamp + 1000)["tuning"]["groupRanking"][0]
+        self.assertEqual(20, group["validIndependentExperiments"])
+        self.assertEqual(1, group["validIndependentDevices"])
+        self.assertFalse(group["conclusionPublished"])
+        self.assertIsNone(group["winRate"])
+        self.assertEqual(20, SERVER._build_weekly_report(
+            week, now=timestamp + 1000
+        )["tuning"]["dataQuality"]["groupConclusionMinIndependentDevices"])
+
+    def test_tuning_qualification_rejects_short_unstable_or_mismatched_arms(self):
+        week = dt.date(2026, 7, 27)
+        timestamp = int(dt.datetime(2026, 7, 28, 12, tzinfo=dt.timezone.utc).timestamp())
+        cases = ("baseline-short", "candidate-short", "unstable", "environment", "settings", "order")
+        for index, name in enumerate(cases):
+            self.seed_qualified_tuning_experiment(
+                "qualification-client-%s" % name,
+                "exp-qualification-%s" % name,
+                timestamp + index,
+            )
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute("DELETE FROM tuning_runs WHERE run_id='exp-qualification-baseline-short.run-3'")
+                conn.execute("DELETE FROM tuning_runs WHERE run_id='exp-qualification-candidate-short.run-7'")
+                conn.execute(
+                    "UPDATE tuning_runs SET avg_fps=180 WHERE run_id='exp-qualification-unstable.run-1'"
+                )
+                conn.execute(
+                    "UPDATE tuning_runs SET environment_hash=? WHERE run_id='exp-qualification-environment.run-7'",
+                    ("d" * 64,),
+                )
+                conn.execute(
+                    "UPDATE tuning_runs SET settings_hash=? WHERE run_id='exp-qualification-settings.run-7'",
+                    ("e" * 64,),
+                )
+                conn.execute(
+                    "UPDATE tuning_runs SET order_controlled=0 WHERE run_id='exp-qualification-order.run-5'"
+                )
+            comparisons = SERVER._qualified_tuning_comparisons(
+                conn, week, week + dt.timedelta(days=7), SERVER._default_weekly_filters()
+            )
+            self.assertEqual([], comparisons)
+        finally:
+            conn.close()
+        ranking = SERVER._build_weekly_report(
+            week, now=timestamp + 1000
+        )["tuning"]["groupRanking"][0]
+        self.assertEqual(0, ranking["validIndependentExperiments"])
+        self.assertFalse(ranking["conclusionPublished"])
+
+    def test_weekly_tuning_funnel_ranking_threshold_and_invalid_reasons(self):
+        week = dt.date(2026, 7, 27)
+        now = int(dt.datetime(2026, 7, 28, 12, tzinfo=dt.timezone.utc).timestamp())
+
+        first_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        first_token = SERVER._issue_device_token(first_id, now)["deviceToken"]
+        first_exp = "exp-weekly-good"
+        first_variant = first_exp + ".G1"
+        events = [
+            self.tuning_start_payload(first_id, first_exp),
+            self.tuning_run_payload(first_id, first_exp, first_exp + ".baseline", "run-good-base-1", avg_fps=100, fps_1_low=60, run_no=1, sequence_no=1),
+            self.tuning_run_payload(first_id, first_exp, first_exp + ".baseline", "run-good-base-2", avg_fps=101, fps_1_low=61, run_no=2, sequence_no=2),
+            self.tuning_run_payload(first_id, first_exp, first_exp + ".baseline", "run-good-base-3", avg_fps=99, fps_1_low=59, run_no=3, sequence_no=3),
+            self.tuning_run_payload(first_id, first_exp, first_exp + ".baseline", "run-good-control-pre", avg_fps=100, fps_1_low=60, run_no=4, sequence_no=4),
+            self.tuning_variant_payload(first_id, first_exp, variant_id=first_variant, sequence_no=5),
+            self.tuning_run_payload(first_id, first_exp, first_variant, "run-good-G1-1", avg_fps=110, fps_1_low=70, run_no=1, sequence_no=5),
+            self.tuning_run_payload(first_id, first_exp, first_exp + ".baseline", "run-good-control-a1", avg_fps=100, fps_1_low=60, run_no=5, sequence_no=6),
+            self.tuning_run_payload(first_id, first_exp, first_variant, "run-good-G1-2", avg_fps=111, fps_1_low=71, run_no=2, sequence_no=7),
+            self.tuning_complete_payload(first_id, first_exp, "found_better", first_variant),
+        ]
+        for offset, payload in enumerate(events):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, first_token), now + offset
+            )
+
+        pending_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        pending_token = SERVER._issue_device_token(pending_id, now)["deviceToken"]
+        SERVER._record_telemetry(
+            self.authenticate(self.tuning_start_payload(pending_id, "exp-weekly-pending"), now + 10, pending_token),
+            now + 10,
+        )
+
+        invalid_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        invalid_token = SERVER._issue_device_token(invalid_id, now)["deviceToken"]
+        invalid_exp = "exp-weekly-invalid"
+        invalid_variant = invalid_exp + ".G1"
+        invalid_events = [
+            self.tuning_start_payload(invalid_id, invalid_exp),
+            self.tuning_variant_payload(invalid_id, invalid_exp, variant_id=invalid_variant),
+            self.tuning_run_payload(
+                invalid_id, invalid_exp, invalid_variant, "run-focus-lost",
+                validity="invalid", invalid_reason="focus_lost", avg_fps=0, fps_1_low=0,
+            ),
+            self.tuning_complete_payload(
+                invalid_id, invalid_exp, "no_significant_gain", auto_rollback=True
+            ),
+        ]
+        for offset, payload in enumerate(invalid_events, 20):
+            SERVER._record_telemetry(
+                self.authenticate(payload, now + offset, invalid_token), now + offset
+            )
+
+        report = SERVER._build_weekly_report(week, now=now + 60)
+        tuning = report["tuning"]
+        self.assertEqual(3, tuning["summary"]["started"]["current"])
+        self.assertEqual(2, tuning["summary"]["completed"]["current"])
+        self.assertEqual(1, tuning["summary"]["valid"]["current"])
+        self.assertEqual(1, tuning["summary"]["foundBetter"]["current"])
+        self.assertEqual(1, tuning["summary"]["noSignificantGain"]["current"])
+        self.assertEqual(1, tuning["summary"]["autoRollback"]["current"])
+        self.assertEqual(3, tuning["funnel"][0]["experiments"])
+        self.assertFalse(tuning["groupRanking"][0]["conclusionPublished"])
+        self.assertEqual("focus_lost", tuning["invalidReasonDistribution"][0]["value"])
+        self.assertFalse(tuning["aiQuality"]["enabled"])
+
+        for index in range(19):
+            self.seed_qualified_tuning_experiment(
+                "rank-client-%02d" % index, "exp-rank-%02d" % index, now
+            )
+        published = SERVER._build_weekly_report(week, now=now + 200)["tuning"]["groupRanking"][0]
+        self.assertEqual(20, published["validIndependentExperiments"])
+        self.assertEqual(20, published["validIndependentDevices"])
+        self.assertTrue(published["conclusionPublished"])
+        self.assertEqual(100.0, published["winRate"])
+        self.assertEqual(1, published["rank"])
+
+    def test_tuning_daily_limit_and_retention_cascade(self):
+        now = 1786248000
+        install_id = "12121212-3434-4567-8abc-121212121212"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        client_hash = SERVER._client_hash(install_id)
+        day_start = now - (now % 86400)
+        old = now - (SERVER.TELEMETRY_KEEP_DAYS + 1) * 86400
+        conn = SERVER._connect()
+        try:
+            with conn:
+                for index in range(SERVER.TUNING_DAILY_LIMIT):
+                    conn.execute(
+                        "INSERT INTO tuning_events VALUES (?, ?, ?)",
+                        (client_hash, "limit-%03d" % index, day_start + index),
+                    )
+                for prefix, timestamp in (("old", old), ("fresh", now)):
+                    experiment = prefix + "-experiment"
+                    variant = prefix + "-variant"
+                    conn.execute(
+                        """INSERT INTO tuning_experiments (
+                               experiment_id, client_hash, created_at, completed_at, status,
+                               goal, risk_level, app_version, gpu_model, baseline_variant_id
+                           ) VALUES (?, ?, ?, ?, 'completed', 'smoothness', 'low',
+                                     '0.20.0', 'GPU', ?)""",
+                        (experiment, prefix, timestamp, timestamp, variant),
+                    )
+                    conn.execute(
+                        """INSERT INTO tuning_variants (
+                               variant_id, experiment_id, sequence_no, group_id, display_name,
+                               item_set_hash, item_ids_json, source, risk_level, status
+                           ) VALUES (?, ?, 0, 'baseline', 'baseline', ?, '[]', 'manual', 'low', 'baseline')""",
+                        (variant, experiment, SERVER._tuning_item_set_hash([])),
+                    )
+                    conn.execute(
+                        """INSERT INTO tuning_runs (
+                               run_id, experiment_id, variant_id, run_no, sequence_no,
+                               started_at, completed_at, validity, settings_hash, environment_hash
+                           ) VALUES (?, ?, ?, 1, 1, ?, ?, 'valid', ?, ?)""",
+                        (prefix + "-run", experiment, variant, timestamp, timestamp, "a" * 64, "b" * 64),
+                    )
+                    conn.execute(
+                        """INSERT INTO ai_tuning_decisions (
+                               decision_id, experiment_id, created_at, model, prompt_version,
+                               schema_version, input_hash, decision, validation_result
+                           ) VALUES (?, ?, ?, 'future', 'v1', 1, ?, 'test_variant', 'valid')""",
+                        (prefix + "-decision", experiment, timestamp, "c" * 64),
+                    )
+        finally:
+            conn.close()
+
+        limited = self.authenticate(
+            self.tuning_start_payload(install_id, "exp-daily-limited"), now, token
+        )
+        with self.assertRaises(SERVER.TelemetryDailyLimitError):
+            SERVER._record_telemetry(limited, now)
+
+        SERVER._run_maintenance(now)
+        conn = SERVER._connect()
+        try:
+            for table in ("tuning_experiments", "tuning_variants", "tuning_runs", "ai_tuning_decisions"):
+                self.assertEqual(0, conn.execute(
+                    "SELECT COUNT(*) FROM %s WHERE %s LIKE 'old%%'" % (
+                        table, "experiment_id" if table != "tuning_runs" and table != "ai_tuning_decisions" else
+                        ("run_id" if table == "tuning_runs" else "decision_id")
+                    )
+                ).fetchone()[0])
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM tuning_experiments WHERE experiment_id='fresh-experiment'"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_migrates_existing_tuning_database_to_library_version_one(self):
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.executescript("""
+                    DROP TABLE ai_tuning_decisions;
+                    DROP TABLE tuning_runs;
+                    DROP TABLE tuning_variants;
+                    DROP TABLE tuning_experiments;
+                    CREATE TABLE tuning_experiments (
+                        experiment_id TEXT PRIMARY KEY,
+                        client_hash TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        completed_at INTEGER,
+                        status TEXT NOT NULL,
+                        goal TEXT NOT NULL,
+                        risk_level TEXT NOT NULL,
+                        allow_reboot INTEGER NOT NULL DEFAULT 0,
+                        allow_higher_power INTEGER NOT NULL DEFAULT 0,
+                        max_temp_increase REAL,
+                        max_power_increase REAL,
+                        app_version TEXT NOT NULL,
+                        game_version TEXT NOT NULL DEFAULT '',
+                        gpu_model TEXT NOT NULL,
+                        driver_version TEXT NOT NULL DEFAULT '',
+                        baseline_variant_id TEXT,
+                        winning_variant_id TEXT,
+                        result TEXT NOT NULL DEFAULT '',
+                        stop_reason TEXT NOT NULL DEFAULT '',
+                        auto_rollback INTEGER NOT NULL DEFAULT 0,
+                        start_payload_hash TEXT NOT NULL DEFAULT '',
+                        completion_payload_hash TEXT NOT NULL DEFAULT ''
+                    );
+                """)
+                conn.execute(
+                    """INSERT INTO tuning_experiments (
+                           experiment_id, client_hash, created_at, status, goal,
+                           risk_level, app_version, gpu_model
+                       ) VALUES ('legacy-tuning', 'legacy-client', 1, 'created',
+                                 'smoothness', 'low', '0.20.0', 'GPU')"""
+                )
+        finally:
+            conn.close()
+        SERVER._init_db()
+        conn = SERVER._connect()
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_experiments)")}
+            self.assertIn("library_version", columns)
+            self.assertEqual(1, conn.execute(
+                "SELECT library_version FROM tuning_experiments WHERE experiment_id='legacy-tuning'"
+            ).fetchone()[0])
+            for table in ("tuning_variants", "tuning_runs", "ai_tuning_decisions"):
+                self.assertIsNotNone(conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone())
+        finally:
+            conn.close()
+
     def test_migrates_pre_019_tables(self):
         os.remove(SERVER.DB_PATH)
-        import sqlite3
         conn = sqlite3.connect(SERVER.DB_PATH)
         try:
             conn.execute("""CREATE TABLE clients (
@@ -192,18 +2195,42 @@ class TelemetryTests(unittest.TestCase):
                 gpu_util_max REAL NOT NULL DEFAULT 0, gpu_temp_avg REAL NOT NULL DEFAULT 0,
                 gpu_temp_max REAL NOT NULL DEFAULT 0, gpu_power_avg REAL NOT NULL DEFAULT 0,
                 gpu_power_max REAL NOT NULL DEFAULT 0)""")
+            conn.execute(
+                "INSERT INTO clients (client_hash, first_seen, last_seen) VALUES ('preserved-client', 1, 2)"
+            )
             conn.commit()
         finally:
             conn.close()
         SERVER._init_db()
         conn = SERVER._connect()
         try:
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(clients)")}
+            client_columns = {row[1] for row in conn.execute("PRAGMA table_info(clients)")}
             performance_columns = {row[1] for row in conn.execute("PRAGMA table_info(performance_sessions)")}
+            daily_columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_usage)")}
+            weekly_columns = {row[1] for row in conn.execute("PRAGMA table_info(weekly_snapshots)")}
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            preserved = conn.execute(
+                "SELECT COUNT(*) FROM clients WHERE client_hash='preserved-client'"
+            ).fetchone()[0]
         finally:
             conn.close()
-        self.assertIn("gpu_model_verified", columns)
+        self.assertIn("gpu_model_verified", client_columns)
+        self.assertIn("authenticated_last_seen", client_columns)
         self.assertIn("config_tier", performance_columns)
+        self.assertIn("authenticated", performance_columns)
+        self.assertIn("trusted_launches", daily_columns)
+        self.assertIn("restore_ok", daily_columns)
+        self.assertIn("telemetry_replays", tables)
+        self.assertIn("weekly_snapshots", tables)
+        for table in (
+            "tuning_experiments", "tuning_variants", "tuning_runs",
+            "ai_tuning_decisions", "tuning_events",
+        ):
+            self.assertIn(table, tables)
+        self.assertEqual(
+            {"week_start", "generated_at", "schema_version", "report_json"}, weekly_columns
+        )
+        self.assertEqual(1, preserved)
 
 
 if __name__ == "__main__":

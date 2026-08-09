@@ -16,8 +16,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
 | 产物 | 用途 |
 |---|---|
-| `DeltaForceBooster-Setup-vX.Y.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/自选安装位置/进度/完成四页；完成页三个勾选项均默认勾选——创建开始菜单快捷方式（「三角洲行动优化助手」「卸载优化助手」）、创建桌面快捷方式、立即运行（启动前会按主窗口标题关掉残留的旧版实例，防止新旧窗口并存）；静默安装两种快捷方式都创建 |
-| `update-manifest.json` | 更新清单模板：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 的 `$script:GuiVersion`（构建期与界面徽标交叉校验，不一致直接构建失败），`notes` 留占位待发布时填写 |
+| `DeltaForceBooster-Setup-vX.Y.Z.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/安装位置/进度/完成四页；默认安装到 `%ProgramFiles%\DeltaForceBooster`，创建开始菜单与桌面入口并可立即运行 |
+| `update-manifest.json` | 更新清单：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 的 `$script:GuiVersion`（构建期与界面徽标交叉校验，不一致直接构建失败），`notes` 由构建脚本中的本版公开说明生成 |
 
 **只发安装版**：绿色免安装 zip 已于 v0.15 停产（服务器上的下载入口也已移除）。
 payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`NOTICE.md`、
@@ -25,21 +25,25 @@ payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`
 
 设计要点：
 
-- **安装位置可自选**：默认 `%LOCALAPPDATA%\DeltaForceBooster`（写用户目录不需要管理员）；
-  「开始安装」前做**真实写入预检**，选了 Program Files 等受保护目录会明确提示并可一键
-  以管理员身份重启向导（`/dir=` 回传已选路径），不会默默失败。位置页显示所需/剩余空间。
-- 安装器清单是 asInvoker，程序**运行时**自己弹 UAC 提权（优化要改 HKLM/电源计划）。
-- 覆盖安装时 `profiles\`（自存方案）、`backup\`（系统还原凭据）、`config\`（运行状态）
-  里**已存在的文件一律不覆盖不删除**。
+- **安装位置**：默认 `%ProgramFiles%\DeltaForceBooster`。交互安装拒绝普通用户可写的程序目录；
+  静默更新遇到下载文件夹等旧版可写目录时，会把程序迁到 Program Files 并登记旧根，
+  旧入口停用，避免管理员进程加载普通进程可替换的脚本。
+- 安装器和启动器清单都是 `asInvoker`。主界面保持普通权限，只有具体系统操作、还原和
+  更新安装才启动短生命周期 UAC helper；启动器还会校验 GUI、引擎、更新器、遥测模块、
+  自动调优规则模块和 PresentMon 的构建时 SHA256。
+- 用户配置、自存方案和实验状态位于 `%LocalAppData%\DeltaForceBooster`；受保护备份位于
+  `%ProgramData%\DeltaForceBooster\backup`，不再和程序文件混放。
+- 覆盖安装采用同卷 staging → 完整 payload 哈希核对 → 目录事务切换；中断或失败时恢复
+  rollback，未知的非空目标目录没有产品身份文件时原样拒绝，不会整目录替换。
 - 卸载目标以 `uninstall.ps1` 自身所在目录为准（位置可自选后不能再假定 LOCALAPPDATA）；
   默认**保留 backup 目录**——那是撤销系统改动的唯一凭据；用户明确选「否」才全删。
 - 自动化验证参数（普通用户双击即图形向导，无需了解）：
   `/silent /dir=<路径> /log=<文件>` 静默安装（可加 `/waitpid=<进程Id>` 先等旧进程退出、
-  `/runafter` 装完自启新版）；`/checkdir=<路径> /log=<文件>` 只跑权限
-  预检（退出码 0 可写 / 2 需管理员 / 3 无效）；`/render=<目录>` 离屏渲染各页为 PNG 并
-  导出界面字符串（验证视觉与中文编码）。静默安装读 `LOCALAPPDATA`/`APPDATA` 环境变量，
-  可重定向到沙箱；桌面快捷方式的沙箱钩子是 `DFB_TEST_DESKTOP`（安装与卸载脚本同认）。
-  卸载脚本仍认 `DFB_INSTALL_SILENT=1`（不弹框、保留备份）。
+  `/runafter` 装完自启新版；内置更新还会成对传 `/sha256=<64位哈希> /size=<字节数>`，
+  安装器启动后与受保护 staging 的完整性 sidecar 交叉复验）；`/checkdir=<路径> /log=<文件>` 只跑权限
+  预检（退出码 0 可安装 / 2 需管理员 / 3 无效）；`/render=<目录>` 离屏渲染各页为 PNG 并
+  导出界面字符串。`DFB_TEST_*` 测试钩子只存在于显式 `-TestBuild` 产物，生产安装器会做
+  静态扫描确认没有这些入口。卸载脚本仍认 `DFB_INSTALL_SILENT=1`（不弹框、保留备份）。
 - **快捷方式落点**（真机踩过「装完找不到入口」）：提权安装（右键管理员运行，或选
   Program Files 触发提权重启）时 `%APPDATA%` 指向提权账号，多账户机器上快捷方式会
   建进管理员的开始菜单——所以提权态一律写公共开始菜单/公共桌面（所有用户可见）；
@@ -83,7 +87,8 @@ payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`
 界面启动时**异步**拉取 JSON 清单并和本地版本比对，此后运行期间每 30 分钟静默复查一次
 （GUI 常量 `$script:UpdateCheckIntervalMinutes`）；发现新版本点亮标题栏「有新版本」入口。
 v0.11 起更新详情框支持「立即更新」：应用内下载安装包（进度条、可取消）→ 强制校验
-SHA256 与文件大小 → 通过后提示并关闭程序、启动安装器。**下载与安装必须由用户点击触发**，
+SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging → 关闭程序并启动安装器再次复验。
+**下载与安装必须由用户点击触发**，
 自动检查只负责提醒，永不静默安装。
 
 内置下载的硬约束（实现于 `scripts\updater.ps1`，一条都不能省）：
@@ -94,20 +99,23 @@ SHA256 与文件大小 → 通过后提示并关闭程序、启动安装器。**
   导去恶意地址。
 - 清单缺 `sha256` 或 `size`（或值不合法）时视为不可信，界面自动退化为
   「仅提示 + 浏览器打开下载页」的旧行为；下载完成后哈希或大小任一不符，
-  立即删除临时文件并报错，绝不执行。下载全程落在 `%TEMP%\DeltaForceBooster-Update\`，
-  校验通过前不进程序目录。
+  立即删除临时文件并报错。普通权限下载使用 LocalAppData 下随机 `CreateNew` 文件并保持
+  句柄约束，管理员 helper 再从句柄复验并复制到仅 Administrators/SYSTEM 可写的
+  `%ProgramData%\DeltaForceBooster-UpdateStaging`；安装器启动后仍会按参数与 sidecar 复验，
+  避免“校验后被同权限进程替换”的窗口。
 - **如实告知局限（别粉饰）**：SHA256 校验防的是*传输途中*被篡改（中间人、镜像污染）。
   清单和安装包放在同一台服务器上，**服务器本身被攻破时攻击者可以同时替换两者并配好
   哈希，这套校验完全失效**。真正能防这种情况的是代码签名证书（私钥不在服务器上），
   本项目目前没有证书，所以服务器的安全就是更新链路的安全上限——SSH 键值登录、
   最小化暴露面，比在客户端加花样更有用。
 
-清单格式（`update-manifest.json`，UTF-8 无 BOM，构建脚本自动生成模板）：
+清单格式（`update-manifest.json`，UTF-8 无 BOM，构建脚本自动生成）：
 
 ```json
 {
-  "version": "0.11.0",
-  "notes": "1. 新增 XX 优化项\n2. 修复 YY 问题",
+  "version": "0.20.0",
+  "minimumSupportedVersion": "0.20.0",
+  "notes": "新增自动寻找最佳配置 Beta。\n修复安装更新、备份还原、多显卡识别和性能采样等问题。",
   "url": "https://df.ltz88.cn/",
   "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
   "sha256": "（安装包的 SHA256，小写十六进制，构建脚本自动填）",
@@ -120,24 +128,23 @@ SHA256 与文件大小 → 通过后提示并关闭程序、启动安装器。**
 1. 改完代码，把 `gui\DeltaForceBooster-GUI.ps1` 的版本徽标升号，跑本目录构建脚本出包。
    构建结束会自动生成 `build\update-manifest.json`，`sha256`/`size` 已按本次 Setup.exe
    算好——**不要手工改这两个字段**，改了客户端必然校验失败。
-2. 把 `notes` 占位换成真实更新说明。
-3. 上传到发布服务器（Caddy 站点 `df.ltz88.cn`，托管目录 `/opt/df-booster`）：
+2. 上传到发布服务器（Caddy 站点 `df.ltz88.cn`，托管目录 `/opt/df-booster`）：
    Setup.exe 覆盖为 `DeltaForceBooster-Setup.exe`（无版本号固定名，`setupUrl` 才能不变），
    清单覆盖 `update-manifest.json`。**先传安装包、后传清单**——反过来会有一段时间窗口，
    老客户端按新清单校验旧安装包，全部失败。
-4. 在 `website/index.html` 的「更新记录」中新增本版内容并上传，确认官网显示的新版本号、
+3. 在 `website/index.html` 的「更新记录」中新增本版内容并上传，确认官网显示的新版本号、
    更新内容和下载入口都正确。
-5. 提交并推送 GitHub `main`；随后从公网复核官网、安装包、更新清单，并校验安装包大小与
+4. 提交并推送 GitHub `main`，创建同版本 GitHub Release 并上传带版本号安装包；随后从公网复核官网、安装包、更新清单，并校验安装包大小与
    SHA256。任一目标未完成时必须明确记录阻塞原因，不能宣称发布完成。
-6. 版本号比较是语义化的（`0.10.0` > `0.9.0`），清单里带不带 `v` 前缀都行。
+5. 版本号比较是语义化的（`0.10.0` > `0.9.0`），清单里带不带 `v` 前缀都行。
    若换下载域名，必须同步改 `scripts\updater.ps1` 的白名单常量再出包，否则老客户端拒绝下载。
 
 更新检查的全部失败路径（断网、超时、清单格式坏）都静默吞掉，不会影响主程序；
-「不再提醒此版本」记录在工具根目录 `config\updater.json`，定时复查同样跳过该版本。
+「不再提醒此版本」记录在 `%LocalAppData%\DeltaForceBooster\config\updater.json`，定时复查同样跳过该版本；低于 `minimumSupportedVersion` 时不提供跳过或稍后入口。
 **一键静默更新（v0.15）**：用户点「立即更新」即为授权，校验通过后主程序直接以
-`/silent /dir=<当前程序目录> /waitpid=<主程序PID> /runafter /log=<文件>` 拉起安装器
+`/silent /dir=<当前程序目录> /waitpid=<主程序PID> /runafter /log=<文件> /sha256=<哈希> /size=<字节数>` 拉起安装器
 并自退——安装器等旧进程退出后覆盖文件、装完自启新版，用户不必再走一遍向导。
-装回「当前程序所在目录」而不是默认位置：安装位置本就可自选，不能假定在标准路径。
+安全的 Program Files 安装执行原地事务更新；旧版普通用户可写目录会迁往默认 Program Files。
 安装失败时安装器弹框报错并指向下载页（主程序此刻已退出，不弹就等于静默失败）。
 主窗口图标用 `BitmapCacheOption.OnLoad` 读入内存后立即释放 `gui\app.ico`；安装器同时会在
 覆盖前礼貌关闭其他旧窗口，并对杀毒/索引器造成的短暂文件共享冲突重试约 3 秒。

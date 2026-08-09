@@ -1,6 +1,6 @@
 ﻿---
 name: delta-force-boost
-description: 三角洲行动（Delta Force）一键画面/帧率优化。检测用户电脑硬件与当前系统设置，经用户确认后批量应用 Windows 层帧率优化（电源计划、HAGS、游戏模式、关闭后台录制、禁用全屏优化、强制独显等），并给出对应显卡厂商的驱动设置清单。所有改动自动备份、支持一键还原。当用户提到"三角洲行动卡顿/掉帧/帧数低/画面优化/FPS 优化"时使用。
+description: 三角洲行动（Delta Force）一键画面/帧率优化。检测用户电脑硬件与当前系统设置，经用户确认后批量应用 Windows 层帧率优化（电源计划、HAGS、游戏模式、关闭后台录制、禁用全屏优化、强制独显等），并给出对应显卡厂商的驱动设置清单。所有改动自动备份、支持一键还原。当用户提到"三角洲行动卡顿/掉帧/帧数低/画面优化/帧率优化"时使用。
 ---
 
 # 三角洲行动 · 一键画面优化（通用 Agent 技能）
@@ -14,8 +14,9 @@ description: 三角洲行动（Delta Force）一键画面/帧率优化。检测�
 - Windows 10/11；脚本兼容自带的 Windows PowerShell 5.1，无需安装任何东西。
 - 部分优化项（电源计划、HAGS）需要**管理员权限**的 PowerShell。
 - **工具本体必须已装在用户机器上**。你可能是通过链接远程读到这份说明的——那样只有说明、
-  没有脚本。先确认 `<root>` 是否存在（常见位置：`%LOCALAPPDATA%\DeltaForceBooster`、
-  用户的「下载」文件夹、桌面）；找不到就让用户去 https://df.ltz88.cn/ 安装后再继续，
+  没有脚本。先确认 `<root>` 是否存在（正式安装默认位置：
+  `%ProgramFiles%\DeltaForceBooster`；旧版可能仍留有下载文件夹中的副本）；找不到就让用户去
+  https://df.ltz88.cn/ 安装后再继续，
   **不要代替用户下载或运行安装包**。
 - 所有命令都在本技能所在目录执行（下文用 `<root>` 表示工具的安装目录）。
 - 调用脚本必须带 `-ExecutionPolicy Bypass`（下载解压的脚本带网络标记，部分机器默认
@@ -41,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 
 注意事项（如实告知用户）：
 - `visualfx-perf`（视觉效果最佳性能）会让桌面外观明显变朴素，默认不做；
-- `mouse-accel-off` 会改变鼠标手感，只推荐给愿意重新适应的 FPS 玩家；
+- `mouse-accel-off` 会改变鼠标手感，只推荐给愿意重新适应的射击游戏玩家；
 - `pagefile-custom`（固定虚拟内存）只在闪退/爆内存时才建议；
 - `windowed-opt-off`（关窗口化游戏优化）微软说开着能降延迟、社区说关掉才不掉帧，
   两派都有实测支持，默认不勾选，建议让用户开关各测一次再定；
@@ -81,29 +82,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 - 也可以整套套用预设方案：`-Apply -Preset balanced`。先用 `-ListPresets` 看可选方案，
   把方案名和说明念给用户听、让他选，比逐项解释 32 个开关更省事。
   内置三套（顺序即界面下拉顺序，第一套为主推）：
-  - `main` 主推全套（30 项，界面显示为「★ 主推全套」且启动默认选中）：按依赖顺序排列——
+  - `main` 主推全套（界面显示为「★ 主推全套」且启动默认选中）：按依赖顺序排列——
     ①电源深度定制 → ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层。
     代价要如实告知：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高、
-    笔记本更耗电；不含关引导虚拟化，WSL/模拟器不受影响。
+    笔记本更耗电；其中唯一的 risky 项是「显卡型号伪装」，GUI 会单独二次确认，CLI 套用
+    `main` 必须显式加 `-Risky`；不含关引导虚拟化，WSL/模拟器不受影响。
   - `balanced` 均衡推荐（20 项，副作用小）：不改桌面外观和鼠标手感、不禁用服务、不动休眠。
-  - `safe-only` 保守（7 项）：只改当前用户 HKCU、不需重启。
-- 用户想保留自己的搭配：`-SavePreset "方案名" -Items id1,id2`（存到 `<root>\profiles\`），
-  之后可 `-Apply -Preset 方案名`；`-DeletePreset 方案名` 删除（内置方案删不掉）。
+  - `safe-only` 保守：只改当前用户设置、通常不需重启；为了先写受保护备份，图形界面仍会
+    为这一轮请求一次管理员权限，CLI 也应在管理员 PowerShell 中执行。
+- 用户想保留自己的搭配：`-SavePreset "方案名" -Items id1,id2`（存到
+  `%LocalAppData%\DeltaForceBooster\profiles\`），
+之后可 `-Apply -Preset 方案名`；`-DeletePreset 方案名` 删除（内置方案删不掉）。
 - 若检测未找到游戏路径，追加 `-GamePath "游戏主程序完整路径"`（主程序通常是
   `DeltaForceClient-Win64-Shipping.exe`；找不到时向用户询问安装位置）。
 - 权限不足时脚本会报错并列出需要管理员的项——此时用管理员身份重开终端再执行，
   或让用户以管理员运行。
-- 每次 Apply 自动把旧值备份到 `<root>\backup\backup-时间戳.json`。
-- 结果里每项带 `Ok`、`Skipped`、`Attention` 字段，末尾有「x 成功、y 失败、z 跳过
+- 每次 Apply 会先把可还原设置的旧值写入
+  `%ProgramData%\DeltaForceBooster\backup\backup-<GUID>.pending.json`：备份使用严格 schema、
+  HMAC 完整性校验和原子写前日志，普通用户进程没有写权限；全部完成后才发布为正式备份。
+- 结果里每项带 `Ok`、`Changed`、`Skipped`、`Attention` 字段，末尾有「x 成功、y 失败、z 跳过
   （、n 项体检发现问题）」汇总。`Attention=true` 表示纯检测项查出了真实问题——这是
   检测项「立功」而不是工具失败，转述时务必与失败区分开，别让用户误以为工具坏了；
   失败消息内含 powercfg 等命令的原始报错，直接转述给用户即可。
 - **电源计划命名行为**：系统没有可直接激活的卓越性能方案时（e9a42b02 在多数版本上只是
   不可激活的模板），脚本会实例化一份并命名为「三角洲优化 · 卓越性能」，GUID 记在
-  `<root>\config\power-scheme.json`，重复执行只复用不堆积。`-Restore` 会切回原方案但
+  `%LocalAppData%\DeltaForceBooster\config\power-scheme.json`，重复执行只复用不堆积。`-Restore` 会切回原方案但
   **保留**该自建方案（输出的 Notes 字段里有说明，请一并念给用户）。
 - 优化后某项仍「未达标」时，让用户以管理员运行只读诊断并回传输出：
   `powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\diagnose.ps1"`。
+
+### 自动寻找最佳配置 Beta（只在图形界面操作）
+
+GUI 提供同一设备内的规则版 A/B 测试：先采集三次稳定基线，再依次测试三个内置、低风险、无需重启且可完整回滚的候选组。它会按平均帧率、1% 低帧率、P99 帧时间、卡顿次数、温度和功耗决定保留或只还原当前候选；样本不足、游戏退出、失去前台、环境变化或基线不稳定时不形成结论。
+
+Agent 只负责向用户解释需要保持同一地图、画质、分辨率和路线，并提示在 GUI 中逐轮确认采样。不要用 CLI 手工模拟实验状态、不要替实验规则挑项目，也不要把 `gpu-name-spoof` 或任何 risky / 需重启项目加入候选。
 
 ### 第 4 步：显卡驱动部分（手动，念给用户听）
 
@@ -115,9 +127,10 @@ Intel 优化、低延迟 N 卡走 Reflex / A 卡走 Anti-Lag），转述时先�
 
 进阶（可选）：`<root>\tools\` 已附带推荐参数的 `DeltaForce-Recommended.nip`
 （电源最高性能/超低延迟超高/垂直同步强制关/预渲染 1/着色器缓存无限制/线程优化开/
-DLSS 强制 Preset K）。用户再自行下载 NVIDIA Profile Inspector（nvidiaProfileInspector.exe）
-放入同目录后，检测结果会多出 `nvidia-profile` 项，可用 `-Items nvidia-profile` 一键导入。
-该 .nip 未经实机导入验证，且此项无自动备份——导入前必须提醒用户先在 Inspector 中
+DLSS 强制 Preset K）。用户再自行下载官方签名的 NVIDIA Profile Inspector
+（`nvidiaProfileInspector.exe`）放入同目录；只有文件名、数字签名和发布者校验通过时，
+检测结果才会出现 `nvidia-profile` 项，可用 `-Items nvidia-profile` 显式导入。它不在
+任何内置预设中，执行后还会检查进程退出码。该 .nip 未经实机导入验证，且此项无自动备份——导入前必须提醒用户先在 Inspector 中
 Export Profiles 手动备份当前配置。
 
 ### 还原（用户后悔时）
@@ -126,7 +139,9 @@ Export Profiles 手动备份当前配置。
 powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booster.ps1" -Restore
 ```
 
-按最近一次备份逆序恢复；`-BackupFile` 可指定某个具体备份。
+默认合并所有尚未消费的受保护备份，按签名文档里的创建时间从新到旧处理，同一目标恢复
+到最早一次优化前的原值；`-BackupFile` 可指定某个具体备份。还原成功后备份会标为
+`.restored`，避免重复消费。
 结果字段：`RestoredOps`（还原条数）、`Failed`（真失败，带人话项名）、`Skipped`
 （跳过且无实际影响——「继承默认」的电源隐藏项删不掉注册表子键（ACL 只授权 SYSTEM）
 且残留在已停用的工具自建方案里时归此类，转述时明确告诉用户这不影响任何生效设置）、
@@ -134,8 +149,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 
 ## 优化项一览（Id 供 -Items 使用）
 
-所有项分两档：`safe`（下表全部）与 `risky`。**不带 `-Items` 时只执行 safe 档默认项**；
-risky 档必须同时用 `-Items` 点名并加 `-Risky` 才会执行，也不进任何预设方案。
+所有项分两档：`safe`（下表全部）与 `risky`。**不带 `-Items` 且不指定预设时只执行 safe
+档默认项**；risky 档必须显式加 `-Risky` 才会执行。「显卡型号伪装」是唯一由内置
+`main` 预设明确包含的 risky 项；直接用 `-Items` 调它时同样必须加 `-Risky`。
 
 | Id | 作用 | 默认 | 管理员 |
 |---|---|---|---|
@@ -157,12 +173,12 @@ risky 档必须同时用 `-Items` 点名并加 `-Risky` 才会执行，也不进
 | mouse-accel-off | 关闭鼠标指针精确度 | 否 | 否 |
 | mpo-off | 禁用 MPO 多平面叠加（OverlayTestMode=5，治闪烁） | 是 | 需要 |
 | net-throttling-off | 解除多媒体网络限流（NetworkThrottlingIndex=0xffffffff） | 是 | 需要 |
-| sys-responsiveness | MMCSS 后台 CPU 保留降为 0（SystemResponsiveness） | 是 | 需要 |
+| sys-responsiveness | MMCSS 后台 CPU 保留设为文档允许的最低值 10（SystemResponsiveness） | 是 | 需要 |
 | sysmain-off | 禁用 SysMain 预取服务（Start=4） | 否 | 需要 |
 | wsearch-off | 禁用 Windows Search 索引（Start=4，搜索会变慢） | 否 | 需要 |
 | hibernate-off | 关闭休眠与快速启动（powercfg -h off） | 台式机默认 | 需要 |
 | gpu-pstate-lock | 禁止显卡动态降频（DisableDynamicPstate=1，待机功耗升） | 否 | 需要 |
-| nv-autoopt-off | 关闭 NVIDIA App「自动优化游戏设置」（EnableAutomaticApplyOPS=0，防 OPS 覆写玩家手调画质；备份整个 config.xml，还原逐字节写回；没装 NVIDIA App 时自动不适用） | 是 | 否 |
+| nv-autoopt-off | NVIDIA App「自动优化游戏设置」只读体检；发现开启时指引用户在 App 内手动关闭，不写用户配置文件 | 否 | 否 |
 | gpu-irq-affinity | 显卡中断绑核（DevicePolicy=4 + KAFFINITY 掩码，绑最后一个 P 核） | 否 | 需要 |
 | pcie-check | PCIe 链路体检（纯检测，nvidia-smi 读上限） | 否 | 否 |
 | dyntick-off | 禁用动态计时器（bcdedit disabledynamictick yes） | 否 | 需要 |
@@ -173,7 +189,7 @@ risky 档必须同时用 `-Items` 点名并加 `-Risky` 才会执行，也不进
 | pagefile-custom | 虚拟内存固定（初始=内存×1.5、最大=×2，仅闪退时用） | 否 | 需要 |
 | nvidia-profile | 导入 N 卡配置档（需 tools\ 就位） | 否 | 需要 |
 
-risky 档（默认不勾、不进预设、必须 `-Items` 点名 + `-Risky`）：
+risky 档（默认不勾；`main` 会选中但仍要求独立确认 / `-Risky`）：
 
 | Id | 作用 | 风险 |
 |---|---|---|
