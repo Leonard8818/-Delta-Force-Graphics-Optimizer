@@ -6,7 +6,9 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="/favicon.ico?v=20260809-2" type="image/x-icon" sizes="16x16 32x32 48x48">
 <link rel="shortcut icon" href="/favicon.ico?v=20260809-2" type="image/x-icon">
-<title>三角洲行动 · 画面优化助手</title>
+<title>三角洲行动 · 画面优化助手｜一键解决掉帧卡顿</title>
+<meta name="description" content="三角洲行动画面优化助手：一键完成 30 多项 Windows 层帧率优化，解决掉帧、卡顿与游戏更新后的着色器缓存问题，改动前自动备份、随时一键还原。">
+<meta name="keywords" content="三角洲行动,解决掉帧,三角洲掉帧,卡顿,帧率优化,画面设置,着色器缓存">
 <style>
   :root { --green:#00E884; --gold:#E5C46A; --bg:#0A1512; --panel:#101A17; --line:#1C3529; --tx:#fff; --tx2:#9AA5A0; }
   * { box-sizing:border-box }
@@ -55,17 +57,17 @@
   <h1>三角洲行动 · 画面优化助手</h1>
   <div class="sub">ONE-CLICK FRAME OPTIMIZER FOR WINDOWS</div>
 
-  <p>把网上那些一步步改电脑设置的帧率优化教程做成一键完成：检测硬件 → 勾选优化项 → 应用（自动备份）→ 随时一键还原。</p>
+  <p>把网上那些一步步改电脑设置的帧率优化教程做成一键完成：检测硬件 → 勾选优化项 → 应用（自动备份）→ 随时一键还原。游戏更新后<strong>解决掉帧</strong>、卡顿的常用手段也一并做进去了。</p>
 
   <p>
     <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
     <a class="cta alt" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer">GitHub 仓库</a>
   </p>
-  <p class="ver">当前版本 v0.19.2 · 仅支持 Windows 10/11</p>
+  <p class="ver">当前版本 v0.19.3 · 仅支持 Windows 10/11</p>
   <div class="downloads" aria-label="最近三个版本下载">
-    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.19.2/DeltaForceBooster-Setup-v0.19.2.exe"><strong>v0.19.2</strong><span>最新版</span></a>
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.19.3/DeltaForceBooster-Setup-v0.19.3.exe"><strong>v0.19.3</strong><span>最新版</span></a>
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.19.2/DeltaForceBooster-Setup-v0.19.2.exe"><strong>v0.19.2</strong></a>
     <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.19.1/DeltaForceBooster-Setup-v0.19.1.exe"><strong>v0.19.1</strong></a>
-    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.19.0/DeltaForceBooster-Setup-v0.19.0.exe"><strong>v0.19.0</strong></a>
   </div>
 
   <div class="card">
@@ -73,6 +75,7 @@
     <ul>
       <li>30 多项 Windows 层优化：电源计划深度定制、进程与 IO 优先级、显卡中断绑核、系统精简、显卡层设置</li>
       <li>三套预设方案可选，也可以逐项勾选，或存成自己的方案</li>
+      <li>解决掉帧专项（实验功能）：清理 DirectX 与显卡驱动的着色器缓存，针对游戏更新后「每隔十几秒卡 2~3 秒」的症状</li>
       <li>三项硬件体检（只读不改）：PCIe 链路带宽异常、VC++ 运行库版本错乱、内存没开 XMP</li>
       <li>附带头部主播的游戏内画质设置参考，省去自己到处搜的功夫</li>
       <li>不修改游戏安装目录内文件，仅调整 Windows 和显卡相关系统设置</li>
@@ -82,7 +85,13 @@
   <div class="card">
     <h2>更新记录</h2>
     <div class="release">
-      <div class="release-ver">v0.19.2<small>2026-08-09</small><span class="latest">LATEST</span></div>
+      <div class="release-ver">v0.19.3<small>2026-08-09</small><span class="latest">LATEST</span></div>
+      <ul>
+        <li>着色器缓存项在优化列表里改名为「解决掉帧：清理着色器缓存」——找它的人搜的是「解决掉帧」，只写手段名认不出来。功能本身与 v0.19.2 一致。</li>
+      </ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.19.2<small>2026-08-09</small></div>
       <ul>
         <li>新增实验项「清理着色器缓存」：针对进游戏后每隔十几秒卡顿 2~3 秒的症状，清理 DirectX 与显卡驱动的着色器缓存，不碰游戏安装目录。清理后首次进游戏要重新编译着色器，头一两局可能更卡；缓存由驱动自动重建，此项不产生备份也无需还原。默认不勾选，不保证生效。</li>
         <li>VC++ 运行库体检改为默认勾选——社区排查掉帧时最常命中的一条，纯检测不改任何设置。</li>
