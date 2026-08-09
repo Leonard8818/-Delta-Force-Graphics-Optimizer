@@ -26,8 +26,18 @@
   .warn { border-left:3px solid var(--gold); background:#15150E }
   .warn h2 { color:var(--gold) }
   .ver { font-family:Consolas,monospace; font-size:12px; color:var(--tx2) }
+  .release { display:grid; grid-template-columns:82px 1fr; gap:14px; padding:13px 0; border-top:1px solid var(--line) }
+  .release:first-of-type { border-top:0; padding-top:2px }
+  .release-ver { color:var(--green); font:700 13px Consolas,monospace }
+  .release-ver small { display:block; margin-top:3px; color:#5E7A6C; font-size:9px; font-weight:400 }
+  .release ul { margin:0; padding-left:18px; color:var(--tx2); font-size:13px }
+  .latest { display:inline-block; margin-top:5px; padding:1px 5px; color:#2F2508; background:var(--gold); font:700 8px Consolas,monospace }
+  details.history { border-top:1px solid var(--line); margin-top:3px; padding-top:11px }
+  details.history summary { color:var(--green); cursor:pointer; font-size:12px; user-select:none }
+  details.history[open] summary { margin-bottom:8px }
   footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:#5E7A6C; font-size:12px;
            font-family:Consolas,monospace; letter-spacing:.1em }
+  @media (max-width:520px) { .release { grid-template-columns:1fr; gap:5px } .release-ver small { display:inline; margin-left:8px } }
 </style>
 </head>
 <body>
@@ -53,6 +63,71 @@
       <li>附带头部主播的游戏内画质设置参考，省去自己到处搜的功夫</li>
       <li>不修改游戏安装目录内文件，仅调整 Windows 和显卡相关系统设置</li>
     </ul>
+  </div>
+
+  <div class="card">
+    <h2>更新记录</h2>
+    <div class="release">
+      <div class="release-ver">v0.18.0<small>2026-08-09</small><span class="latest">LATEST</span></div>
+      <ul>
+        <li>新增匿名使用统计，用于了解活跃用户、版本与硬件分布、优化和还原次数。</li>
+        <li>统计不包含用户名、机器名、SID、游戏路径、注册表内容或诊断日志，并支持在本地配置中停用。</li>
+      </ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.17.0<small>2026-08-09</small></div>
+      <ul>
+        <li>显卡型号伪装改版：RTX 30 系默认 GTX 705 Ti，RTX 40/50 系默认 GTX 1050 Ti，并支持手动切换。</li>
+        <li>修复内置更新覆盖图标时被旧窗口占用的问题，增强重复窗口与短暂文件锁处理。</li>
+      </ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.16.2<small>2026-08-08</small></div>
+      <ul><li>修正安装包误带入构建者自存方案的问题；功能与 v0.16.1 一致。</li></ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.16.1<small>2026-08-08</small></div>
+      <ul><li>修复电源计划隐藏项还原被误报失败，区分无实际影响的跳过项与真实失败。</li></ul>
+    </div>
+    <details class="history">
+      <summary>查看更早版本</summary>
+      <div class="release">
+        <div class="release-ver">v0.16.0<small>2026-08-07</small></div>
+        <ul><li>完善备份与还原流程，强化失败反馈和备份凭据保护。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.15.0<small>2026-08-07</small></div>
+        <ul><li>完善内置更新、诊断报告与开源发布流程，停止绿色免安装包分发。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.13.0<small>2026-08-07</small></div>
+        <ul><li>修正主播游戏设置映射，并完善界面交互。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.12.0<small>2026-08-07</small></div>
+        <ul><li>完善游戏设置分组、教程入口和安装体验。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.11.0<small>2026-08-07</small></div>
+        <ul><li>加入带文件大小和 SHA256 校验的内置自动更新。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.10.0<small>2026-08-06</small></div>
+        <ul><li>完善配置还原、重启提醒与桌面集成。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.9.0<small>2026-08-06</small></div>
+        <ul><li>完善游戏路径检测、NVIDIA 优化与还原反馈。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.7.0<small>2026-08-06</small></div>
+        <ul><li>重构图形界面，并完善优化项和更新交互。</li></ul>
+      </div>
+      <div class="release">
+        <div class="release-ver">v0.6.0<small>2026-08-06</small></div>
+        <ul><li>首次公开发布三角洲行动画面优化工具。</li></ul>
+      </div>
+    </details>
   </div>
 
   <div class="card warn">
