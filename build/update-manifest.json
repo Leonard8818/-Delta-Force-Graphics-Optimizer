@@ -1,8 +1,8 @@
 {
-    "version":  "0.18.2",
-    "notes":  "修复双显卡笔记本误把 AMD / Intel 核显用于显卡指引的问题，现在优先识别独显。\\nNVIDIA 笔记本显卡指引增加 Game Ready 驱动选择说明。",
+    "version":  "0.18.3",
+    "notes":  "主推全套加入显卡型号伪装；执行前仍会单独二次确认，并允许手动选择目标型号。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "f515e7a37536a5611203e2f771435e429ae978ad386870493e19ad99b97f66b9",
-    "size":  176128
+    "sha256":  "edf17baf07b2533e1270416606af7d1731cb25a1acaf16e17689d0ce6d331548",
+    "size":  176640
 }

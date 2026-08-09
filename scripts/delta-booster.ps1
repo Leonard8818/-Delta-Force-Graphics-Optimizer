@@ -1,7 +1,8 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.16.1
+  DeltaForceBooster 核心脚本 — v0.16.2
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.16.2：主推全套加入显卡型号伪装；GUI 仍会单独列出并要求二次确认，CLI 仍需 -Risky。
   v0.16.1：双显卡按独显性能优先级选择主显卡，不再因 WMI 返回顺序误把 AMD/Intel
         核显用于显卡指引；NVIDIA 笔记本指引补充 Game Ready 驱动选择说明。
   v0.16：显卡型号伪装按代际给默认值（RTX 30 系 → GTX 705 Ti，RTX 40/50 系 →
@@ -38,8 +39,8 @@
   安全设计：
     - Apply 前把每个被改动的注册表值/电源设置/系统开关完整备份到 backup\backup-*.json
     - Restore 按备份逆序恢复，原本不存在的值会被删除而不是写 0
-    - 优化项分两档：safe（默认推荐）与 risky（有副作用或降低系统安全性，必须显式选中
-      并加 -Risky 才会执行）。risky 档永远不会被"一键默认"带上。
+    - 优化项分两档：safe（默认推荐）与 risky（有副作用，GUI 必须通过独立二次确认，
+      CLI 必须显式加 -Risky 才会执行）。
 #>
 #requires -Version 5.1
 [CmdletBinding()]
@@ -1025,13 +1026,13 @@ function Get-BuiltinPresets {
       # Items 顺序刻意按依赖关系排列：
       # ①电源深度定制（一切的前置）→ ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层
       Id = 'main'; Name = '主推全套'; Builtin = $true
-      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
+      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行，包含显卡型号伪装（执行前单独二次确认）。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
       Items = @('power-ultimate','power-tuning','powerplan-lock',
                 'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',
                 'dvr-off','wer-off','sysmain-off','wsearch-off','hibernate-off','mem-compress-off',
                 'paging-exec','transparency-off','mpo-off','dyntick-off','mouse-accel-off',
-                'hags','fso-off','gpu-pref','gpu-pstate-lock','nv-autoopt-off','nvidia-profile',
+                'hags','fso-off','gpu-pref','gpu-pstate-lock','nv-autoopt-off','gpu-name-spoof','nvidia-profile',
                 'pcie-check','vcredist-check','xmp-check')
     }
     [pscustomobject]@{
