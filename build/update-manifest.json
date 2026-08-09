@@ -1,9 +1,9 @@
 {
-    "version":  "0.19.1",
-    "minimumSupportedVersion":  "0.18.2",
-    "notes":  "匿名性能汇总增加未使用、轻量、均衡、深度四档优化强度，用于同一匿名设备的优化前后配对。\\n不上传具体勾选项、自存方案名称或方案内容。",
-    "url":  "https://df.ltz88.cn/",
-    "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "1f21dccca4fcaf9880c42d1c89274f8ebabf2c39264db85458356f3a23cd1faf",
-    "size":  613376
+  "version": "0.19.2",
+  "minimumSupportedVersion": "0.18.2",
+  "notes": "新增实验项「清理着色器缓存」：针对进游戏后每隔十几秒卡顿 2~3 秒的症状，清理 DirectX 与显卡驱动的着色器缓存，不碰游戏安装目录。\\n清理后首次进游戏要重新编译着色器，头一两局可能更卡；缓存由驱动自动重建，此项不产生备份也无需还原。默认不勾选，不保证生效。\\nVC++ 运行库体检改为默认勾选——社区排查掉帧时最常命中的一条，纯检测不改任何设置。\\n修复体检项一旦通过就再也不会被方案重新勾选的问题（此前等于只检测一次）。",
+  "url": "https://df.ltz88.cn/",
+  "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
+  "sha256": "9a5f51649bdac237bfe8b2d184b4777f70aa2b04d3acac3a83744769d89fcc5f",
+  "size": 615936
 }

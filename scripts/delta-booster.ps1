@@ -1,7 +1,11 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.16.2
+  DeltaForceBooster 核心脚本 — v0.16.3
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.16.3：①VC++ 运行库体检改为默认勾选（社区排查掉帧最常命中的一条，纯检测零代价）；
+        ②新增实验项「清理着色器缓存」（Kind=cache）：只清系统与驱动的着色器缓存目录，
+        不碰游戏目录；缓存可再生，故不产生备份也无需还原，这一点在项名、Note 与执行
+        结果三处都写明，不让用户误以为它能一键退回。
   v0.16.2：主推全套加入显卡型号伪装；GUI 仍会单独列出并要求二次确认，CLI 仍需 -Risky。
   v0.16.1：双显卡按独显性能优先级选择主显卡，不再因 WMI 返回顺序误把 AMD/Intel
         核显用于显卡指引；NVIDIA 笔记本指引补充 Game Ready 驱动选择说明。
@@ -809,6 +813,58 @@ function Find-GamePath {
   $found | Select-Object -First 1
 }
 
+# ---------- 着色器缓存 ----------
+
+# 驱动与 DirectX 把编译好的着色器缓存在这些目录。缓存损坏或与新版本错位时，典型症状是
+# 「进游戏后每隔十几秒卡 2~3 秒」。只列系统与驱动的缓存目录——游戏安装目录是本工具的红线。
+# 本机没装对应品牌显卡时目录根本不存在，那不是错误，跳过即可
+function Get-ShaderCacheDirs {
+  @(
+    @{ Label = 'DirectX 着色器缓存'; Path = (Join-Path $env:LOCALAPPDATA 'D3DSCache') }
+    @{ Label = 'NVIDIA DX 缓存';     Path = (Join-Path $env:LOCALAPPDATA 'NVIDIA\DXCache') }
+    @{ Label = 'NVIDIA GL 缓存';     Path = (Join-Path $env:LOCALAPPDATA 'NVIDIA\GLCache') }
+    @{ Label = 'NVIDIA 全局缓存';    Path = (Join-Path $env:ProgramData  'NVIDIA Corporation\NV_Cache') }
+    @{ Label = 'AMD DX 缓存';        Path = (Join-Path $env:LOCALAPPDATA 'AMD\DxCache') }
+    @{ Label = 'AMD DXC 缓存';       Path = (Join-Path $env:LOCALAPPDATA 'AMD\DxcCache') }
+    @{ Label = 'Intel 着色器缓存';   Path = (Join-Path $env:LOCALAPPDATA 'Intel\ShaderCache') }
+  )
+}
+
+# 当前占用总量，供界面显示「值不值得清」。目录不存在或读不到都按 0 计
+function Get-ShaderCacheSize {
+  $sum = 0
+  foreach ($d in Get-ShaderCacheDirs) {
+    if (-not (Test-Path -LiteralPath $d.Path)) { continue }
+    $f = @(Get-ChildItem -LiteralPath $d.Path -Recurse -File -Force -ErrorAction SilentlyContinue)
+    if ($f.Count -gt 0) { $sum += ($f | Measure-Object Length -Sum).Sum }
+  }
+  $sum
+}
+
+# 逐文件删而不是删整个目录：目录本身被驱动持有，删掉可能要重启才重建。
+# 游戏或驱动面板开着时部分文件必然被占用——那是常态，如实报数，不算失败
+function Clear-ShaderCache {
+  $cleared = @(); $failed = @()
+  foreach ($d in Get-ShaderCacheDirs) {
+    if (-not (Test-Path -LiteralPath $d.Path)) { continue }
+    $files = @(Get-ChildItem -LiteralPath $d.Path -Recurse -File -Force -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) { continue }
+    $bytes = ($files | Measure-Object Length -Sum).Sum
+    $err = 0
+    foreach ($f in $files) {
+      try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch { $err++ }
+    }
+    if ($err -eq 0) {
+      $cleared += "$($d.Label) 已清空（$([math]::Round($bytes / 1MB, 1))MB）"
+    } elseif ($err -lt $files.Count) {
+      $cleared += "$($d.Label) 清理 $($files.Count - $err)/$($files.Count) 个文件（$err 个被占用）"
+    } else {
+      $failed += "$($d.Label) 全部文件被占用，未清理"
+    }
+  }
+  @{ Cleared = $cleared; Failed = $failed }
+}
+
 # ---------- 优化项定义 ----------
 
 # 电源子组 GUID（微软公开文档值）
@@ -983,13 +1039,22 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                Check = 'Get-PcieLinkStatus'
                Note = '读取独显 PCIe 链路的最大能力。上限只有 x8/x4 多半是插错插槽或用了劣质延长线，这种硬件问题白丢帧、软件修不了。空闲时当前速率自动降档属正常省电。' }
 
-  $items += @{ Id = 'vcredist-check'; Tier = 'safe'; Name = 'VC++ 运行库体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
+  # 默认勾选：v14 运行库异常是社区排查掉帧时最常命中的一条（教程里常被叫作「V14」），
+  # 纯检测不写任何东西，代价为零，没有理由让用户自己想起来勾
+  $items += @{ Id = 'vcredist-check'; Tier = 'safe'; Name = 'VC++ 运行库体检（纯检测，不改设置）'; Admin = $false; Default = $true; Kind = 'check'
                Check = 'Get-VcRedistStatus'
                Note = '检测 VC++ 2015-2022(v14) 运行库是否缺失——缺了游戏很可能无法启动。x64 与 x86 两套相互独立，版本不同步很常见且通常无害，只做中性提示不报问题。本项只检测不修——卸载重装运行库会波及其他软件，须你自己判断后手动处理。' }
 
   $items += @{ Id = 'xmp-check'; Tier = 'safe'; Name = '内存 XMP/EXPO 体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
                Check = 'Get-MemoryXmpStatus'
                Note = '内存没开 XMP/EXPO 时会跑在 JEDEC 保守频率上，白白损失几十帧。BIOS 设置无法由软件修改，本项只负责把"你的内存在摸鱼"这件事告诉你。' }
+
+  # 实验项：默认不勾、不进任何内置方案。社区大面积反馈的「进游戏后每隔十几秒卡 2~3 秒」
+  # 多方指向着色器缓存异常，但这是经验疗法而非确证的因果，名字里必须写明不保证生效。
+  # 缓存是可再生的派生数据，删掉由驱动自动重建——所以本项不产生备份，也没有还原的必要，
+  # 这是它与其余所有优化项的根本区别，Note 里对用户讲清楚
+  $items += @{ Id = 'shader-cache-clean'; Tier = 'safe'; Name = '清理着色器缓存（实验功能，不保证生效）'; Admin = $false; Default = $false; Kind = 'cache'
+               Note = '针对「进游戏后每隔十几秒卡顿 2~3 秒」这类症状——社区普遍指向显卡/DirectX 着色器缓存异常，游戏大版本更新后尤其高发。只清理系统与显卡驱动的缓存目录，不碰游戏安装目录内任何文件。执行前请先知道三件事：①清理后首次进游戏要重新编译着色器，头一两局可能比现在更卡，之后才恢复；②如果你的掉帧不是从游戏更新之后才开始的，这项大概率无效；③缓存由驱动自动重建，因此本项不进备份、也无需还原——点「还原设置」不会把它恢复回来（也不需要）。游戏和显卡驱动面板开着时部分文件会被占用，关掉再执行效果最好。' }
 
   $items += @{ Id = 'dyntick-off'; Tier = 'safe'; Name = '禁用动态计时器（bcdedit）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'bcd'; Name = 'disabledynamictick'; Value = 'yes'; Label = '动态计时器' })
@@ -1223,6 +1288,13 @@ function Get-ItemState($Item) {
   if ($Item.Kind -eq 'check') {
     $st = & $Item.Check
     return @{ Optimized = $st.Ok; Current = $st.Text }
+  }
+  # 清理类项目没有「已优化/待优化」之分：缓存清完就会重新长回来，Optimized 恒为未知。
+  # 给出当前占用量，让用户自己判断这一项现在值不值得跑
+  if ($Item.Kind -eq 'cache') {
+    $mb = [math]::Round((Get-ShaderCacheSize) / 1MB, 1)
+    return @{ Optimized = $null
+              Current = $(if ($mb -le 0) { '当前无缓存可清理' } else { "当前着色器缓存约 ${mb}MB，每次执行都会重新清理" }) }
   }
   if (-not $Item.Ops) {
     return @{ Optimized = $null
@@ -1501,6 +1573,22 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
       elseif ($it.Kind -eq 'npi') {
         & $it.Npi -silentImport $it.Nip
         $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = '已导入驱动配置档（此项不在自动备份内）' }
+      }
+      elseif ($it.Kind -eq 'cache') {
+        # 不写 $backupOps：缓存是可再生数据，备份几百 MB 再原样写回毫无意义。
+        # 但「没有备份」必须在结果里说出来，不能让用户以为这项也能一键还原
+        $r = Clear-ShaderCache
+        if ($r.Cleared.Count -eq 0 -and $r.Failed.Count -eq 0) {
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $true
+                                         Msg = '无缓存可清理（本机没有找到着色器缓存文件）' }
+        } elseif ($r.Failed.Count -gt 0 -and $r.Cleared.Count -eq 0) {
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false
+                                         Msg = "$($r.Failed -join '；')——请关闭游戏与显卡驱动面板后重试" }
+        } else {
+          $msg = "$($r.Cleared -join '；')；此项不产生备份，也无需还原（缓存会由驱动自动重建）"
+          if ($r.Failed.Count -gt 0) { $msg += "；另有 $($r.Failed -join '；')" }
+          $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = $msg }
+        }
       }
       elseif ($it.Kind -eq 'check') {
         # 纯检测项：把检测结论当作执行结果输出，绝不写任何东西。
