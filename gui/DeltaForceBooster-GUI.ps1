@@ -4,7 +4,10 @@
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
-  v0.19.3：随引擎 v0.16.4——着色器缓存项在列表里改叫「解决掉帧」，官网同步补上该关键词。`n  v0.19.2：①体检项不再因「上次已通过」而在套用方案时被跳过（VC++ 体检等于只检测一次）；
+  v0.19.3：①增加全局单实例锁，软件已经运行时再次启动只给出提示，不再打开第二个主窗口；
+        ②显卡型号伪装区域改为默认展开；③随引擎 v0.16.4 将着色器缓存项改名为
+        「解决掉帧：清理着色器缓存」，方便用户按问题找到对应功能。
+  v0.19.2：①体检项不再因「上次已通过」而在套用方案时被跳过（VC++ 体检等于只检测一次）；
         ②随引擎 v0.16.3 加入实验项「清理着色器缓存」，界面按普通项呈现，项名与
         说明里写明不保证生效、不产生备份。
   v0.19.1：性能汇总增加粗粒度优化强度（未使用/轻量/均衡/深度），不发送具体勾选项、
@@ -53,6 +56,18 @@ if (-not $isAdmin) {
 }
 
 $ErrorActionPreference = 'Stop'
+
+# 同一台电脑只保留一个主程序实例。用全局命名 Mutex 而不是枚举 powershell.exe：启动器、
+# bat 和直接运行 ps1 最终都会经过这里，同时不会误伤用户开的其他 PowerShell 窗口。
+$createdNew = $false
+$script:InstanceMutex = [Threading.Mutex]::new($true, 'Global\DeltaForceBooster.GUI', [ref]$createdNew)
+if (-not $createdNew) {
+  Add-Type -AssemblyName PresentationFramework
+  [Windows.MessageBox]::Show('软件已经在运行，请使用已经打开的窗口。', '三角洲行动 · 画面优化助手', 'OK', 'Information') | Out-Null
+  $script:InstanceMutex.Dispose()
+  exit
+}
+
 $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
@@ -631,7 +646,7 @@ $xaml = @'
             </StackPanel>
           </Border>
 
-          <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" Foreground="{StaticResource TextPri}">
+          <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" IsExpanded="True" Foreground="{StaticResource TextPri}">
             <Expander.Header>
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="显卡型号伪装" Foreground="{StaticResource TextPri}" FontSize="12"/>

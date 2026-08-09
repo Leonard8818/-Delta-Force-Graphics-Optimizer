@@ -1,9 +1,9 @@
 {
-  "version": "0.19.3",
-  "minimumSupportedVersion": "0.18.2",
-  "notes": "着色器缓存项在优化列表里改名为「解决掉帧：清理着色器缓存」——找它的人搜的是「解决掉帧」，只写手段名认不出来。\\n功能本身与 v0.19.2 完全一致：默认不勾选、不保证生效、不产生备份也无需还原。",
-  "url": "https://df.ltz88.cn/",
-  "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-  "sha256": "8ee410bc5276fc4f253421f2b9806ae5976ebf468652d46945f33fdb2a1ac7d4",
-  "size": 615936
+    "version":  "0.19.3",
+    "minimumSupportedVersion":  "0.18.2",
+    "notes":  "着色器缓存项改名为「解决掉帧：清理着色器缓存」，功能本身与 v0.19.2 一致。\\n修复软件可以重复打开多个主窗口的问题；再次启动时只提示软件已经运行。\\n显卡型号伪装区域改为默认展开，进入优化页面即可看到相关选项。",
+    "url":  "https://df.ltz88.cn/",
+    "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
+    "sha256":  "27fb6ff43e2a827778bbbc3df71b62d7c1642b930c9f2b7d6746c0f83ae20b25",
+    "size":  616448
 }
