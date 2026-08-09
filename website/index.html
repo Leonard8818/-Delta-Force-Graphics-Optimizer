@@ -21,6 +21,12 @@
          padding:14px 40px; text-decoration:none; margin:4px 10px 4px 0;
          clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px) }
   .cta.alt { background:transparent; color:var(--green); border:1px solid var(--green); font-weight:400; font-size:14px; padding:13px 28px }
+  .downloads { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 0 }
+  .download-link { display:flex; align-items:center; gap:8px; min-width:130px; padding:8px 12px; border:1px solid var(--line);
+                   color:var(--tx2); text-decoration:none; font:12px Consolas,monospace; background:rgba(16,26,23,.72) }
+  .download-link:hover { border-color:var(--green); color:var(--tx) }
+  .download-link strong { color:var(--green); font-size:13px }
+  .download-link span { color:var(--gold); font-size:10px }
   .card { background:var(--panel); border:1px solid var(--line); padding:18px 22px; margin:26px 0 }
   .card h2 { font-size:14px; margin:0 0 10px; color:var(--green) }
   .card ul { margin:0; padding-left:20px; color:var(--tx2); font-size:14px }
@@ -52,8 +58,14 @@
 
   <p>
     <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
+    <a class="cta alt" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer">GitHub 仓库</a>
   </p>
   <p class="ver">当前版本 v0.19.0 · 仅支持 Windows 10/11</p>
+  <div class="downloads" aria-label="最近三个版本下载">
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.19.0/DeltaForceBooster-Setup-v0.19.0.exe"><strong>v0.19.0</strong><span>最新版</span></a>
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.18.4/DeltaForceBooster-Setup-v0.18.4.exe"><strong>v0.18.4</strong></a>
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.18.3/DeltaForceBooster-Setup-v0.18.3.exe"><strong>v0.18.3</strong></a>
+  </div>
 
   <div class="card">
     <h2>它会做什么</h2>
