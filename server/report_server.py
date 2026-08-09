@@ -25,6 +25,13 @@ MAX_TELEMETRY_BODY = 8 * 1024
 PORT = int(os.environ.get("DFB_REPORT_PORT", "8899"))
 RATE_WINDOW = 60
 KEEP_DAYS = 30
+CONFIG_TIERS = ("baseline", "light", "balanced", "full")
+CONFIG_TIER_LABELS = {
+    "baseline": "未使用本工具优化",
+    "light": "轻量（1–9 项）",
+    "balanced": "均衡（10–20 项）",
+    "full": "深度（21+ 项）",
+}
 
 _hits = {}
 _install_id_re = re.compile(r"^[0-9a-fA-F-]{32,64}$")
@@ -112,6 +119,7 @@ def _init_db():
                 day TEXT NOT NULL,
                 app_version TEXT NOT NULL DEFAULT '',
                 gpu_model TEXT NOT NULL DEFAULT '',
+                config_tier TEXT NOT NULL DEFAULT 'unknown',
                 duration_sec INTEGER NOT NULL DEFAULT 0,
                 avg_fps REAL NOT NULL DEFAULT 0,
                 fps_1_low REAL NOT NULL DEFAULT 0,
@@ -131,6 +139,9 @@ def _init_db():
             columns = {row[1] for row in conn.execute("PRAGMA table_info(clients)")}
             if "gpu_model_verified" not in columns:
                 conn.execute("ALTER TABLE clients ADD COLUMN gpu_model_verified INTEGER NOT NULL DEFAULT 0")
+            performance_columns = {row[1] for row in conn.execute("PRAGMA table_info(performance_sessions)")}
+            if "config_tier" not in performance_columns:
+                conn.execute("ALTER TABLE performance_sessions ADD COLUMN config_tier TEXT NOT NULL DEFAULT 'unknown'")
     finally:
         conn.close()
 
@@ -164,6 +175,9 @@ def _normalize_telemetry(payload):
         raise ValueError("bad install id")
     if event not in ("launch", "apply", "restore", "performance"):
         raise ValueError("bad event")
+    config_tier = _text(payload.get("configTier"), 16).lower()
+    if config_tier not in CONFIG_TIERS:
+        config_tier = "unknown"
     return {
         "install_id": install_id.lower(),
         "event": event,
@@ -174,6 +188,7 @@ def _normalize_telemetry(payload):
         "gpu_vendor": _text(payload.get("gpuVendor"), 32),
         "gpu_model": _text(payload.get("gpuModel"), 160),
         "gpu_model_verified": 1 if payload.get("gpuModelVerified") is True else 0,
+        "config_tier": config_tier,
         "ram_gb": _bounded_float(payload.get("ramGb")),
         "device_type": _text(payload.get("deviceType"), 24),
         "ok": _bounded_int(payload.get("ok")),
@@ -245,13 +260,13 @@ def _record_telemetry(payload, now=None):
                 conn.execute(
                     """
                     INSERT INTO performance_sessions (
-                        client_hash, recorded_at, day, app_version, gpu_model, duration_sec,
+                        client_hash, recorded_at, day, app_version, gpu_model, config_tier, duration_sec,
                         avg_fps, fps_1_low, gpu_util_avg, gpu_util_max, gpu_temp_avg,
                         gpu_temp_max, gpu_power_avg, gpu_power_max
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        client_hash, now, day, item["app_version"], item["gpu_model"],
+                        client_hash, now, day, item["app_version"], item["gpu_model"], item["config_tier"],
                         item["duration_sec"], item["avg_fps"], item["fps_1_low"],
                         item["gpu_util_avg"], item["gpu_util_max"], item["gpu_temp_avg"],
                         item["gpu_temp_max"], item["gpu_power_avg"], item["gpu_power_max"],
@@ -296,6 +311,18 @@ def _report_summary():
     except OSError:
         pass
     return {"count": count, "lastUpload": last or None}
+
+
+def _summarize_performance_pairs(rows):
+    metric_keys = ("fpsDelta", "fps1LowDelta", "gpuUtilDelta", "gpuTempDelta", "gpuPowerDelta")
+    result = {
+        "comparisons": len(rows),
+        "matchedClients": len({row["client_hash"] for row in rows}),
+    }
+    for key in metric_keys:
+        values = [float(row[key]) for row in rows if row.get(key) is not None]
+        result[key] = round(sum(values) / len(values), 1) if values else 0.0
+    return result
 
 
 def _build_stats(now=None, days=30):
@@ -362,8 +389,68 @@ def _build_stats(now=None, days=30):
                 GROUP BY gpu_model ORDER BY sessions DESC, label LIMIT 12""",
             (start_day.isoformat(),),
         )
+        performance_by_config = _rows(
+            conn,
+            """SELECT config_tier tier, COUNT(*) sessions, COUNT(DISTINCT client_hash) clients,
+                      ROUND(AVG(NULLIF(avg_fps,0)),1) avgFps,
+                      ROUND(AVG(NULLIF(fps_1_low,0)),1) fps1Low,
+                      ROUND(AVG(NULLIF(gpu_util_avg,0)),1) gpuUtil,
+                      ROUND(AVG(NULLIF(gpu_temp_avg,0)),1) gpuTemp,
+                      ROUND(AVG(NULLIF(gpu_power_avg,0)),1) gpuPower
+                 FROM performance_sessions
+                WHERE day>=? AND config_tier IN ('baseline','light','balanced','full')
+                GROUP BY config_tier
+                ORDER BY CASE config_tier
+                    WHEN 'baseline' THEN 0 WHEN 'light' THEN 1 WHEN 'balanced' THEN 2 ELSE 3 END""",
+            (start_day.isoformat(),),
+        )
+        paired_rows = _rows(
+            conn,
+            """WITH client_tier AS (
+                   SELECT client_hash, gpu_model, config_tier,
+                          AVG(NULLIF(avg_fps,0)) avg_fps,
+                          AVG(NULLIF(fps_1_low,0)) fps_1_low,
+                          AVG(NULLIF(gpu_util_avg,0)) gpu_util,
+                          AVG(NULLIF(gpu_temp_avg,0)) gpu_temp,
+                          AVG(NULLIF(gpu_power_avg,0)) gpu_power
+                     FROM performance_sessions
+                    WHERE day>=? AND config_tier IN ('baseline','light','balanced','full')
+                    GROUP BY client_hash, gpu_model, config_tier
+               )
+               SELECT opt.client_hash, opt.gpu_model, opt.config_tier tier,
+                      opt.avg_fps-base.avg_fps fpsDelta,
+                      opt.fps_1_low-base.fps_1_low fps1LowDelta,
+                      opt.gpu_util-base.gpu_util gpuUtilDelta,
+                      opt.gpu_temp-base.gpu_temp gpuTempDelta,
+                      opt.gpu_power-base.gpu_power gpuPowerDelta
+                 FROM client_tier opt
+                 JOIN client_tier base
+                   ON base.client_hash=opt.client_hash
+                  AND base.gpu_model=opt.gpu_model
+                  AND base.config_tier='baseline'
+                WHERE opt.config_tier<>'baseline'""",
+            (start_day.isoformat(),),
+        )
     finally:
         conn.close()
+
+    pair_summaries = {}
+    for tier in CONFIG_TIERS[1:]:
+        pair_summaries[tier] = _summarize_performance_pairs(
+            [row for row in paired_rows if row["tier"] == tier]
+        )
+    empty_pair_summary = _summarize_performance_pairs([])
+    config_rows = {row["tier"]: row for row in performance_by_config}
+    performance_by_config = []
+    for tier in CONFIG_TIERS:
+        row = config_rows.get(tier, {
+            "tier": tier, "sessions": 0, "clients": 0,
+            "avgFps": 0, "fps1Low": 0, "gpuUtil": 0, "gpuTemp": 0, "gpuPower": 0,
+        })
+        row["label"] = CONFIG_TIER_LABELS[row["tier"]]
+        row.update(pair_summaries.get(row["tier"], empty_pair_summary))
+        performance_by_config.append(row)
+    performance_improvement = _summarize_performance_pairs(paired_rows)
 
     ram_buckets = {"≤8 GB": 0, "9–16 GB": 0, "17–32 GB": 0, "33–64 GB": 0, ">64 GB": 0}
     for ram in ram_values:
@@ -421,6 +508,8 @@ def _build_stats(now=None, days=30):
             "gpuPower": round(float(performance.get("gpu_power_avg") or 0), 1),
         },
         "performanceByGpu": performance_by_gpu,
+        "performanceByConfig": performance_by_config,
+        "performanceImprovement": performance_improvement,
         "diagnosticReports": _report_summary(),
     }
 

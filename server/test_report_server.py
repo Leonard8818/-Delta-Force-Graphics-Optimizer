@@ -88,6 +88,44 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(97.1, stats["performance"]["gpuUtil"])
         self.assertEqual(1, stats["performanceByGpu"][0]["sessions"])
 
+    def test_performance_improvement_uses_coarse_tiers_and_paired_clients(self):
+        now = 1786248000
+        install_id = "77777777-7777-4777-8777-777777777777"
+        baseline = self.payload(install_id, "performance")
+        baseline.update({
+            "configTier": "baseline", "durationSec": 120,
+            "avgFps": 100, "fps1Low": 70, "gpuUtilAvg": 80,
+            "gpuTempAvg": 75, "gpuPowerAvg": 150,
+        })
+        optimized = dict(baseline)
+        optimized.update({
+            "configTier": "full", "avgFps": 120, "fps1Low": 85,
+            "gpuUtilAvg": 90, "gpuTempAvg": 72, "gpuPowerAvg": 145,
+        })
+        SERVER._record_telemetry(baseline, now)
+        SERVER._record_telemetry(optimized, now + 60)
+
+        # 没有同一匿名设备的基线时只进入配置绝对值，不进入“提升”配对。
+        unpaired = dict(optimized)
+        unpaired.update({"installId": "88888888-8888-4888-8888-888888888888", "avgFps": 180})
+        SERVER._record_telemetry(unpaired, now + 120)
+
+        stats = SERVER._build_stats(now + 120)
+        improvement = stats["performanceImprovement"]
+        self.assertEqual(1, improvement["comparisons"])
+        self.assertEqual(1, improvement["matchedClients"])
+        self.assertEqual(20.0, improvement["fpsDelta"])
+        self.assertEqual(15.0, improvement["fps1LowDelta"])
+        self.assertEqual(10.0, improvement["gpuUtilDelta"])
+        self.assertEqual(-3.0, improvement["gpuTempDelta"])
+        self.assertEqual(-5.0, improvement["gpuPowerDelta"])
+
+        by_tier = {row["tier"]: row for row in stats["performanceByConfig"]}
+        self.assertEqual({"baseline", "light", "balanced", "full"}, set(by_tier))
+        self.assertEqual(2, by_tier["full"]["sessions"])
+        self.assertEqual(1, by_tier["full"]["comparisons"])
+        self.assertEqual("深度（21+ 项）", by_tier["full"]["label"])
+
     def test_rejects_identifying_or_oversized_fields(self):
         bad = self.payload("not-a-guid")
         with self.assertRaises(ValueError):
@@ -134,7 +172,7 @@ class TelemetryTests(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=3)
 
-    def test_migrates_pre_019_clients_table(self):
+    def test_migrates_pre_019_tables(self):
         os.remove(SERVER.DB_PATH)
         import sqlite3
         conn = sqlite3.connect(SERVER.DB_PATH)
@@ -145,6 +183,15 @@ class TelemetryTests(unittest.TestCase):
                 os_build TEXT NOT NULL DEFAULT '', cpu_model TEXT NOT NULL DEFAULT '',
                 gpu_vendor TEXT NOT NULL DEFAULT '', gpu_model TEXT NOT NULL DEFAULT '',
                 ram_gb REAL NOT NULL DEFAULT 0, device_type TEXT NOT NULL DEFAULT '')""")
+            conn.execute("""CREATE TABLE performance_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, client_hash TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL, day TEXT NOT NULL,
+                app_version TEXT NOT NULL DEFAULT '', gpu_model TEXT NOT NULL DEFAULT '',
+                duration_sec INTEGER NOT NULL DEFAULT 0, avg_fps REAL NOT NULL DEFAULT 0,
+                fps_1_low REAL NOT NULL DEFAULT 0, gpu_util_avg REAL NOT NULL DEFAULT 0,
+                gpu_util_max REAL NOT NULL DEFAULT 0, gpu_temp_avg REAL NOT NULL DEFAULT 0,
+                gpu_temp_max REAL NOT NULL DEFAULT 0, gpu_power_avg REAL NOT NULL DEFAULT 0,
+                gpu_power_max REAL NOT NULL DEFAULT 0)""")
             conn.commit()
         finally:
             conn.close()
@@ -152,9 +199,11 @@ class TelemetryTests(unittest.TestCase):
         conn = SERVER._connect()
         try:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(clients)")}
+            performance_columns = {row[1] for row in conn.execute("PRAGMA table_info(performance_sessions)")}
         finally:
             conn.close()
         self.assertIn("gpu_model_verified", columns)
+        self.assertIn("config_tier", performance_columns)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 {
-    "version":  "0.19.0",
+    "version":  "0.19.1",
     "minimumSupportedVersion":  "0.18.2",
-    "notes":  "显卡型号改为显示驱动识别到的真实硬件，不再被型号伪装污染。\\n游戏启动后自动采样 120 秒，记录平均 FPS、1% Low、GPU 占用率、温度和功耗汇总。\\nv0.18.0 / v0.18.1 已停止支持。",
+    "notes":  "匿名性能汇总增加未使用、轻量、均衡、深度四档优化强度，用于同一匿名设备的优化前后配对。\\n不上传具体勾选项、自存方案名称或方案内容。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "1788534873532aecdc163c7c8eb370f569454ac286f4a80fbcdbb93e1a43f918",
-    "size":  612352
+    "sha256":  "1f21dccca4fcaf9880c42d1c89274f8ebabf2c39264db85458356f3a23cd1faf",
+    "size":  613376
 }

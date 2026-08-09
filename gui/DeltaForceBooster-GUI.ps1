@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.19.0
+  DeltaForceBooster 图形界面 — v0.19.1
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.19.1：性能汇总增加粗粒度优化强度（未使用/轻量/均衡/深度），不发送具体勾选项、
+        自存方案名称或方案内容，用于同一匿名设备的优化前后配对比较。
   v0.19.0：显卡型号改从驱动/NVML 读取真实硬件，不再让伪装值污染界面和统计；游戏启动后
         自动采样 120 秒，记录平均 FPS、1% Low、GPU 占用率、温度和功耗汇总；加入最低
         支持版本策略，低于门槛的客户端不可跳过更新。
@@ -52,7 +54,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.19.0'
+$script:GuiVersion = '0.19.1'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -420,7 +422,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.19.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.19.1 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -750,7 +752,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.19.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.19.1 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1572,7 +1574,7 @@ function Update-StreamerPage {
 
 # 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
 # 老用户不会因为条款改了还停留在旧版本的「已同意」上
-$script:DisclaimerVersion = '3'
+$script:DisclaimerVersion = '4'
 $script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
 
 # 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
@@ -1613,7 +1615,7 @@ function Get-DisclaimerText {
     '- 会修改注册表、电源计划、系统服务等系统级设置；改动前自动备份，可点「还原设置」回退，但还原不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
-    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（FPS、1% Low、GPU 占用率、温度、功耗）；不发送用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。'
+    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（FPS、1% Low、GPU 占用率、温度、功耗）；配置只上传未使用/轻量/均衡/深度四档，不发送具体勾选项、自存方案名称、用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。'
     '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
     ''
     '完整声明见项目根目录的 DISCLAIMER.md。'
@@ -1814,9 +1816,65 @@ function Get-TelemetryInstallId {
     }
   } catch {}
   $id = [guid]::NewGuid().ToString()
-  $cfg = [ordered]@{ Enabled = $true; InstallId = $id; CreatedAt = (Get-Date).ToUniversalTime().ToString('o') }
+  $cfg = [ordered]@{ Enabled = $true; InstallId = $id; CreatedAt = (Get-Date).ToUniversalTime().ToString('o'); ConfigTier = 'baseline' }
   [IO.File]::WriteAllText($path, ($cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
   $id
+}
+
+# 只记录粗粒度强度，不记录具体勾选项、自存方案名称或方案内容。
+# 同一台匿名设备可据此把优化前后的性能会话配对，避免按每个人的独特配置拆分。
+function Get-TelemetryConfigTier {
+  try {
+    $path = Join-Path $script:RootDir 'config\telemetry.json'
+    if (-not (Test-Path -LiteralPath $path)) { return 'baseline' }
+    $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $tier = "$($cfg.ConfigTier)".ToLowerInvariant()
+    if ($tier -in 'baseline','light','balanced','full') { return $tier }
+  } catch {}
+  'baseline'
+}
+
+function Set-TelemetryConfigTier([string]$Tier, [switch]$Force) {
+  if ($Tier -notin 'baseline','light','balanced','full') { return }
+  try {
+    $dir = Join-Path $script:RootDir 'config'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $path = Join-Path $dir 'telemetry.json'
+    $enabled = $true
+    $installId = [guid]::NewGuid().ToString()
+    $createdAt = (Get-Date).ToUniversalTime().ToString('o')
+    $current = 'baseline'
+    if (Test-Path -LiteralPath $path) {
+      $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($cfg.Enabled -eq $false) { $enabled = $false }
+      if ("$($cfg.InstallId)" -match '^[0-9a-fA-F-]{32,64}$') { $installId = "$($cfg.InstallId)" }
+      if ("$($cfg.CreatedAt)") { $createdAt = "$($cfg.CreatedAt)" }
+      if ("$($cfg.ConfigTier)".ToLowerInvariant() -in 'baseline','light','balanced','full') {
+        $current = "$($cfg.ConfigTier)".ToLowerInvariant()
+      }
+    }
+    $rank = @{ baseline = 0; light = 1; balanced = 2; full = 3 }
+    if (-not $Force -and $rank[$current] -gt $rank[$Tier]) { $Tier = $current }
+    $out = [ordered]@{ Enabled = $enabled; InstallId = $installId; CreatedAt = $createdAt; ConfigTier = $Tier }
+    [IO.File]::WriteAllText($path, ($out | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
+  } catch {}
+}
+
+function Get-SelectedTelemetryConfigTier([int]$SelectedCount) {
+  if ($ui.PresetBox -and $ui.PresetBox.SelectedIndex -ge 0 -and
+      $ui.PresetBox.SelectedIndex -lt $script:PresetList.Count) {
+    $preset = $script:PresetList[$ui.PresetBox.SelectedIndex]
+    switch ("$($preset.Id)") {
+      'main' { return 'full' }
+      'balanced' { return 'balanced' }
+      'safe-only' { return 'light' }
+      default { $SelectedCount = @($preset.Items).Count }
+    }
+  }
+  if ($SelectedCount -ge 21) { return 'full' }
+  if ($SelectedCount -ge 10) { return 'balanced' }
+  if ($SelectedCount -ge 1) { return 'light' }
+  'baseline'
 }
 
 function Clear-CompletedTelemetryJobs {
@@ -1880,11 +1938,12 @@ function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
   }
   $script:MonitoredGamePids[$GamePid] = $true
   $installId = Get-TelemetryInstallId
+  $configTier = Get-TelemetryConfigTier
   $sessionFile = Join-Path $script:RootDir 'config\performance-sessions.json'
   $ps = [PowerShell]::Create()
   [void]$ps.AddScript({
     param($GamePid, $PresentMon, $SessionFile, $UploadUrl, $InstallId, $Version,
-          $GpuVendor, $GpuModel, $GpuVerified, $WarmupSeconds, $SampleSeconds)
+          $GpuVendor, $GpuModel, $GpuVerified, $ConfigTier, $WarmupSeconds, $SampleSeconds)
     $ErrorActionPreference = 'SilentlyContinue'
 
     function Get-Number([object]$Value) {
@@ -1971,6 +2030,7 @@ function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
       recordedAt = (Get-Date).ToUniversalTime().ToString('o')
       durationSec = [math]::Min($SampleSeconds, [math]::Round(((Get-Date) - $started).TotalSeconds))
       gpuModel = "$GpuModel"
+      configTier = "$ConfigTier"
       avgFps = $avgFps; fps1Low = $fps1Low
       gpuUtilAvg = Get-Average $util; gpuUtilMax = Get-Maximum $util
       gpuTempAvg = Get-Average $temp; gpuTempMax = Get-Maximum $temp
@@ -1995,6 +2055,7 @@ function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
         $payload = [ordered]@{
           installId = $InstallId; event = 'performance'; version = $Version
           gpuVendor = $GpuVendor; gpuModel = $GpuModel; gpuModelVerified = [bool]$GpuVerified
+          configTier = $ConfigTier
           durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
           gpuUtilAvg = $session.gpuUtilAvg; gpuUtilMax = $session.gpuUtilMax
           gpuTempAvg = $session.gpuTempAvg; gpuTempMax = $session.gpuTempMax
@@ -2008,7 +2069,7 @@ function Start-GamePerformanceCapture([int]$GamePid, $Hw) {
   })
   foreach ($arg in @($GamePid, $presentMon, $sessionFile, $script:TelemetryUploadUrl, $installId,
                       $script:GuiVersion, "$($Hw.MainGpuVendor)", "$($Hw.MainGpuName)",
-                      [bool]$Hw.MainGpuNameVerified, $script:PerformanceWarmupSeconds,
+                      [bool]$Hw.MainGpuNameVerified, $configTier, $script:PerformanceWarmupSeconds,
                       $script:PerformanceSampleSeconds)) {
     [void]$ps.AddArgument($arg)
   }
@@ -3378,6 +3439,7 @@ $ui.ApplyBtn.Add_Click({
     $riskyIds = @($ui.RiskyPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
                   ForEach-Object { $_.Child.Children[0].Tag })
     if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
+    $applyTier = Get-SelectedTelemetryConfigTier ($ids.Count + $riskyIds.Count)
     $optAll = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
     if ($riskyIds.Count -gt 0) {
       $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
@@ -3410,6 +3472,7 @@ $ui.ApplyBtn.Add_Click({
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
     $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention })
     $total = @($r.Results).Count
+    if ($okN -gt 0) { Set-TelemetryConfigTier $applyTier }
     Send-AnonymousTelemetry 'apply' $script:HardwareInfo $okN $failList.Count
     # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到；
     # 体检发现的问题单列——那是检测项立功了，混进「失败」会让用户误以为工具坏了
@@ -3478,6 +3541,7 @@ $ui.RestoreBtn.Add_Click({
     $r = Invoke-Restore $null ${function:Update-RestoreProgress}
     $failN = @($r.Failed).Count
     $skipN = @($r.Skipped).Count
+    if ($failN -eq 0) { Set-TelemetryConfigTier 'baseline' -Force }
     Send-AnonymousTelemetry 'restore' $script:HardwareInfo $r.RestoredOps $failN
     $bakName = Split-Path -Leaf $r.File
     $ui.ProgText.Text = "还原完成：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项跳过（无实际影响）" })"
