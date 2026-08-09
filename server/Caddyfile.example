@@ -1,0 +1,24 @@
+# Insert these handlers before the public df.ltz88.cn fallback handler.
+# Generate ADMIN_PASSWORD_HASH with: caddy hash-password --plaintext 'PASSWORD'
+
+@dfbAdminRoot path /admin
+redir @dfbAdminRoot /admin/ 308
+
+handle /admin/api/* {
+	basic_auth {
+		admin ADMIN_PASSWORD_HASH
+	}
+	uri strip_prefix /admin
+	reverse_proxy localhost:8899 {
+		header_up X-DFB-Admin-Token ADMIN_API_TOKEN
+	}
+}
+
+handle_path /admin/* {
+	basic_auth {
+		admin ADMIN_PASSWORD_HASH
+	}
+	root * /opt/df-booster-admin
+	encode gzip
+	file_server
+}

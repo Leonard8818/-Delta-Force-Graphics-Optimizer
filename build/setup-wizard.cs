@@ -785,7 +785,7 @@ class SetupWindow : Window {
             Margin = new Thickness(0, 16, 0, 0)
         });
         sp.Children.Add(new TextBlock {
-            Text = "系统优化在本地执行；联网功能包括检查更新和用户主动上传诊断报告。",
+            Text = "系统优化在本地执行；联网功能包括检查更新、匿名使用统计和用户主动上传诊断报告。",
             Foreground = Theme.TextFaint, Margin = new Thickness(0, 12, 0, 0)
         });
         page.Children.Add(sp);

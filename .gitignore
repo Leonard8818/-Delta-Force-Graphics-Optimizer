@@ -21,3 +21,5 @@ build/*.zip
 *.user
 Thumbs.db
 desktop.ini
+__pycache__/
+*.pyc

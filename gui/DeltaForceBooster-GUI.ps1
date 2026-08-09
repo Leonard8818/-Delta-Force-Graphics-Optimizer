@@ -1,5 +1,5 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.17.0
+  DeltaForceBooster 图形界面 — v0.18.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
@@ -43,7 +43,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.17.0'
+$script:GuiVersion = '0.18.0'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -411,7 +411,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.17.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.18.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -741,7 +741,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.17.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.18.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1563,7 +1563,7 @@ function Update-StreamerPage {
 
 # 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
 # 老用户不会因为条款改了还停留在旧版本的「已同意」上
-$script:DisclaimerVersion = '1'
+$script:DisclaimerVersion = '2'
 $script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
 
 # 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
@@ -1604,6 +1604,7 @@ function Get-DisclaimerText {
     '- 会修改注册表、电源计划、系统服务等系统级设置；改动前自动备份，可点「还原设置」回退，但还原不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
+    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / GPU / 内存 / 设备类型，以及启动、优化、还原的汇总结果；不发送用户名、机器名、SID、游戏路径或注册表内容。'
     '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
     ''
     '完整声明见项目根目录的 DISCLAIMER.md。'
@@ -1785,6 +1786,72 @@ function Show-DisclaimerDialog([switch]$ReadOnly) {
   if ($ReadOnly) { return $true }
   if ($ok) { Set-DisclaimerAccepted }
   $ok
+}
+
+# ---------- 匿名使用统计（同意声明后异步发送，不阻塞主界面） ----------
+
+$script:TelemetryUploadUrl = 'https://df.ltz88.cn/report/telemetry'
+$script:TelemetryJobs = New-Object System.Collections.ArrayList
+
+function Get-TelemetryInstallId {
+  $dir = Join-Path $script:RootDir 'config'
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $path = Join-Path $dir 'telemetry.json'
+  try {
+    if (Test-Path -LiteralPath $path) {
+      $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($cfg.Enabled -eq $false) { return $null }
+      if ("$($cfg.InstallId)" -match '^[0-9a-fA-F-]{32,64}$') { return "$($cfg.InstallId)" }
+    }
+  } catch {}
+  $id = [guid]::NewGuid().ToString()
+  $cfg = [ordered]@{ Enabled = $true; InstallId = $id; CreatedAt = (Get-Date).ToUniversalTime().ToString('o') }
+  [IO.File]::WriteAllText($path, ($cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding($true)))
+  $id
+}
+
+function Clear-CompletedTelemetryJobs {
+  foreach ($job in @($script:TelemetryJobs)) {
+    if (-not $job.Async.IsCompleted) { continue }
+    try { $job.PowerShell.EndInvoke($job.Async) | Out-Null } catch {}
+    try { $job.PowerShell.Dispose() } catch {}
+    $script:TelemetryJobs.Remove($job) | Out-Null
+  }
+}
+
+function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed = 0) {
+  try {
+    if (-not $Hw -or $Event -notin 'launch','apply','restore') { return }
+    $installId = Get-TelemetryInstallId
+    if (-not $installId) { return }
+    Clear-CompletedTelemetryJobs
+    $payload = [ordered]@{
+      installId = $installId
+      event      = $Event
+      version    = $script:GuiVersion
+      os         = "$($Hw.OS)"
+      build      = "$($Hw.Build)"
+      cpu        = "$($Hw.CPU)"
+      gpuVendor  = "$($Hw.MainGpuVendor)"
+      gpuModel   = "$($Hw.MainGpuName)"
+      ramGb      = [double]$Hw.RamGB
+      deviceType = $(if ($Hw.IsLaptop) { 'laptop' } else { 'desktop' })
+      ok         = [math]::Max(0, $Ok)
+      failed     = [math]::Max(0, $Failed)
+    }
+    $body = $payload | ConvertTo-Json -Compress
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript({
+      param($Url, $Body)
+      try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
+        Invoke-WebRequest -Uri $Url -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' `
+          -TimeoutSec 8 -UseBasicParsing | Out-Null
+      } catch {}
+    }).AddArgument($script:TelemetryUploadUrl).AddArgument($body)
+    $async = $ps.BeginInvoke()
+    [void]$script:TelemetryJobs.Add([pscustomobject]@{ PowerShell = $ps; Async = $async })
+  } catch {}
 }
 
 # ---------- 诊断报告（本地组装 + 脱敏 + 用户确认后上传） ----------
@@ -2826,10 +2893,12 @@ $script:PresetList = @()
 $script:ApplyingPreset = $false
 $script:GpuSpoofModel = $null
 $script:UpdateInfo = $null
+$script:HardwareInfo = $null
 
 $window.Add_ContentRendered({
   try {
     $hw = Get-HardwareInfo
+    $script:HardwareInfo = $hw
     $ui.HwGrid.Children.Clear()
     $gpu = ($hw.Gpus | Where-Object { $_.Vendor -in 'NVIDIA','AMD' } | Select-Object -First 1)
     if (-not $gpu) { $gpu = $hw.Gpus | Select-Object -First 1 }
@@ -2856,6 +2925,7 @@ $window.Add_ContentRendered({
     }
     $ui.ScanState.Text = '检测完成'
     Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」，带 * 的项需要管理员权限。'
+    Send-AnonymousTelemetry 'launch' $hw
     Start-UpdateCheck
     # 运行期间定时复查：DispatcherTimer 在 UI 线程触发，真正的网络请求仍在后台 runspace，
     # 静默失败的约定不变——断网/超时都不会打扰主界面
@@ -3092,6 +3162,7 @@ $ui.ApplyBtn.Add_Click({
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
     $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention })
     $total = @($r.Results).Count
+    Send-AnonymousTelemetry 'apply' $script:HardwareInfo $okN $failList.Count
     # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到；
     # 体检发现的问题单列——那是检测项立功了，混进「失败」会让用户误以为工具坏了
     $att = $(if ($attList.Count -gt 0) { " / $($attList.Count) 项体检发现问题" })
@@ -3159,6 +3230,7 @@ $ui.RestoreBtn.Add_Click({
     $r = Invoke-Restore $null ${function:Update-RestoreProgress}
     $failN = @($r.Failed).Count
     $skipN = @($r.Skipped).Count
+    Send-AnonymousTelemetry 'restore' $script:HardwareInfo $r.RestoredOps $failN
     $bakName = Split-Path -Leaf $r.File
     $ui.ProgText.Text = "还原完成：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项跳过（无实际影响）" })"
     $ui.ProgCount.Text = "备份：$bakName"

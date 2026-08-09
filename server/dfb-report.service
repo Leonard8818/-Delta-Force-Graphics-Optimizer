@@ -1,0 +1,18 @@
+[Unit]
+Description=DeltaForceBooster report and anonymous telemetry receiver
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+EnvironmentFile=/etc/dfb-report.env
+ExecStart=/usr/bin/python3 /opt/df-booster-report-server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/df-booster-reports /opt/df-booster-data
+
+[Install]
+WantedBy=multi-user.target
