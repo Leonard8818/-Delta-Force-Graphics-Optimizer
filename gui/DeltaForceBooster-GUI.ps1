@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.18.0
+  DeltaForceBooster 图形界面 — v0.18.1
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.18.1：修复显卡型号伪装参数与 GUI 状态变量同名，导致程序启动时直接退出。
   v0.17：①「危险区域」改为中性的「显卡型号伪装」，RTX 30 系默认 705 Ti、40/50 系默认
         1050 Ti，并可在界面手动切换；②修复内置更新覆盖 app.ico 时可能被旧窗口占用。
   v0.16.2：打包修正版——v0.16.1 的安装包误将构建者本机的自存方案（profiles\）打了进去，
@@ -43,7 +44,7 @@ $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.18.0'
+$script:GuiVersion = '0.18.1'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -411,7 +412,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.18.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.18.1 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -741,7 +742,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.18.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.18.1 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1089,14 +1090,14 @@ function New-ItemRow($Item, $State, [bool]$Last) {
     $modelBox.Width = 220
     $modelBox.Margin = New-Object Windows.Thickness 0, 0, 8, 0
     foreach ($model in @(Get-GpuSpoofModels)) { [void]$modelBox.Items.Add($model) }
-    $selectedModel = $(if ($script:GpuSpoofModel -and $modelBox.Items.Contains($script:GpuSpoofModel)) {
-                         $script:GpuSpoofModel
+    $selectedModel = $(if ($script:SelectedGpuSpoofModel -and $modelBox.Items.Contains($script:SelectedGpuSpoofModel)) {
+                         $script:SelectedGpuSpoofModel
                        } else { $Item.SpoofModel })
     $modelBox.SelectedItem = $selectedModel
-    $script:GpuSpoofModel = "$selectedModel"
+    $script:SelectedGpuSpoofModel = "$selectedModel"
     $modelBox.ToolTip = '选择要向系统和游戏上报的显卡型号'
     $modelBox.Add_SelectionChanged({
-      if ($this.SelectedItem) { $script:GpuSpoofModel = "$($this.SelectedItem)" }
+      if ($this.SelectedItem) { $script:SelectedGpuSpoofModel = "$($this.SelectedItem)" }
     })
     $tail.Children.Add($modelBox) | Out-Null
   }
@@ -1897,7 +1898,7 @@ function New-DiagnosticReport {
 
   $lines.Add('== 优化项状态 ==')
   try {
-    foreach ($it in @(Get-OptItems $script:TargetExe $script:GpuSpoofModel)) {
+    foreach ($it in @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)) {
       $st = Get-ItemState $it
       $mark = $(if ($st.Optimized -eq $true) { '[√]' } elseif ($st.Optimized -eq $false) { '[×]' } else { '[?]' })
       $lines.Add("$mark $($it.Id) — $($it.Name)")
@@ -2770,7 +2771,7 @@ function Update-ItemList {
   $ui.ItemPanel.Children.Clear()
   $ui.RiskyPanel.Children.Clear()
   # 变量名不能用 $items：引擎被点源进同一作用域，其 [string[]]$Items 参数会把哈希表强制转成字符串
-  $optItems = @(Get-OptItems $script:TargetExe $script:GpuSpoofModel)
+  $optItems = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
   $safe  = @($optItems | Where-Object { $_.Tier -ne 'risky' })
   $risky = @($optItems | Where-Object { $_.Tier -eq 'risky' })
 
@@ -2891,7 +2892,7 @@ function Start-ManualUpdateCheck {
 $script:TargetExe = $null
 $script:PresetList = @()
 $script:ApplyingPreset = $false
-$script:GpuSpoofModel = $null
+$script:SelectedGpuSpoofModel = $null
 $script:UpdateInfo = $null
 $script:HardwareInfo = $null
 
@@ -3130,12 +3131,12 @@ $ui.ApplyBtn.Add_Click({
     $riskyIds = @($ui.RiskyPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
                   ForEach-Object { $_.Child.Children[0].Tag })
     if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
-    $optAll = @(Get-OptItems $script:TargetExe $script:GpuSpoofModel)
+    $optAll = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
     if ($riskyIds.Count -gt 0) {
       $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
       $rmsg = "将执行以下显卡型号伪装设置：`n`n" +
               (@($riskySel | ForEach-Object { "· $($_.Name)`n  $(if ($_.Warn) { $_.Warn } else { $_.Note })" }) -join "`n`n") +
-              "`n`n目标型号：$script:GpuSpoofModel`n`n确认后将与其余勾选项一起执行（改动前自动备份，可一键还原）。"
+              "`n`n目标型号：$script:SelectedGpuSpoofModel`n`n确认后将与其余勾选项一起执行（改动前自动备份，可一键还原）。"
       if (Show-ConfirmDialog '显卡型号伪装' 'GPU MODEL SPOOF' $rmsg '确认执行') {
         $ids = @($ids + $riskyIds)
       } else {
@@ -3156,7 +3157,7 @@ $ui.ApplyBtn.Add_Click({
     Write-Log "开始执行 $($ids.Count) 项优化…"
     # 进度回调逐项刷新界面并实时落日志，不再等全部跑完才一次性输出
     # AllowRisky 只在用户刚通过高风险二次确认时才为真，绝不默认放行
-    $r = Invoke-Apply $ids $script:TargetExe ($riskyIds.Count -gt 0) ${function:Update-ApplyProgress} $script:GpuSpoofModel
+    $r = Invoke-Apply $ids $script:TargetExe ($riskyIds.Count -gt 0) ${function:Update-ApplyProgress} $script:SelectedGpuSpoofModel
     $okN = @($r.Results | Where-Object Ok).Count
     $attList = @($r.Results | Where-Object Attention)
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })

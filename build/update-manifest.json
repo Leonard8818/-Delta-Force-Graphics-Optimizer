@@ -1,8 +1,8 @@
 {
-    "version":  "0.18.0",
-    "notes":  "新增匿名使用统计，用于了解活跃用户、版本与硬件分布、优化和还原次数。\\n统计不包含用户名、机器名、SID、游戏路径、注册表内容或诊断日志，并可在 config\\telemetry.json 中停用。",
+    "version":  "0.18.1",
+    "notes":  "修复更新后程序启动时直接退出的问题。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "288ff783b8b28b6f0ac73661513b97f6ba4afe98134975bcfbb47944f51bfe65",
+    "sha256":  "e0586d56be3ae25b20fabeae4c68a2e7889890c2aa2aa66d4e5eb2811fe42e11",
     "size":  175616
 }
