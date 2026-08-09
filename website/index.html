@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>三角洲行动 · 画面优化助手</title>
+<style>
+  :root { --green:#00E884; --gold:#E5C46A; --bg:#0A1512; --panel:#101A17; --line:#1C3529; --tx:#fff; --tx2:#9AA5A0; }
+  * { box-sizing:border-box }
+  body { margin:0; background:linear-gradient(180deg,#0A1512,#10201C); color:var(--tx);
+         font-family:"Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif; line-height:1.7 }
+  .wrap { max-width:720px; margin:0 auto; padding:48px 20px 64px }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:36px }
+  .tri { width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:16px solid var(--green) }
+  .brand b { font-size:15px; letter-spacing:.12em }
+  h1 { font-size:26px; margin:0 0 6px }
+  .sub { color:var(--tx2); font-size:13px; font-family:Consolas,monospace; letter-spacing:.18em; margin-bottom:28px }
+  .cta { display:inline-block; background:var(--green); color:#04231A; font-weight:700; font-size:16px;
+         padding:14px 40px; text-decoration:none; margin:4px 10px 4px 0;
+         clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px) }
+  .cta.alt { background:transparent; color:var(--green); border:1px solid var(--green); font-weight:400; font-size:14px; padding:13px 28px }
+  .card { background:var(--panel); border:1px solid var(--line); padding:18px 22px; margin:26px 0 }
+  .card h2 { font-size:14px; margin:0 0 10px; color:var(--green) }
+  .card ul { margin:0; padding-left:20px; color:var(--tx2); font-size:14px }
+  .warn { border-left:3px solid var(--gold); background:#15150E }
+  .warn h2 { color:var(--gold) }
+  .ver { font-family:Consolas,monospace; font-size:12px; color:var(--tx2) }
+  footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:#5E7A6C; font-size:12px;
+           font-family:Consolas,monospace; letter-spacing:.1em }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="tri"></span><b>DELTA FORCE · BOOSTER</b></div>
+
+  <h1>三角洲行动 · 画面优化助手</h1>
+  <div class="sub">ONE-CLICK FRAME OPTIMIZER FOR WINDOWS</div>
+
+  <p>把网上那些一步步改电脑设置的帧率优化教程做成一键完成：检测硬件 → 勾选优化项 → 应用（自动备份）→ 随时一键还原。</p>
+
+  <p>
+    <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
+  </p>
+  <p class="ver">当前版本 v0.17.0 · 仅支持 Windows 10/11</p>
+
+  <div class="card">
+    <h2>它会做什么</h2>
+    <ul>
+      <li>30 多项 Windows 层优化：电源计划深度定制、进程与 IO 优先级、显卡中断绑核、系统精简、显卡层设置</li>
+      <li>三套预设方案可选，也可以逐项勾选，或存成自己的方案</li>
+      <li>三项硬件体检（只读不改）：PCIe 链路带宽异常、VC++ 运行库版本错乱、内存没开 XMP</li>
+      <li>附带头部主播的游戏内画质设置参考，省去自己到处搜的功夫</li>
+      <li>不修改游戏安装目录内文件，仅调整 Windows 和显卡相关系统设置</li>
+    </ul>
+  </div>
+
+  <div class="card warn">
+    <h2>下载前请知悉</h2>
+    <ul>
+      <li>本工具没有购买代码签名证书，Windows 会提示「未知发布者」，需要点「更多信息 → 仍要运行」。</li>
+      <li>因为要修改注册表和系统服务，部分杀毒软件可能误报，介意请勿使用。</li>
+      <li>所有改动在写入前都会备份到 backup 目录，界面上点「撤离还原」即可完整回退。</li>
+      <li>优化效果因机器而异，不保证一定涨帧；建议改完自己实测对比。</li>
+    </ul>
+  </div>
+
+  <footer>DELTA FORCE · BOOSTER — 与腾讯及三角洲行动官方无关，个人工具</footer>
+</div>
+</body>
+</html>
