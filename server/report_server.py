@@ -1979,7 +1979,13 @@ def _build_public_stats(now=None):
     """Small aggregate-only payload for the public homepage."""
     now = int(time.time() if now is None else now)
     now_local = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE)
-    midnight = int(dt.datetime.combine(now_local.date(), dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
+    today = now_local.date()
+    trend_days = [today - dt.timedelta(days=offset) for offset in range(6, -1, -1)]
+    trend_start = trend_days[0]
+    trend_start_ts = int(dt.datetime.combine(trend_start, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
+    quarter_end = now_local.replace(minute=(now_local.minute // 15) * 15, second=0, microsecond=0)
+    quarter_start = quarter_end - dt.timedelta(minutes=15 * 7)
+    quarter_start_ts = int(quarter_start.timestamp())
     conn = _connect()
     try:
         totals = dict(conn.execute(
@@ -1988,6 +1994,82 @@ def _build_public_stats(now=None):
                       COALESCE(SUM(apply_ok),0) apply_ok
                  FROM daily_usage"""
         ).fetchone())
+        daily_rows = {
+            row["day"]: dict(row)
+            for row in conn.execute(
+                """SELECT day, COALESCE(SUM(launches),0) launches,
+                          COALESCE(SUM(applies),0) applies,
+                          COALESCE(SUM(apply_ok),0) apply_ok
+                     FROM daily_usage WHERE day>=? AND day<=? GROUP BY day""",
+                (trend_start.isoformat(), today.isoformat()),
+            )
+        }
+        base_totals = dict(conn.execute(
+            """SELECT COALESCE(SUM(launches),0) launches,
+                      COALESCE(SUM(applies),0) applies,
+                      COALESCE(SUM(apply_ok),0) apply_ok
+                 FROM daily_usage WHERE day<?""",
+            (trend_start.isoformat(),),
+        ).fetchone())
+        base_users = int(conn.execute(
+            "SELECT COUNT(*) FROM clients WHERE first_seen<?", (trend_start_ts,)
+        ).fetchone()[0])
+        new_users = {
+            row["day"]: int(row["value"])
+            for row in conn.execute(
+                """SELECT date(first_seen, 'unixepoch', '+8 hours') day, COUNT(*) value
+                     FROM clients WHERE first_seen>=? AND first_seen<=? GROUP BY day""",
+                (trend_start_ts, now),
+            )
+        }
+
+        usage_by_day = {}
+        activity_start = trend_start - dt.timedelta(days=6)
+        for row in conn.execute(
+            "SELECT day, client_hash FROM daily_usage WHERE day>=? AND day<=?",
+            (activity_start.isoformat(), today.isoformat()),
+        ):
+            usage_by_day.setdefault(row["day"], set()).add(row["client_hash"])
+
+        quarter_clients = [set() for _ in range(8)]
+        for row in conn.execute(
+            "SELECT client_hash, seen_at FROM telemetry_replays WHERE seen_at>=? AND seen_at<=?",
+            (quarter_start_ts, now),
+        ):
+            index = int((int(row["seen_at"]) - quarter_start_ts) // 900)
+            if 0 <= index < len(quarter_clients):
+                quarter_clients[index].add(row["client_hash"])
+
+        trends = {
+            "users": [],
+            "active7d": [],
+            "active15m": [len(clients) for clients in quarter_clients],
+            "launchesToday": [],
+            "totalLaunches": [],
+            "totalApplies": [],
+            "totalApplyOk": [],
+        }
+        running_users = base_users
+        running_launches = int(base_totals["launches"])
+        running_applies = int(base_totals["applies"])
+        running_apply_ok = int(base_totals["apply_ok"])
+        for day in trend_days:
+            key = day.isoformat()
+            row = daily_rows.get(key, {})
+            running_users += int(new_users.get(key, 0))
+            running_launches += int(row.get("launches") or 0)
+            running_applies += int(row.get("applies") or 0)
+            running_apply_ok += int(row.get("apply_ok") or 0)
+            active_clients = set()
+            for offset in range(7):
+                active_clients.update(usage_by_day.get((day - dt.timedelta(days=offset)).isoformat(), ()))
+            trends["users"].append(running_users)
+            trends["active7d"].append(len(active_clients))
+            trends["launchesToday"].append(int(row.get("launches") or 0))
+            trends["totalLaunches"].append(running_launches)
+            trends["totalApplies"].append(running_applies)
+            trends["totalApplyOk"].append(running_apply_ok)
+
         return {
             "generatedAt": now,
             "users": int(conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]),
@@ -1999,11 +2081,12 @@ def _build_public_stats(now=None):
             ).fetchone()[0]),
             "launchesToday": int(conn.execute(
                 "SELECT COALESCE(SUM(launches),0) FROM daily_usage WHERE day=?",
-                (now_local.date().isoformat(),),
+                (today.isoformat(),),
             ).fetchone()[0]),
             "totalLaunches": int(totals["launches"]),
             "totalApplies": int(totals["applies"]),
             "totalApplyOk": int(totals["apply_ok"]),
+            "trends": trends,
             "timezone": "Asia/Shanghai",
         }
     finally:

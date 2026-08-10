@@ -323,6 +323,19 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(1, public["totalApplies"])
         self.assertEqual(5, public["totalApplyOk"])
         self.assertEqual("Asia/Shanghai", public["timezone"])
+        self.assertEqual(
+            {"users", "active7d", "active15m", "launchesToday",
+             "totalLaunches", "totalApplies", "totalApplyOk"},
+            set(public["trends"]),
+        )
+        for key, values in public["trends"].items():
+            self.assertEqual(8 if key == "active15m" else 7, len(values))
+            self.assertTrue(all(isinstance(value, int) and value >= 0 for value in values))
+        self.assertEqual(public["users"], public["trends"]["users"][-1])
+        self.assertEqual(public["launchesToday"], public["trends"]["launchesToday"][-1])
+        self.assertEqual(public["totalLaunches"], public["trends"]["totalLaunches"][-1])
+        self.assertEqual(public["totalApplies"], public["trends"]["totalApplies"][-1])
+        self.assertEqual(public["totalApplyOk"], public["trends"]["totalApplyOk"][-1])
 
     def test_token_binding_timestamp_and_replay_protection(self):
         now = 1786248000
@@ -616,6 +629,8 @@ class TelemetryTests(unittest.TestCase):
                 self.assertEqual("public, max-age=15", response.headers["Cache-Control"])
             self.assertEqual(2, public_stats["users"])
             self.assertEqual(2, public_stats["totalLaunches"])
+            self.assertEqual(7, len(public_stats["trends"]["totalLaunches"]))
+            self.assertEqual(8, len(public_stats["trends"]["active15m"]))
             self.assertEqual("Asia/Shanghai", public_stats["timezone"])
         finally:
             httpd.shutdown()
