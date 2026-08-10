@@ -30,6 +30,13 @@ Assert-True ($raw -match 'Start-Process\s+-FilePath\s+\$PresentMon\s+-WorkingDir
   'PresentMon does not use the trusted neutral working directory'
 Assert-True ($raw -match 'Start-Process\s+-FilePath\s+\$SetupFile\s+-WorkingDirectory\s+\(\[Environment\]::SystemDirectory\)') `
   'inline setup still inherits the product working directory'
+Assert-True ($raw.Contains('Content="上传完整诊断"') -and
+  $raw.Contains("`$lines.Add('== 运行环境与显示 / 音频 ==')") -and
+  $raw.Contains("`$lines.Add('== 关键环境变量（脱敏） ==')")) `
+  'expanded negative-effect diagnostic collection is missing from the report button'
+Assert-True ($raw.Contains("'SystemRoot','WINDIR','ProgramData','ProgramFiles','ProgramFiles(x86)','TEMP','TMP','PATH','PSModulePath','COMSPEC','PATHEXT','__COMPAT_LAYER'") -and
+  $raw.Contains('（仅记录名称，不上传值）')) `
+  'diagnostic environment collection is not value-allowlisted or does not redact injection values'
 
 function Find-GuiFunction([string]$Name) {
   $matches = @($ast.FindAll({
@@ -53,7 +60,15 @@ $repairBranches = @($ast.FindAll({
 }, $true))
 Assert-True ($repairBranches.Count -eq 1) 'disabled-UAC recovery branch missing or duplicated'
 $repairText = $repairBranches[0].Extent.Text
-$repairStatements = @($repairBranches[0].Clauses[0].Item2.Statements)
+$hostAssignments = @($ast.FindAll({
+  param($node)
+  $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+    $node.Left.VariablePath.UserPath -ieq 'Host'
+}, $true))
+Assert-True ($hostAssignments.Count -eq 0) 'GUI assigns PowerShell built-in read-only $Host variable'
+Assert-True ($raw.Contains('$engineHostProcess = Get-CimInstance Win32_Process')) `
+  'GUI bootstrap does not store the EngineHost process in a non-reserved variable'
 
 Assert-True $raw.Contains('Test-IsBuiltInAdministratorSid $script:OriginalUserSid') `
   'startup does not identify RID-500 from the authenticated original user SID'
@@ -67,12 +82,21 @@ Assert-True ($raw.Contains('Split-Path -Parent $script:OriginalUserLocalAppData'
 Assert-True $raw.Contains('if (-not $isAdminGui) { Stop-UntrustedGuiStartup') 'main GUI does not fail closed without an administrator token'
 Assert-True $raw.Contains('$enableLUA = Get-UacEnableLuaValue') 'elevated startup does not inspect the real EnableLUA policy'
 Assert-True $raw.Contains('$filterAdministratorToken') 'RID-500 startup does not inspect FilterAdministratorToken'
-Assert-True $repairText.Contains('[Windows.MessageBoxButton]::YesNo') 'UAC recovery is not explicitly confirmed by the user'
+Assert-True $repairText.Contains('[Windows.MessageBoxButton]::YesNoCancel') 'UAC/net-cafe choice is not explicitly confirmed by the user'
 Assert-True $repairText.Contains('Enable-UacForNextRestart -EnableBuiltInAdministratorApprovalMode:$isBuiltInAdministrator') 'confirmed recovery does not select the correct ordinary/RID-500 write set'
 Assert-True $repairText.Contains('管理员审批模式') 'RID-500 recovery does not explain Administrator Approval Mode'
 Assert-True $repairText.Contains('软件不会自动重启') 'UAC recovery does not state that restart timing remains with the user'
-Assert-True ($repairStatements.Count -gt 0 -and $repairStatements[-1] -is [Management.Automation.Language.ExitStatementAst]) 'UAC recovery can continue into the elevated GUI'
+Assert-True ($repairText.Contains('$script:NetCafeCompatibilityMode = $true') -and
+  $repairText.Contains('本次不修改 UAC，也不要求重启') -and
+  $repairText.Contains('用户缓存清理、显卡软件检测和外链入口会停用')) `
+  'repair-only session does not offer the explicit no-restart net-cafe compatibility mode'
+Assert-True ($repairText -match '(?s)MessageBoxResult\]::No.*Enable-UacForNextRestart.*exit') `
+  'policy-repair choice does not exit after persisting restart-required UAC settings'
+Assert-True ($repairText -match '(?s)else \{ exit \}\s*\}') `
+  'cancelled UAC/net-cafe choice can continue into the GUI'
 Assert-True (-not $repairText.Contains('Restart-Computer') -and -not $repairText.Contains('shutdown.exe')) 'UAC recovery must not force a restart'
+Assert-True ($raw -match 'NetCafeCompatibilityMode[\s\S]{0,500}Where-Object \{ \$_\.Kind -ne ''cache'' \}') `
+  'net-cafe compatibility mode does not remove the medium-token cache action from the UI'
 
 $uacWrites = @($enableUacFunction.FindAll({
   param($node)

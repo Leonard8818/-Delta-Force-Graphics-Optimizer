@@ -387,7 +387,10 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(72.0, stats["performance"]["fps1Low"])
         self.assertIsNone(stats["performance"]["gpuTemp"])
         self.assertEqual(1, stats["dataQuality"]["legacyPerformanceSessionsExcluded"])
-        self.assertEqual(5, stats["performanceByGpu"][0]["sessions"])
+        self.assertEqual(6, stats["performanceByGpu"][0]["sessions"])
+        self.assertEqual(5, stats["performanceByGpu"][0]["trustedSessions"])
+        self.assertEqual(1, stats["performanceByGpu"][0]["legacySessions"])
+        self.assertTrue(stats["performanceByGpu"][0]["published"])
         self.assertEqual("median", stats["dataQuality"]["aggregation"])
 
         other_temp = tempfile.TemporaryDirectory()
@@ -401,7 +404,10 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(1, small["performance"]["sessions"])
             self.assertFalse(small["performance"]["published"])
             self.assertIsNone(small["performance"]["avgFps"])
-            self.assertEqual([], small["performanceByGpu"])
+            self.assertEqual(1, len(small["performanceByGpu"]))
+            self.assertEqual(1, small["performanceByGpu"][0]["trustedSessions"])
+            self.assertFalse(small["performanceByGpu"][0]["published"])
+            self.assertEqual(100.0, small["performanceByGpu"][0]["avgFps"])
         finally:
             SERVER.DB_PATH = os.path.join(self.temp.name, "telemetry.db")
             other_temp.cleanup()
@@ -580,7 +586,7 @@ class TelemetryTests(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=3)
 
-    def test_stats_exposes_daily_and_last_24_utc_hours_in_one_user_analysis(self):
+    def test_stats_exposes_daily_and_last_24_beijing_hours_in_one_user_analysis(self):
         now = int(dt.datetime(2026, 8, 10, 13, 42, tzinfo=dt.timezone.utc).timestamp())
         hour_12 = int(dt.datetime(2026, 8, 10, 12, 10, tzinfo=dt.timezone.utc).timestamp())
         hour_13 = int(dt.datetime(2026, 8, 10, 13, 5, tzinfo=dt.timezone.utc).timestamp())
@@ -613,8 +619,8 @@ class TelemetryTests(unittest.TestCase):
         stats = SERVER._build_stats(now=now)
         self.assertEqual(30, len(stats["daily"]))
         self.assertEqual(24, len(stats["hourly"]))
-        self.assertEqual("2026-08-09T14:00Z", stats["hourly"][0]["hour"])
-        self.assertEqual("2026-08-10T13:00Z", stats["hourly"][-1]["hour"])
+        self.assertEqual("2026-08-09T22:00+08:00", stats["hourly"][0]["hour"])
+        self.assertEqual("2026-08-10T21:00+08:00", stats["hourly"][-1]["hour"])
         self.assertEqual({"active": 1, "newUsers": 1}, {
             key: stats["hourly"][-2][key] for key in ("active", "newUsers")
         })
@@ -622,6 +628,8 @@ class TelemetryTests(unittest.TestCase):
             key: stats["hourly"][-1][key] for key in ("active", "newUsers")
         })
         self.assertEqual("authenticated_event_receipts", stats["dataQuality"]["hourlyActivitySource"])
+        self.assertEqual("Asia/Shanghai", stats["dataQuality"]["reportTimezone"])
+        self.assertEqual("+08:00", stats["dataQuality"]["reportUtcOffset"])
 
     def test_rejects_identifying_or_oversized_fields(self):
         with self.assertRaises(ValueError):

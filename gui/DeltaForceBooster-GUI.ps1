@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.21.0
+  DeltaForceBooster 图形界面 — v0.21.1
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.21.1：修复了一些已知问题。
   v0.21.0：修复了一些已知问题。
   v0.20.4：修复了一些已知问题。
   v0.20.3：修复了一些已知问题。
@@ -146,10 +147,11 @@ try {
 
   $self = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
   if (-not $self -or [int]$self.ParentProcessId -ne $hostPid) { throw '主界面父进程不是当前 EngineHost 会话' }
-  $host = Get-CimInstance Win32_Process -Filter "ProcessId=$hostPid" -ErrorAction Stop
+  # $Host 是 PowerShell 内置只读变量（变量名大小写不敏感），不能拿来保存进程对象。
+  $engineHostProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$hostPid" -ErrorAction Stop
   $expectedHost = [IO.Path]::GetFullPath((Join-Path $bootstrapRoot 'EngineHost.exe'))
-  if (-not $host -or -not $host.ExecutablePath -or
-      [IO.Path]::GetFullPath("$($host.ExecutablePath)") -ine $expectedHost -or
+  if (-not $engineHostProcess -or -not $engineHostProcess.ExecutablePath -or
+      [IO.Path]::GetFullPath("$($engineHostProcess.ExecutablePath)") -ine $expectedHost -or
       (Test-BootstrapPathHasReparsePoint $expectedHost)) { throw 'EngineHost 进程路径不匹配' }
   $launcher = Get-CimInstance Win32_Process -Filter "ProcessId=$launcherPid" -ErrorAction Stop
   $expectedLauncher = [IO.Path]::GetFullPath((Join-Path $bootstrapRoot '启动优化工具.exe'))
@@ -268,14 +270,16 @@ if ([bool]$needsUacRepair -ne [bool]$script:RepairOnlySession) {
 }
 if ($needsUacRepair) {
     $repairPrompt = $(if ($isBuiltInAdministrator) {
-      "检测到当前账户是 Windows 内置 Administrator（RID 500），并且 UAC 或此账户的「管理员审批模式」未开启，因此主界面仍会持有完整管理员权限。`n`n点击「是」：开启 UAC，并为内置 Administrator 开启管理员审批模式。`n点击「否」：暂不修改并退出软件。`n`n只会修改这两项 Windows 安全策略；设置在下次重启后生效。软件不会自动重启，您可以先保存工作，再自行选择时间重启。"
+      "检测到当前账户是 Windows 内置 Administrator（RID 500），并且 UAC 或此账户的「管理员审批模式」未开启。`n`n点击「是」：以网吧兼容模式继续，本次不修改安全策略，也不要求重启；核心优化与还原可用，用户缓存清理、显卡软件检测和外链入口会停用。`n点击「否」：开启 UAC 与管理员审批模式，保存后退出；设置在下次重启后生效。`n点击「取消」：不修改并退出。"
     } else {
-      "检测到 Windows 的「用户账户控制（UAC）」已被关闭。这会让当前管理员账户启动的程序都持有管理员权限，因此本软件为保护更新和联网功能而停止启动。`n`n点击「是」：立即把 UAC 恢复为开启状态。`n点击「否」：暂不修改并退出软件。`n`n修改只会在下次重启后生效；软件不会自动重启，您可以先保存工作，再自行选择时间重启。"
+      "检测到 Windows 的「用户账户控制（UAC）」已被关闭。`n`n点击「是」：以网吧兼容模式继续，本次不修改 UAC，也不要求重启；核心优化与还原可用，用户缓存清理、显卡软件检测和外链入口会停用。`n点击「否」：恢复 UAC，保存后退出；设置在下次重启后生效。`n点击「取消」：不修改并退出。"
     })
     $choice = [Windows.MessageBox]::Show(
       $repairPrompt,
-      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Warning)
+      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::YesNoCancel, [Windows.MessageBoxImage]::Warning)
     if ($choice -eq [Windows.MessageBoxResult]::Yes) {
+      $script:NetCafeCompatibilityMode = $true
+    } elseif ($choice -eq [Windows.MessageBoxResult]::No) {
       try {
         Enable-UacForNextRestart -EnableBuiltInAdministratorApprovalMode:$isBuiltInAdministrator
         $repairResult = $(if ($isBuiltInAdministrator) {
@@ -296,8 +300,8 @@ if ($needsUacRepair) {
           "UAC 自动恢复失败：$($_.Exception.Message)`n`n$manualRecovery",
           'UAC 修复失败', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
       }
-    }
-  exit
+      exit
+    } else { exit }
 }
 
 # 同一台电脑只保留一个主程序实例。用全局命名 Mutex 而不是枚举 powershell.exe：启动器、
@@ -423,12 +427,18 @@ function Import-ProtectedLegacyState([string]$PackageJson) {
   [pscustomobject]@{ Imported = $imported; Skipped = @($package.Skipped).Count }
 }
 
-$script:LegacyMigrationNotice = ''
+$script:LegacyMigrationNotice = $(if ($script:NetCafeCompatibilityMode) {
+  '当前为网吧兼容模式：未修改 UAC，也无需重启；用户缓存清理、显卡软件检测和外链入口已停用。'
+} else { '' })
 try { $script:LegacyMigrationResult = Import-ProtectedLegacyState (Invoke-EngineHostUserAction MigrateLegacyData) }
-catch { $script:LegacyMigrationNotice = "旧版用户数据迁移未完成：$($_.Exception.Message)" }
+catch {
+  if (-not $script:NetCafeCompatibilityMode) {
+    $script:LegacyMigrationNotice = "旧版用户数据迁移未完成：$($_.Exception.Message)"
+  }
+}
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.21.0'
+$script:GuiVersion = '0.21.1'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -802,7 +812,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.21.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.21.1 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1172,7 +1182,7 @@ $xaml = @'
       </Border>
       <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,9,0,0">
         <!-- 把诊断信息打包发给作者排查；上传前列清单请用户确认，不会静默发送 -->
-        <Button x:Name="ReportBtn" Content="上传诊断报告" Style="{StaticResource Ghost}" Width="132"/>
+        <Button x:Name="ReportBtn" Content="上传完整诊断" Style="{StaticResource Ghost}" Width="132"/>
         <TextBlock Text="上传前会列出内容并请你确认，路径中的用户名会脱敏" Style="{StaticResource Mono}"
                    Margin="12,0,0,0"/>
       </StackPanel>
@@ -1223,7 +1233,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.21.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.21.1 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -3824,6 +3834,46 @@ function New-DiagnosticReport {
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
   $lines.Add('')
 
+  $lines.Add('== 运行环境与显示 / 音频 ==')
+  try {
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $boot = $os.LastBootUpTime
+    $lines.Add("系统启动时间：$boot")
+    $lines.Add("会话模式：$(if ($script:NetCafeCompatibilityMode) { '网吧兼容模式（UAC 策略未修改）' } else { '标准 EngineHost 管理员会话' })")
+    $lines.Add("UAC：EnableLUA=$(Get-UacEnableLuaValue)；FilterAdministratorToken=$(Get-UacFilterAdministratorTokenValue)")
+    foreach ($display in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
+      $lines.Add("显示输出：$($display.Name)｜$($display.CurrentHorizontalResolution)x$($display.CurrentVerticalResolution) @$($display.CurrentRefreshRate)Hz｜驱动 $($display.DriverVersion)")
+    }
+    foreach ($audio in @(Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue)) {
+      $lines.Add("音频设备：$($audio.Name)｜厂商 $($audio.Manufacturer)｜状态 $($audio.Status)")
+    }
+    foreach ($page in @(Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue)) {
+      $lines.Add("页面文件：$($page.Name)｜已分配 $($page.AllocatedBaseSize) MB｜当前 $($page.CurrentUsage) MB｜峰值 $($page.PeakUsage) MB")
+    }
+    $interesting = @('DeltaForceClient-Win64-Shipping','DeltaForce','PresentMon','RTSS','MSIAfterburner','obs64','Discord','GameBar','NVIDIA Share','WeGame')
+    $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $interesting -contains $_.ProcessName } |
+      Select-Object -ExpandProperty ProcessName -Unique | Sort-Object)
+    $lines.Add("相关进程：$(if ($running.Count) { $running -join '、' } else { '未检测到' })")
+  } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
+  $lines.Add('')
+
+  $lines.Add('== 关键环境变量（脱敏） ==')
+  # 只收集排障相关白名单；令牌、密码、Cookie 等任意环境变量绝不进入报告。
+  foreach ($name in @('SystemRoot','WINDIR','ProgramData','ProgramFiles','ProgramFiles(x86)','TEMP','TMP','PATH','PSModulePath','COMSPEC','PATHEXT','__COMPAT_LAYER')) {
+    $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+    $lines.Add("${name}=$(if ([string]::IsNullOrEmpty($value)) { '（未设置）' } else { $value })")
+  }
+  $injectionNames = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object {
+    "$_" -match '^(?i:COR_|COMPlus_|DOTNET_|PSExecutionPolicyPreference$)'
+  } | ForEach-Object { "$_" } | Sort-Object)
+  $lines.Add("运行时注入变量：$(if ($injectionNames.Count) { ($injectionNames -join '、') + '（仅记录名称，不上传值）' } else { '未检测到' })")
+  try {
+    $powercfg = Join-Path ([Environment]::SystemDirectory) 'powercfg.exe'
+    $activePlan = (& $powercfg /getactivescheme 2>&1 | Out-String).Trim()
+    $lines.Add("当前电源计划：$activePlan")
+  } catch { $lines.Add("当前电源计划读取失败：$($_.Exception.Message)") }
+  $lines.Add('')
+
   $lines.Add('== 游戏路径 ==')
   $lines.Add($(if ($script:TargetExe) { "$script:TargetExe" } else { '未定位' }))
   $lines.Add('')
@@ -4989,6 +5039,10 @@ function Update-ItemList {
   $ui.RiskyPanel.Children.Clear()
   # 变量名不能用 $items：引擎被点源进同一作用域，其 [string[]]$Items 参数会把哈希表强制转成字符串
   $optItems = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
+  if ($script:NetCafeCompatibilityMode) {
+    # repair-only 会话没有可认证的 medium broker；不要把用户目录缓存项交给 high GUI。
+    $optItems = @($optItems | Where-Object { $_.Kind -ne 'cache' })
+  }
   $safe  = @($optItems | Where-Object { $_.Tier -ne 'risky' })
   $risky = @($optItems | Where-Object { $_.Tier -eq 'risky' })
 
@@ -5315,6 +5369,8 @@ $ui.ReportBtn.Add_Click({
       "将把以下内容上传到作者的服务器（$script:ReportUploadUrl），仅用于排查你反馈的问题："
       ''
       '· 硬件型号与系统版本（CPU / 显卡 / 内存 / Windows 版本）'
+      '· 显示器分辨率/刷新率、音频设备、页面文件、系统启动时间与相关进程名'
+      '· 排障所需的关键环境变量（路径会脱敏；敏感变量只记录名称，不上传值）'
       '· 已定位的游戏主程序路径（用户名和机器名会脱敏）'
       '· 各优化项的当前状态'
       '· 本次运行日志'

@@ -54,6 +54,7 @@ WEEKLY_SCHEMA_VERSION = 3
 WEEKLY_FILTER_LIMITS = {"version": 24, "gpu": 160, "deviceType": 24}
 CUSTOM_PERIOD_MAX_DAYS = 92
 REPORTING_EPOCH_WEEK = dt.date(2026, 8, 3)
+REPORT_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
 CONFIG_TIERS = ("baseline", "light", "balanced", "full")
 CONFIG_TIER_LABELS = {
     "baseline": "未使用本工具优化",
@@ -1474,7 +1475,8 @@ def _record_tuning(conn, item, client_hash, now):
 def _record_telemetry(payload, now=None):
     item = _normalize_telemetry(payload)
     now = int(time.time() if now is None else now)
-    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    # 运营报表、自然日限额和客户端页面统一使用北京时间（UTC+8）。
+    day = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE).date().isoformat()
     client_hash = _client_hash(item["install_id"])
     event = item["event"]
     authenticated = _telemetry_auth(item, now)
@@ -1732,6 +1734,37 @@ def _performance_views(rows):
     return overall, by_gpu, by_config, _summarize_performance_pairs(paired_rows)
 
 
+def _performance_gpu_inventory(rows):
+    """Private admin inventory: show collected rows without publishing weak conclusions."""
+    groups = {}
+    for row in rows:
+        if row.get("gpu_model"):
+            groups.setdefault(row["gpu_model"], []).append(row)
+    result = []
+    for label, group in groups.items():
+        trusted = [row for row in group if int(row.get("authenticated") or 0) == 1]
+        metric_rows = trusted if trusted else group
+        display = _aggregate_performance(metric_rows, minimum=1)
+        publish = _aggregate_performance(trusted)
+        result.append({
+            "label": label,
+            "sessions": len(group),
+            "clients": len({row["client_hash"] for row in group}),
+            "trustedSessions": len(trusted),
+            "trustedClients": len({row["client_hash"] for row in trusted}),
+            "legacySessions": len(group) - len(trusted),
+            "quality": "trusted" if trusted else "legacy",
+            "published": publish["published"],
+            "avgFps": display["avgFps"],
+            "fps1Low": display["fps1Low"],
+            "gpuUtil": display["gpuUtil"],
+            "gpuTemp": display["gpuTemp"],
+            "gpuPower": display["gpuPower"],
+        })
+    result.sort(key=lambda row: (-row["sessions"], row["label"]))
+    return result[:30]
+
+
 def _metric_delta(optimized, baseline, key):
     if optimized.get(key) is None or baseline.get(key) is None:
         return None
@@ -1740,11 +1773,11 @@ def _metric_delta(optimized, baseline, key):
 
 def _build_stats(now=None, days=30):
     now = int(time.time() if now is None else now)
-    now_utc = dt.datetime.fromtimestamp(now, dt.timezone.utc)
-    today = now_utc.date()
+    now_local = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE)
+    today = now_local.date()
     start_day = today - dt.timedelta(days=days - 1)
-    midnight = int(dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc).timestamp())
-    current_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+    midnight = int(dt.datetime.combine(today, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
+    current_hour = now_local.replace(minute=0, second=0, microsecond=0)
     hourly_start = current_hour - dt.timedelta(hours=23)
     hourly_start_ts = int(hourly_start.timestamp())
     conn = _connect()
@@ -1768,25 +1801,31 @@ def _build_stats(now=None, days=30):
                       COALESCE(SUM(restores),0) restores FROM daily_usage WHERE day=?""",
             (today.isoformat(),),
         ).fetchone())
-        daily_rows = {row["day"]: dict(row) for row in conn.execute(
-            """SELECT day, COUNT(*) active, SUM(launches) launches, SUM(applies) applies,
+        usage_rows = {row["day"]: dict(row) for row in conn.execute(
+            """SELECT day, SUM(launches) launches, SUM(applies) applies,
                       SUM(restores) restores FROM daily_usage WHERE day>=? GROUP BY day""",
             (start_day.isoformat(),),
         )}
+        daily_active_rows = {row["day"]: row["active"] for row in conn.execute(
+            """SELECT date(seen_at, 'unixepoch', '+8 hours') day,
+                      COUNT(DISTINCT client_hash) active
+                 FROM telemetry_replays WHERE seen_at>=? GROUP BY day""",
+            (int(dt.datetime.combine(start_day, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp()),),
+        )}
         new_rows = {row["day"]: row["new_users"] for row in conn.execute(
-            """SELECT date(first_seen, 'unixepoch') day, COUNT(*) new_users
+            """SELECT date(first_seen, 'unixepoch', '+8 hours') day, COUNT(*) new_users
                  FROM clients WHERE first_seen>=? GROUP BY day""",
-            (int(dt.datetime.combine(start_day, dt.time.min, tzinfo=dt.timezone.utc).timestamp()),),
+            (int(dt.datetime.combine(start_day, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp()),),
         )}
         hourly_active_rows = {row["hour"]: row["active"] for row in conn.execute(
-            """SELECT strftime('%Y-%m-%dT%H:00Z', seen_at, 'unixepoch') hour,
+            """SELECT strftime('%Y-%m-%dT%H:00+08:00', seen_at, 'unixepoch', '+8 hours') hour,
                       COUNT(DISTINCT client_hash) active
                  FROM telemetry_replays
                 WHERE seen_at>=? AND seen_at<=? GROUP BY hour""",
             (hourly_start_ts, now),
         )}
         hourly_new_rows = {row["hour"]: row["new_users"] for row in conn.execute(
-            """SELECT strftime('%Y-%m-%dT%H:00Z', first_seen, 'unixepoch') hour,
+            """SELECT strftime('%Y-%m-%dT%H:00+08:00', first_seen, 'unixepoch', '+8 hours') hour,
                       COUNT(*) new_users
                  FROM clients
                 WHERE first_seen>=? AND first_seen<=? GROUP BY hour""",
@@ -1801,18 +1840,16 @@ def _build_stats(now=None, days=30):
         ram_values = [tuple(row) for row in conn.execute(
             "SELECT ram_gb, %s weight FROM clients WHERE ram_gb>0" % weight_sql
         )]
-        performance_rows = _rows(
+        all_performance_rows = _rows(
             conn,
             """SELECT client_hash, gpu_model, config_tier, avg_fps, fps_1_low,
-                      gpu_util_avg, gpu_temp_avg, gpu_power_avg
+                      gpu_util_avg, gpu_temp_avg, gpu_power_avg, authenticated
                  FROM performance_sessions
-                WHERE day>=? AND authenticated=1""",
+                WHERE day>=?""",
             (start_day.isoformat(),),
         )
-        legacy_performance_sessions = conn.execute(
-            "SELECT COUNT(*) FROM performance_sessions WHERE day>=? AND authenticated=0",
-            (start_day.isoformat(),),
-        ).fetchone()[0]
+        performance_rows = [row for row in all_performance_rows if int(row.get("authenticated") or 0) == 1]
+        legacy_performance_sessions = len(all_performance_rows) - len(performance_rows)
         authenticated_clients = conn.execute(
             "SELECT COUNT(*) FROM clients WHERE authenticated_last_seen>0"
         ).fetchone()[0]
@@ -1826,9 +1863,10 @@ def _build_stats(now=None, days=30):
     finally:
         conn.close()
 
-    performance, performance_by_gpu, performance_by_config, performance_improvement = _performance_views(
+    performance, _, performance_by_config, performance_improvement = _performance_views(
         performance_rows
     )
+    performance_by_gpu = _performance_gpu_inventory(all_performance_rows)
 
     ram_buckets = {"≤8 GB": 0, "9–16 GB": 0, "17–32 GB": 0, "33–64 GB": 0, ">64 GB": 0}
     for ram, weight in ram_values:
@@ -1846,10 +1884,10 @@ def _build_stats(now=None, days=30):
     daily = []
     for offset in range(days):
         day = start_day + dt.timedelta(days=offset)
-        row = daily_rows.get(day.isoformat(), {})
+        row = usage_rows.get(day.isoformat(), {})
         daily.append({
             "day": day.isoformat(),
-            "active": int(row.get("active") or 0),
+            "active": int(daily_active_rows.get(day.isoformat(), 0)),
             "newUsers": int(new_rows.get(day.isoformat(), 0)),
             "launches": int(row.get("launches") or 0),
             "applies": int(row.get("applies") or 0),
@@ -1858,7 +1896,7 @@ def _build_stats(now=None, days=30):
     hourly = []
     for offset in range(24):
         hour = hourly_start + dt.timedelta(hours=offset)
-        hour_key = hour.strftime("%Y-%m-%dT%H:00Z")
+        hour_key = hour.strftime("%Y-%m-%dT%H:00+08:00")
         hourly.append({
             "hour": hour_key,
             "active": int(hourly_active_rows.get(hour_key, 0)),
@@ -1911,6 +1949,8 @@ def _build_stats(now=None, days=30):
             "telemetryRetentionDays": TELEMETRY_KEEP_DAYS,
             "hourlyActivitySource": "authenticated_event_receipts",
             "hourlyWindowHours": 24,
+            "reportTimezone": "Asia/Shanghai",
+            "reportUtcOffset": "+08:00",
         },
         "diagnosticReports": _report_summary(),
     }
@@ -1921,15 +1961,13 @@ def _latest_complete_week_start(now=None):
     # Admin 周报按官网运营所在地（Asia/Taipei，UTC+8）的自然周展示。
     # 例如台北时间周一 00:00 后，应立即把刚结束的周一至周日作为“最近完整周”，
     # 不能再等到 UTC 周一，否则周一早上会错误地落后整整一周。
-    report_timezone = dt.timezone(dt.timedelta(hours=8))
-    today = dt.datetime.fromtimestamp(now, report_timezone).date()
+    today = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE).date()
     return today - dt.timedelta(days=today.weekday() + 7)
 
 
 def _taipei_today(now=None):
     now = int(time.time() if now is None else now)
-    report_timezone = dt.timezone(dt.timedelta(hours=8))
-    return dt.datetime.fromtimestamp(now, report_timezone).date()
+    return dt.datetime.fromtimestamp(now, REPORT_TIMEZONE).date()
 
 
 def _report_number(week_start):
