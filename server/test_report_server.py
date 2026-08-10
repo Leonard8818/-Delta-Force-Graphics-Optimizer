@@ -301,7 +301,7 @@ class TelemetryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_legacy_usage_is_accepted_but_weighted_down(self):
+    def test_legacy_usage_is_accepted_and_distributions_are_integer_counts(self):
         now = 1786248000
         first = "11111111-1111-4111-8111-111111111111"
         second = "22222222-2222-4222-8222-222222222222"
@@ -316,7 +316,13 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(0, stats["dataQuality"]["authenticatedClients"])
         self.assertEqual(0.5, stats["dataQuality"]["weightedUsers"])
         self.assertEqual(0.8, stats["dataQuality"]["weightedLaunches"])
-        self.assertEqual(0.5, stats["versions"][0]["value"])
+        self.assertEqual(2, stats["versions"][0]["value"])
+        public = SERVER._build_public_stats(now + 180)
+        self.assertEqual(2, public["users"])
+        self.assertEqual(3, public["totalLaunches"])
+        self.assertEqual(1, public["totalApplies"])
+        self.assertEqual(5, public["totalApplyOk"])
+        self.assertEqual("Asia/Shanghai", public["timezone"])
 
     def test_token_binding_timestamp_and_replay_protection(self):
         now = 1786248000
@@ -391,6 +397,10 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(5, stats["performanceByGpu"][0]["trustedSessions"])
         self.assertEqual(1, stats["performanceByGpu"][0]["legacySessions"])
         self.assertTrue(stats["performanceByGpu"][0]["published"])
+        self.assertEqual(6, stats["performanceByGpuByDevice"]["desktop"][0]["sessions"])
+        self.assertEqual([], stats["performanceByGpuByDevice"]["laptop"])
+        self.assertEqual(stats["gpus"], stats["gpusByDevice"]["all"])
+        self.assertGreater(stats["gpusByDevice"]["desktop"][0]["value"], 0)
         self.assertEqual("median", stats["dataQuality"]["aggregation"])
 
         other_temp = tempfile.TemporaryDirectory()
@@ -451,6 +461,25 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue(by_tier["full"]["published"])
         self.assertEqual(5, by_tier["full"]["comparisons"])
         self.assertEqual("深度（21+ 项）", by_tier["full"]["label"])
+
+    def test_single_pair_exposes_observed_value_without_publishing_conclusion(self):
+        now = 1786248000
+        install_id = "12121212-1212-4212-8212-121212121212"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        SERVER._record_telemetry(
+            self.authenticate(self.performance_payload(install_id, "baseline", 100, 60), now, token),
+            now,
+        )
+        SERVER._record_telemetry(
+            self.authenticate(self.performance_payload(install_id, "full", 112, 68), now + 60, token),
+            now + 60,
+        )
+        improvement = SERVER._build_stats(now + 60)["performanceImprovement"]
+        self.assertEqual(1, improvement["comparisons"])
+        self.assertFalse(improvement["published"])
+        self.assertIsNone(improvement["fpsDelta"])
+        self.assertEqual(12.0, improvement["observedFpsDelta"])
+        self.assertEqual(8.0, improvement["observedFps1LowDelta"])
 
     def test_maintenance_removes_expired_data_without_new_upload(self):
         now = 1786248000
@@ -581,6 +610,13 @@ class TelemetryTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 urllib.request.urlopen(base + "/api/stats", timeout=3)
             self.assertEqual(403, denied.exception.code)
+
+            with urllib.request.urlopen(base + "/report/public-stats", timeout=3) as response:
+                public_stats = json.load(response)
+                self.assertEqual("public, max-age=15", response.headers["Cache-Control"])
+            self.assertEqual(2, public_stats["users"])
+            self.assertEqual(2, public_stats["totalLaunches"])
+            self.assertEqual("Asia/Shanghai", public_stats["timezone"])
         finally:
             httpd.shutdown()
             httpd.server_close()

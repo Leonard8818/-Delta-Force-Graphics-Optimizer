@@ -14,7 +14,7 @@
   * { box-sizing:border-box }
   body { margin:0; background:linear-gradient(180deg,#0A1512,#10201C); color:var(--tx);
          font-family:"Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif; line-height:1.7 }
-  .wrap { max-width:720px; margin:0 auto; padding:48px 20px 64px }
+  .wrap { max-width:960px; margin:0 auto; padding:48px 20px 64px }
   .brand { display:flex; align-items:center; gap:10px; margin-bottom:36px }
   .tri { width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:16px solid var(--green) }
   .brand b { font-size:15px; letter-spacing:.12em }
@@ -30,6 +30,22 @@
   .download-link:hover { border-color:var(--green); color:var(--tx) }
   .download-link strong { color:var(--green); font-size:13px }
   .download-link span { color:var(--gold); font-size:10px }
+  .proof { margin:30px 0 8px; padding:20px; border:1px solid var(--line); background:linear-gradient(145deg,rgba(16,26,23,.96),rgba(9,20,16,.96)); }
+  .proof-head { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; margin-bottom:14px; }
+  .proof-head h2 { margin:0; color:var(--green); font-size:15px; letter-spacing:.06em; }
+  .proof-head p { margin:3px 0 0; color:var(--tx2); font-size:11px; }
+  .live-state { display:flex; align-items:center; gap:7px; color:#6E8D80; font:10px Consolas,monospace; white-space:nowrap; }
+  .live-dot { width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(0,232,132,.5); animation:livePulse 1.8s infinite; }
+  .proof-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  .proof-card { min-height:106px; padding:14px 15px; position:relative; overflow:hidden; border:1px solid #1B392D; background:#0A1612; }
+  .proof-card::before { content:""; position:absolute; left:0; top:0; width:30px; height:2px; background:var(--green); }
+  .proof-arrow { position:absolute; right:13px; top:12px; color:var(--green); font:700 15px/1 Consolas,monospace; animation:arrowFloat 1.7s ease-in-out infinite; }
+  .proof-label { color:#92A79E; font-size:11px; }
+  .proof-value { margin-top:13px; color:#F8FFFC; font:700 27px/1 Consolas,monospace; font-variant-numeric:tabular-nums; }
+  .proof-hint { margin-top:10px; color:#537466; font-size:9px; }
+  .proof-note { margin:11px 1px 0; color:#516E62; font-size:9px; }
+  @keyframes livePulse { 70% { box-shadow:0 0 0 8px rgba(0,232,132,0) } 100% { box-shadow:0 0 0 0 rgba(0,232,132,0) } }
+  @keyframes arrowFloat { 0%,100% { transform:translateY(1px); opacity:.65 } 50% { transform:translateY(-3px); opacity:1 } }
   .card { background:var(--panel); border:1px solid var(--line); padding:18px 22px; margin:26px 0 }
   .card h2 { font-size:14px; margin:0 0 10px; color:var(--green) }
   .card ul { margin:0; padding-left:20px; color:var(--tx2); font-size:14px }
@@ -48,7 +64,9 @@
   details.history[open] summary { margin-bottom:8px }
   footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:#5E7A6C; font-size:12px;
            font-family:Consolas,monospace; letter-spacing:.1em }
-  @media (max-width:520px) { .release { grid-template-columns:1fr; gap:5px } .release-ver small { display:inline; margin-left:8px } }
+  @media (max-width:760px) { .proof-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  @media (max-width:520px) { .release { grid-template-columns:1fr; gap:5px } .release-ver small { display:inline; margin-left:8px } .proof{padding:16px}.proof-head{align-items:flex-start;flex-direction:column}.proof-card{min-height:100px}.proof-value{font-size:23px} }
+  @media (prefers-reduced-motion:reduce) { .live-dot,.proof-arrow { animation:none } }
 </style>
 </head>
 <body>
@@ -64,11 +82,28 @@
     <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
     <a class="cta alt" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer">GitHub 仓库</a>
   </p>
-  <p class="ver">当前版本 v0.21.1 · 仅支持 Windows 10/11 · v0.20.4 作为稳定版继续保留</p>
+  <p class="ver">当前版本 v0.21.2 · 仅支持 Windows 10/11 · v0.20.4 作为稳定版继续保留</p>
   <div class="downloads" aria-label="版本下载">
-    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.21.1/DeltaForceBooster-Setup-v0.21.1.exe"><strong>v0.21.1</strong><span>最新版</span></a>
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.21.2/DeltaForceBooster-Setup-v0.21.2.exe"><strong>v0.21.2</strong><span>最新版</span></a>
     <a class="download-link" href="https://df.ltz88.cn/DeltaForceBooster-Setup-v0.20.4.exe"><strong>v0.20.4</strong><span>稳定版</span></a>
   </div>
+
+  <section class="proof" aria-labelledby="proofTitle">
+    <div class="proof-head">
+      <div><h2 id="proofTitle">实时使用数据</h2><p>来自工具匿名汇总事件，按北京时间持续更新</p></div>
+      <div class="live-state"><span class="live-dot"></span><span id="publicStatsStatus">正在连接实时数据</span></div>
+    </div>
+    <div class="proof-grid">
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计用户</div><div class="proof-value" data-stat="users">—</div><div class="proof-hint">已使用工具的匿名安装标识</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">近 7 日活跃</div><div class="proof-value" data-stat="active7d">—</div><div class="proof-hint">最近 7 天有启动或操作</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">近 15 分钟在线</div><div class="proof-value" data-stat="active15m">—</div><div class="proof-hint">按最近一次事件估算</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">今日启动次数</div><div class="proof-value" data-stat="launchesToday">—</div><div class="proof-hint">北京时间自然日</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计启动次数</div><div class="proof-value" data-stat="totalLaunches">—</div><div class="proof-hint">历史启动事件累计</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计执行优化</div><div class="proof-value" data-stat="totalApplies">—</div><div class="proof-hint">用户主动执行优化的次数</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计优化成功项</div><div class="proof-value" data-stat="totalApplyOk">—</div><div class="proof-hint">引擎确认成功的优化项目</div></article>
+    </div>
+    <div class="proof-note">统计为客户端自报的匿名汇总，仅用于展示工具使用情况；不包含用户名、机器名、游戏路径或诊断正文。</div>
+  </section>
 
   <div class="card">
     <h2>它会做什么</h2>
@@ -86,7 +121,13 @@
   <div class="card">
     <h2>更新记录</h2>
     <div class="release">
-      <div class="release-ver">v0.21.1<small>2026-08-10</small><span class="latest">LATEST</span></div>
+      <div class="release-ver">v0.21.2<small>2026-08-10</small><span class="latest">LATEST</span></div>
+      <ul>
+        <li>修复了一些已知问题。</li>
+      </ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.21.1<small>2026-08-10</small></div>
       <ul>
         <li>修复了一些已知问题。</li>
       </ul>
@@ -258,5 +299,31 @@
 
   <footer>DELTA FORCE · BOOSTER — 与腾讯及三角洲行动官方无关，个人工具</footer>
 </div>
+<script>
+(() => {
+  const formatter=new Intl.NumberFormat('zh-CN',{maximumFractionDigits:0});
+  const values=new Map();
+  function animate(node,target) {
+    const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const start=Number(values.get(node.dataset.stat)||0), end=Math.max(0,Math.round(Number(target)||0));
+    values.set(node.dataset.stat,end);
+    if(reduce){node.textContent=formatter.format(end);return;}
+    const started=performance.now(), duration=650;
+    const tick=now=>{const progress=Math.min(1,(now-started)/duration),eased=1-Math.pow(1-progress,3);node.textContent=formatter.format(Math.round(start+(end-start)*eased));if(progress<1)requestAnimationFrame(tick);};
+    requestAnimationFrame(tick);
+  }
+  async function loadPublicStats() {
+    const status=document.getElementById('publicStatsStatus');
+    try {
+      const response=await fetch('/report/public-stats',{headers:{Accept:'application/json'}});
+      if(!response.ok) throw new Error('HTTP '+response.status);
+      const data=await response.json();
+      document.querySelectorAll('[data-stat]').forEach(node=>animate(node,data[node.dataset.stat]));
+      status.textContent='实时更新 · '+new Date(Number(data.generatedAt)*1000).toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'});
+    } catch (_) { status.textContent='实时数据稍后重试'; }
+  }
+  loadPublicStats(); setInterval(loadPublicStats,15000);
+})();
+</script>
 </body>
 </html>

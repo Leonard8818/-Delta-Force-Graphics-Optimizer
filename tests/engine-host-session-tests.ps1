@@ -60,6 +60,15 @@ Assert-True ($launcherBuild -match 'requestedExecutionLevel level="asInvoker"') 
 Assert-True ($launcherBuild -match 'string hostPath = Path\.Combine\(root, "EngineHost\.exe"\)' -and
   $launcherBuild -match 'psi\.FileName = hostPath' -and
   $launcherBuild -match 'psi\.Verb = "runas"') 'launcher does not request UAC only for EngineHost'
+Assert-True ($launcherBuild -match 'NativeErrorCode != 8235' -and
+  $launcherBuild -match 'StartEngineHostWithPolicyFallback' -and
+  $launcherBuild -match 'WindowsPowerShell", "v1\.0", "powershell\.exe"' -and
+  $launcherBuild -match '-EncodedCommand') `
+  'launcher does not recover ERROR_DS_REFERRAL with a fixed trusted PowerShell boundary'
+Assert-True ($launcherBuild -match 'QuotePowerShellLiteral\(hostPath\)' -and
+  $launcherBuild -match 'QuotePowerShellLiteral\(pipeName\)' -and
+  $launcherBuild -match 'QuotePowerShellLiteral\(session\)') `
+  'signed-policy fallback does not quote all fixed EngineHost launch values'
 Assert-True ($hostBuild -match 'AssemblyTitle\("三角洲行动优化助手 管理员助手"\)') `
   'EngineHost UAC product description missing'
 Assert-True ($launcherBuild.IndexOf('if (!createdNew)', [StringComparison]::Ordinal) -lt

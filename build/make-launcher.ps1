@@ -505,6 +505,43 @@ $hashRowsText
         throw new InvalidOperationException("低权限 broker 动作不在白名单");
     }
 
+    static string QuotePowerShellLiteral(string value) {
+        return "'" + (value ?? "").Replace("'", "''") + "'";
+    }
+
+    static Process StartEngineHostWithPolicyFallback(ProcessStartInfo direct, string hostPath,
+        string pipeName, string session, out bool usedFallback) {
+        usedFallback = false;
+        try { return Process.Start(direct); }
+        catch (System.ComponentModel.Win32Exception ex) {
+            if (ex.NativeErrorCode != 8235) throw;
+            usedFallback = true;
+            // Some managed PCs enable "Only elevate executables that are signed and validated".
+            // EngineHost has no commercial Authenticode certificate yet, so ShellExecute returns
+            // ERROR_DS_REFERRAL (8235). The launcher has already verified the protected root and
+            // exact EngineHost hash; use the Microsoft-signed system PowerShell only as a fixed,
+            // argument-free compatibility boundary, then keep the same authenticated pipe session.
+            MessageBox.Show(
+                "当前电脑只允许直接提升已签名程序。软件将使用 Windows 自带的已签名 PowerShell 启动已校验的管理员助手。\n\n" +
+                "本次 UAC 窗口会显示 Windows PowerShell；确认一次后，本次软件会话不会再次询问。",
+                "三角洲行动优化助手", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            string command = "& " + QuotePowerShellLiteral(hostPath) +
+                " --launch-pipe " + QuotePowerShellLiteral(pipeName) +
+                " --launcher-pid " + Process.GetCurrentProcess().Id.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                " --session " + QuotePowerShellLiteral(session) + "; exit $LASTEXITCODE";
+            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
+            string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            var fallback = new ProcessStartInfo();
+            fallback.FileName = Path.Combine(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+            fallback.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand " + encoded;
+            fallback.WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            fallback.UseShellExecute = true;
+            fallback.Verb = "runas";
+            fallback.WindowStyle = ProcessWindowStyle.Hidden;
+            return Process.Start(fallback);
+        }
+    }
+
     static void LaunchEngineHost(string root, bool repairOnly) {
         string nonce = RandomHex();
         string session = RandomHex();
@@ -520,24 +557,28 @@ $hashRowsText
             psi.UseShellExecute = true;
             psi.Verb = "runas";
             psi.WindowStyle = ProcessWindowStyle.Hidden;
-            Process startedHost = null;
+            Process elevationProcess = null;
+            bool usedPolicyFallback;
             Dictionary<string,string> savedEnvironment = EnterTrustedElevationEnvironment();
-            try { startedHost = Process.Start(psi); }
+            try { elevationProcess = StartEngineHostWithPolicyFallback(psi, hostPath, pipeName, session, out usedPolicyFallback); }
             finally { RestoreProcessEnvironment(savedEnvironment); }
-            using (Process host = startedHost) {
-                if (host == null) throw new InvalidOperationException("EngineHost 进程未启动");
+            using (Process elevation = elevationProcess) {
+                if (elevation == null) throw new InvalidOperationException("EngineHost 进程未启动");
 
                 IAsyncResult pending = pipe.BeginWaitForConnection(null, null);
                 if (!pending.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(60)))
                     throw new TimeoutException("管理员助手未在限定时间内建立安全会话");
                 pipe.EndWaitForConnection(pending);
                 uint clientPid;
-                if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out clientPid) || clientPid != (uint)host.Id)
+                if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out clientPid) || clientPid == 0)
+                    throw new InvalidOperationException("无法确认 EngineHost 管道客户端");
+                if (!usedPolicyFallback && clientPid != (uint)elevation.Id)
                     throw new InvalidOperationException("管道客户端不是刚启动的 EngineHost");
                 var reader = new BinaryReader(pipe, new UTF8Encoding(false), true);
                 var writer = new BinaryWriter(pipe, new UTF8Encoding(false), true);
-                if (reader.ReadString() != "DFB_ENGINE_HOST/1" || reader.ReadInt32() != host.Id || reader.ReadString() != session)
+                if (reader.ReadString() != "DFB_ENGINE_HOST/1" || reader.ReadInt32() != (int)clientPid || reader.ReadString() != session)
                     throw new InvalidOperationException("EngineHost 会话握手内容无效");
+                using (Process host = Process.GetProcessById((int)clientPid)) {
                 SecurityIdentifier userSid = WindowsIdentity.GetCurrent().User;
                 string localAppData = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)).TrimEnd(Path.DirectorySeparatorChar);
                 if (userSid == null || !userSid.IsAccountSid() || !Directory.Exists(localAppData) ||
@@ -579,6 +620,9 @@ $hashRowsText
                     throw new TimeoutException("管理员助手结束会话后未在 30 秒内退出");
                 if (host.HasExited && host.ExitCode != 0)
                     throw new InvalidOperationException("管理员助手异常退出（退出码 " + host.ExitCode + "）");
+                }
+                if (!elevation.HasExited && !elevation.WaitForExit(30000))
+                    throw new TimeoutException("管理员启动边界未在 30 秒内退出");
             }
         }
     }

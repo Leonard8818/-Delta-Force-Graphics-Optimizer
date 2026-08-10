@@ -1666,6 +1666,8 @@ def _summarize_performance_pairs(rows):
     }
     for key in metric_keys:
         values = [float(row[key]) for row in rows if row.get(key) is not None]
+        observed_key = "observed" + key[0].upper() + key[1:]
+        result[observed_key] = round(float(statistics.median(values)), 1) if values else None
         result[key] = (
             round(float(statistics.median(values)), 1)
             if result["published"] and len(values) >= PERFORMANCE_MIN_COMPARISONS
@@ -1831,21 +1833,27 @@ def _build_stats(now=None, days=30):
                 WHERE first_seen>=? AND first_seen<=? GROUP BY hour""",
             (hourly_start_ts, now),
         )}
-        weight_sql = "CASE WHEN authenticated_last_seen>0 THEN 1.0 ELSE 0.25 END"
-        versions = _rows(conn, "SELECT app_version label, ROUND(SUM(%s),1) value FROM clients WHERE app_version<>'' GROUP BY app_version ORDER BY value DESC, label DESC LIMIT 12" % weight_sql)
-        gpus = _rows(conn, "SELECT gpu_model label, ROUND(SUM(%s),1) value FROM clients WHERE gpu_model<>'' AND gpu_model_verified=1 GROUP BY gpu_model ORDER BY value DESC, label LIMIT 12" % weight_sql)
-        vendors = _rows(conn, "SELECT gpu_vendor label, ROUND(SUM(%s),1) value FROM clients WHERE gpu_vendor<>'' GROUP BY gpu_vendor ORDER BY value DESC, label LIMIT 8" % weight_sql)
-        systems = _rows(conn, "SELECT (os_name || CASE WHEN os_build<>'' THEN ' · ' || os_build ELSE '' END) label, ROUND(SUM(%s),1) value FROM clients WHERE os_name<>'' GROUP BY label ORDER BY value DESC, label LIMIT 12" % weight_sql)
-        devices = _rows(conn, "SELECT device_type label, ROUND(SUM(%s),1) value FROM clients WHERE device_type<>'' GROUP BY device_type ORDER BY value DESC, label" % weight_sql)
+        versions = _rows(conn, "SELECT app_version label, COUNT(*) value FROM clients WHERE app_version<>'' GROUP BY app_version ORDER BY value DESC, label DESC LIMIT 12")
+        gpus = _rows(conn, "SELECT gpu_model label, COUNT(*) value FROM clients WHERE gpu_model<>'' AND gpu_model_verified=1 GROUP BY gpu_model ORDER BY value DESC, label LIMIT 12")
+        gpus_by_device = {
+            "all": gpus,
+            "desktop": _rows(conn, "SELECT gpu_model label, COUNT(*) value FROM clients WHERE gpu_model<>'' AND gpu_model_verified=1 AND device_type='desktop' GROUP BY gpu_model ORDER BY value DESC, label LIMIT 12"),
+            "laptop": _rows(conn, "SELECT gpu_model label, COUNT(*) value FROM clients WHERE gpu_model<>'' AND gpu_model_verified=1 AND device_type='laptop' GROUP BY gpu_model ORDER BY value DESC, label LIMIT 12"),
+        }
+        vendors = _rows(conn, "SELECT gpu_vendor label, COUNT(*) value FROM clients WHERE gpu_vendor<>'' GROUP BY gpu_vendor ORDER BY value DESC, label LIMIT 8")
+        systems = _rows(conn, "SELECT (os_name || CASE WHEN os_build<>'' THEN ' · ' || os_build ELSE '' END) label, COUNT(*) value FROM clients WHERE os_name<>'' GROUP BY label ORDER BY value DESC, label LIMIT 12")
+        devices = _rows(conn, "SELECT device_type label, COUNT(*) value FROM clients WHERE device_type<>'' GROUP BY device_type ORDER BY value DESC, label")
         ram_values = [tuple(row) for row in conn.execute(
-            "SELECT ram_gb, %s weight FROM clients WHERE ram_gb>0" % weight_sql
+            "SELECT ram_gb, 1 weight FROM clients WHERE ram_gb>0"
         )]
         all_performance_rows = _rows(
             conn,
-            """SELECT client_hash, gpu_model, config_tier, avg_fps, fps_1_low,
-                      gpu_util_avg, gpu_temp_avg, gpu_power_avg, authenticated
-                 FROM performance_sessions
-                WHERE day>=?""",
+            """SELECT ps.client_hash, ps.gpu_model, ps.config_tier, ps.avg_fps, ps.fps_1_low,
+                      ps.gpu_util_avg, ps.gpu_temp_avg, ps.gpu_power_avg, ps.authenticated,
+                      COALESCE(c.device_type, '') device_type
+                 FROM performance_sessions ps
+                 LEFT JOIN clients c ON c.client_hash=ps.client_hash
+                WHERE ps.day>=?""",
             (start_day.isoformat(),),
         )
         performance_rows = [row for row in all_performance_rows if int(row.get("authenticated") or 0) == 1]
@@ -1867,6 +1875,15 @@ def _build_stats(now=None, days=30):
         performance_rows
     )
     performance_by_gpu = _performance_gpu_inventory(all_performance_rows)
+    performance_by_gpu_by_device = {
+        "all": performance_by_gpu,
+        "desktop": _performance_gpu_inventory([
+            row for row in all_performance_rows if row.get("device_type") == "desktop"
+        ]),
+        "laptop": _performance_gpu_inventory([
+            row for row in all_performance_rows if row.get("device_type") == "laptop"
+        ]),
+    }
 
     ram_buckets = {"≤8 GB": 0, "9–16 GB": 0, "17–32 GB": 0, "33–64 GB": 0, ">64 GB": 0}
     for ram, weight in ram_values:
@@ -1921,12 +1938,14 @@ def _build_stats(now=None, days=30):
         "hourly": hourly,
         "versions": versions,
         "gpus": gpus,
+        "gpusByDevice": gpus_by_device,
         "gpuVendors": vendors,
         "systems": systems,
         "devices": devices,
         "ram": [{"label": key, "value": value} for key, value in ram_buckets.items()],
         "performance": performance,
         "performanceByGpu": performance_by_gpu,
+        "performanceByGpuByDevice": performance_by_gpu_by_device,
         "performanceByConfig": performance_by_config,
         "performanceImprovement": performance_improvement,
         "dataQuality": {
@@ -1954,6 +1973,41 @@ def _build_stats(now=None, days=30):
         },
         "diagnosticReports": _report_summary(),
     }
+
+
+def _build_public_stats(now=None):
+    """Small aggregate-only payload for the public homepage."""
+    now = int(time.time() if now is None else now)
+    now_local = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE)
+    midnight = int(dt.datetime.combine(now_local.date(), dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
+    conn = _connect()
+    try:
+        totals = dict(conn.execute(
+            """SELECT COALESCE(SUM(launches),0) launches,
+                      COALESCE(SUM(applies),0) applies,
+                      COALESCE(SUM(apply_ok),0) apply_ok
+                 FROM daily_usage"""
+        ).fetchone())
+        return {
+            "generatedAt": now,
+            "users": int(conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]),
+            "active7d": int(conn.execute(
+                "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 7 * 86400,)
+            ).fetchone()[0]),
+            "active15m": int(conn.execute(
+                "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 900,)
+            ).fetchone()[0]),
+            "launchesToday": int(conn.execute(
+                "SELECT COALESCE(SUM(launches),0) FROM daily_usage WHERE day=?",
+                (now_local.date().isoformat(),),
+            ).fetchone()[0]),
+            "totalLaunches": int(totals["launches"]),
+            "totalApplies": int(totals["applies"]),
+            "totalApplyOk": int(totals["apply_ok"]),
+            "timezone": "Asia/Shanghai",
+        }
+    finally:
+        conn.close()
 
 
 def _latest_complete_week_start(now=None):
@@ -3142,14 +3196,14 @@ def _admin_authorized(handler):
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "dfb-report/3.0"
 
-    def _reply_json(self, status, payload):
+    def _reply_json(self, status, payload, cache_control="no-store"):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(body) > MAX_ADMIN_RESPONSE_BODY:
             status = 500
             body = b'{"error":"response too large"}'
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -3279,6 +3333,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path.rstrip("/")
         if path == "/report/health":
             return self._reply_json(200, {"ok": True, "telemetry": bool(TELEMETRY_PEPPER)})
+        if path == "/report/public-stats":
+            return self._reply_json(200, _build_public_stats(), "public, max-age=15")
         if path == "/api/stats":
             if not _admin_authorized(self):
                 return self._reply_json(403, {"error": "forbidden"})
