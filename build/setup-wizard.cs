@@ -680,6 +680,17 @@ static class Installer {
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass,
         IntPtr tokenInformation, int tokenInformationLength, out int returnLength);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+    [DllImport("userenv.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+    [DllImport("userenv.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool DestroyEnvironmentBlock(IntPtr environment);
     [DllImport("advapi32.dll", SetLastError = true)]
     static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
     [DllImport("advapi32.dll", SetLastError = true)]
@@ -687,6 +698,36 @@ static class Installer {
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool CloseHandle(IntPtr handle);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct STARTUPINFO {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct PROCESS_INFORMATION {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
 
     public static string NormalizeSid(string value) {
         try {
@@ -781,8 +822,71 @@ static class Installer {
         return sum;
     }
 
+    static void StartWithDesktopShellToken(string exe, string originSid) {
+        IntPtr processHandle = IntPtr.Zero, tokenHandle = IntPtr.Zero, environment = IntPtr.Zero, integrity = IntPtr.Zero;
+        PROCESS_INFORMATION processInformation = new PROCESS_INFORMATION();
+        try {
+            IntPtr shellWindow = GetShellWindow();
+            if (shellWindow == IntPtr.Zero) throw new InvalidOperationException("未找到当前桌面的 Windows shell");
+            uint shellPid;
+            GetWindowThreadProcessId(shellWindow, out shellPid);
+            if (shellPid == 0) throw new InvalidOperationException("无法识别当前桌面的 Windows shell 进程");
+            using (Process shell = Process.GetProcessById((int)shellPid)) {
+                if (shell.SessionId != Process.GetCurrentProcess().SessionId)
+                    throw new UnauthorizedAccessException("Windows shell 不属于当前交互会话");
+            }
+            const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+            const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
+            const uint TOKEN_DUPLICATE = 0x0002;
+            const uint TOKEN_QUERY = 0x0008;
+            processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, shellPid);
+            if (processHandle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法打开当前桌面的 Windows shell");
+            if (!OpenProcessToken(processHandle, TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY, out tokenHandle) || tokenHandle == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取当前桌面的 Windows shell token");
+            string shellSid;
+            using (var shellIdentity = new WindowsIdentity(tokenHandle)) {
+                shellSid = shellIdentity.User == null ? null : shellIdentity.User.Value;
+            }
+            if (!string.Equals(NormalizeSid(originSid), NormalizeSid(shellSid), StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("当前桌面普通用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）");
+            const int TokenIntegrityLevel = 25;
+            const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
+            int integritySize;
+            GetTokenInformation(tokenHandle, TokenIntegrityLevel, IntPtr.Zero, 0, out integritySize);
+            if (integritySize <= IntPtr.Size) throw new UnauthorizedAccessException("无法读取当前桌面的 Windows shell 完整性级别");
+            integrity = Marshal.AllocHGlobal(integritySize);
+            if (!GetTokenInformation(tokenHandle, TokenIntegrityLevel, integrity, integritySize, out integritySize))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取当前桌面的 Windows shell 完整性级别");
+            IntPtr integritySid = Marshal.ReadIntPtr(integrity);
+            IntPtr countPointer = integritySid == IntPtr.Zero ? IntPtr.Zero : GetSidSubAuthorityCount(integritySid);
+            byte count = countPointer == IntPtr.Zero ? (byte)0 : Marshal.ReadByte(countPointer);
+            IntPtr ridPointer = count == 0 ? IntPtr.Zero : GetSidSubAuthority(integritySid, (uint)(count - 1));
+            if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID)
+                throw new UnauthorizedAccessException("当前桌面的 Windows shell 不是 medium token");
+            if (!CreateEnvironmentBlock(out environment, tokenHandle, false))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建普通用户启动环境");
+            STARTUPINFO startupInfo = new STARTUPINFO();
+            startupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            startupInfo.lpDesktop = "winsta0\\default";
+            const uint LOGON_WITH_PROFILE = 0x00000001;
+            const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+            var commandLine = new StringBuilder("\"" + exe + "\"");
+            if (!CreateProcessWithTokenW(tokenHandle, LOGON_WITH_PROFILE, exe, commandLine,
+                    CREATE_UNICODE_ENVIRONMENT, environment, Environment.SystemDirectory,
+                    ref startupInfo, out processInformation))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法以当前桌面普通用户启动软件");
+        } finally {
+            if (processInformation.hThread != IntPtr.Zero) CloseHandle(processInformation.hThread);
+            if (processInformation.hProcess != IntPtr.Zero) CloseHandle(processInformation.hProcess);
+            if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
+            if (integrity != IntPtr.Zero) Marshal.FreeHGlobal(integrity);
+            if (tokenHandle != IntPtr.Zero) CloseHandle(tokenHandle);
+            if (processHandle != IntPtr.Zero) CloseHandle(processHandle);
+        }
+    }
+
     // 安装器写受保护程序目录时处于 elevated token；asInvoker 启动器若直接继承该 token，
-    // 非提权 GUI 会按安全策略拒绝启动。交给当前桌面的 explorer shell 可回到交互用户 token。
+    // 会被启动器安全策略拒绝。使用已复验的当前桌面 medium token 精确启动安装后的启动器。
     public static string StartInstalledApplication(string dest, string originSid) {
         string identityError = CheckDesktopShellOrigin(originSid);
         if (identityError != null) throw new UnauthorizedAccessException(identityError);
@@ -791,15 +895,8 @@ static class Installer {
         if (TestNoLaunch(dest))
             return "测试模式跳过启动: " + exe;
         if (IsElevated()) {
-            string system = Environment.SystemDirectory;
-            if (string.IsNullOrEmpty(system)) throw new InvalidOperationException("系统未提供受信 System32 路径");
-            string explorer = Path.Combine(Directory.GetParent(system).FullName, "explorer.exe");
-            Process.Start(new ProcessStartInfo {
-                FileName = explorer,
-                Arguments = "\"" + exe + "\"",
-                UseShellExecute = true
-            });
-            return "已交给普通用户桌面启动";
+            StartWithDesktopShellToken(exe, originSid);
+            return "已由当前桌面普通用户启动";
         }
         Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true });
         return "已启动";

@@ -14,6 +14,11 @@ $testBase = Join-Path ([IO.Path]::GetTempPath()) ('DeltaForceBooster-Tests\insta
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERT: $Message" }
 }
+$setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
+Assert-True ($setupSource -match 'CreateProcessWithTokenW') 'elevated installer does not use the verified desktop medium token for run-after'
+Assert-True ($setupSource -match 'CreateEnvironmentBlock') 'run-after does not build the original desktop user environment'
+Assert-True ($setupSource -match 'StartWithDesktopShellToken\(exe, originSid\)') 'run-after is not connected to the desktop token launcher'
+Assert-True ($setupSource -notmatch 'FileName\s*=\s*explorer') 'run-after still delegates through explorer.exe and may inherit the elevated installer token'
 function Invoke-TestSetup([string[]]$Arguments, [string]$WorkingDirectory = '') {
   $start = @{ FilePath = $setup; ArgumentList = $Arguments; Wait = $true; PassThru = $true }
   if ($WorkingDirectory) { $start.WorkingDirectory = $WorkingDirectory }
