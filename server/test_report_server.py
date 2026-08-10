@@ -597,6 +597,12 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(dt.date(2026, 7, 27), SERVER._parse_week_start("2026-07-27"))
         known_now = int(dt.datetime(2026, 8, 10, 12, tzinfo=dt.timezone.utc).timestamp())
         self.assertEqual(dt.date(2026, 8, 3), SERVER._parse_week_start(None, known_now))
+        # 2026-08-09 23:53 UTC 已是台北 2026-08-10 周一早上；默认周报应切到 8/3–8/9。
+        taipei_monday = int(dt.datetime(2026, 8, 9, 23, 53, tzinfo=dt.timezone.utc).timestamp())
+        self.assertEqual(dt.date(2026, 8, 3), SERVER._parse_week_start(None, taipei_monday))
+        # 台北周日仍属于尚未结束的本周，最近完整周保持 7/27–8/2。
+        taipei_sunday = int(dt.datetime(2026, 8, 9, 15, 59, tzinfo=dt.timezone.utc).timestamp())
+        self.assertEqual(dt.date(2026, 7, 27), SERVER._parse_week_start(None, taipei_sunday))
         with self.assertRaises(ValueError):
             SERVER._parse_week_start("2026-07-28")
         with self.assertRaises(ValueError):

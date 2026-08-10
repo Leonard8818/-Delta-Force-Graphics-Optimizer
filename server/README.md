@@ -55,7 +55,8 @@ Content-Type: application/json
 项目集合或异常指标返回 `409` / `422`。同一匿名设备每天最多 80 个调优事件。
 实验运行独立写入 `tuning_*` 表，不混入普通 `performance_sessions`。
 
-私有周报 API 为 `GET /api/weekly`，可按完整周、版本、真实显卡和设备类型筛选；
+私有周报 API 为 `GET /api/weekly`，默认完整周按 `Asia/Taipei (UTC+8)` 的周一至周日计算，
+并可按版本、真实显卡和设备类型筛选；
 `POST /api/weekly/snapshot` 固化历史周报。两者都要求 `X-DFB-Admin-Token`。自动调优结论要求
 每个实验至少 3 次稳定基线、3 次当前对照、2 次候选有效运行，环境和设置摘要一致、顺序受控且
 候选全量成功；每组至少覆盖 20 台独立匿名设备才发布胜出率、性能变化与回滚率，同一设备每组

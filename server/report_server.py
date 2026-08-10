@@ -1880,7 +1880,11 @@ def _build_stats(now=None, days=30):
 
 def _latest_complete_week_start(now=None):
     now = int(time.time() if now is None else now)
-    today = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+    # Admin 周报按官网运营所在地（Asia/Taipei，UTC+8）的自然周展示。
+    # 例如台北时间周一 00:00 后，应立即把刚结束的周一至周日作为“最近完整周”，
+    # 不能再等到 UTC 周一，否则周一早上会错误地落后整整一周。
+    report_timezone = dt.timezone(dt.timedelta(hours=8))
+    today = dt.datetime.fromtimestamp(now, report_timezone).date()
     return today - dt.timedelta(days=today.weekday() + 7)
 
 

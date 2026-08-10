@@ -810,8 +810,9 @@ static class Installer {
             string launcher = Path.Combine(root, "启动优化工具.exe");
             string gui = Path.Combine(root, "gui", "DeltaForceBooster-GUI.ps1");
             string engine = Path.Combine(root, "scripts", "delta-booster.ps1");
-            string tuning = Path.Combine(root, "scripts", "tuning-experiment.ps1");
-            foreach (string required in new string[] { identity, launcher, gui, engine, tuning }) {
+            // install.identity 先于自动调优模块存在。身份文件已绑定启动器哈希，随后还会
+            // 校验整棵 Program Files ACL；不能把后来新增的 tuning 模块当历史身份的一部分。
+            foreach (string required in new string[] { identity, launcher, gui, engine }) {
                 EnsureNoReparseExistingPath(required);
                 if (!File.Exists(required)) { reason = "缺少产品身份文件：" + required; return false; }
             }
@@ -828,6 +829,16 @@ static class Installer {
             launcherSha256 = lines[2].Substring("LauncherSha256=".Length);
             if (!IsSha256(launcherSha256) || !string.Equals(FileSha256(launcher), launcherSha256, StringComparison.OrdinalIgnoreCase)) {
                 reason = "启动器与产品身份文件不匹配"; return false;
+            }
+            FileVersionInfo vi = FileVersionInfo.GetVersionInfo(launcher);
+            Version launcherVersion, setupVersion, guiVersion;
+            if (!string.Equals(vi.ProductName, InstallProductId, StringComparison.Ordinal) ||
+                !string.Equals(vi.CompanyName, "DeltaForceBooster 开源项目", StringComparison.Ordinal) ||
+                !TryNormalizeVersion(vi.ProductVersion, out launcherVersion) ||
+                !TryNormalizeVersion(Program.Version, out setupVersion) ||
+                !TryReadGuiVersion(ReadTextPrefix(gui, 65536), out guiVersion) ||
+                launcherVersion.CompareTo(guiVersion) > 0 || guiVersion.CompareTo(setupVersion) > 0) {
+                reason = "启动器与 GUI 产品版本不匹配"; return false;
             }
             return true;
         } catch (Exception ex) { reason = "产品身份校验失败：" + ex.Message; return false; }
@@ -961,10 +972,19 @@ static class Installer {
             }
             EnsureNoReparseExistingPath(full);
             string launcher = Path.Combine(full, "启动优化工具.exe");
+            string fallbackLauncher = Path.Combine(full, "启动优化工具.bat");
             string gui = Path.Combine(full, "gui", "DeltaForceBooster-GUI.ps1");
+            string icon = Path.Combine(full, "gui", "app.ico");
             string engine = Path.Combine(full, "scripts", "delta-booster.ps1");
-            string tuning = Path.Combine(full, "scripts", "tuning-experiment.ps1");
-            foreach (string required in new string[] { launcher, gui, engine, tuning }) {
+            string diagnose = Path.Combine(full, "scripts", "diagnose.ps1");
+            string updater = Path.Combine(full, "scripts", "updater.ps1");
+            string uninstall = Path.Combine(full, "uninstall.ps1");
+            // v0.20 才加入 tuning-experiment.ps1 与 install.identity，二者不能反过来作为
+            // v0.18/v0.19 迁移的前置条件。旧安装改用这些历来随安装包分发的运行入口，
+            // 再交叉核对启动器版本、GUI 版本和多个脚本签名，不能只凭目录名或单个文件放行。
+            foreach (string required in new string[] {
+                launcher, fallbackLauncher, gui, icon, engine, diagnose, updater, uninstall
+            }) {
                 EnsureNoReparseExistingPath(required);
                 if (!File.Exists(required)) { reason = "缺少旧版产品文件：" + required; return false; }
             }
@@ -975,12 +995,44 @@ static class Installer {
             }
             string guiHead = ReadTextPrefix(gui, 65536);
             string engineHead = ReadTextPrefix(engine, 16384);
-            if (!guiHead.Contains("DeltaForceBooster 图形界面") || !guiHead.Contains("$script:GuiVersion") ||
-                !engineHead.Contains("DeltaForceBooster 核心脚本")) {
+            string diagnoseHead = ReadTextPrefix(diagnose, 8192);
+            string updaterHead = ReadTextPrefix(updater, 8192);
+            string uninstallHead = ReadTextPrefix(uninstall, 8192);
+            string fallbackHead = ReadTextPrefix(fallbackLauncher, 4096);
+            if (!guiHead.Contains("DeltaForceBooster 图形界面") ||
+                !engineHead.Contains("DeltaForceBooster 核心脚本") ||
+                !diagnoseHead.Contains("DeltaForceBooster 诊断脚本") ||
+                !updaterHead.Contains("DeltaForceBooster 更新检查模块") ||
+                !uninstallHead.Contains("DeltaForceBooster 卸载") ||
+                !fallbackHead.Contains("DeltaForceBooster launcher") ||
+                !fallbackHead.Contains("gui\\DeltaForceBooster-GUI.ps1")) {
                 reason = "旧版脚本产品身份不匹配"; return false;
+            }
+            Version launcherVersion, setupVersion, guiVersion;
+            if (!TryNormalizeVersion(vi.ProductVersion, out launcherVersion) ||
+                !TryNormalizeVersion(Program.Version, out setupVersion) ||
+                !TryReadGuiVersion(guiHead, out guiVersion) || launcherVersion.CompareTo(guiVersion) > 0 ||
+                guiVersion.CompareTo(setupVersion) >= 0) {
+                reason = "启动器版本不是早于本安装包的旧版本"; return false;
             }
             return true;
         } catch (Exception ex) { reason = ex.Message; return false; }
+    }
+
+    static bool TryNormalizeVersion(string value, out Version normalized) {
+        normalized = null;
+        Version parsed;
+        if (string.IsNullOrEmpty(value) || !Version.TryParse(value, out parsed)) return false;
+        normalized = new Version(parsed.Major, parsed.Minor,
+            parsed.Build < 0 ? 0 : parsed.Build, parsed.Revision < 0 ? 0 : parsed.Revision);
+        return true;
+    }
+
+    static bool TryReadGuiVersion(string guiText, out Version normalized) {
+        normalized = null;
+        var match = System.Text.RegularExpressions.Regex.Match(guiText ?? "",
+            @"(?m)^\$script:GuiVersion\s*=\s*'([0-9]+(?:\.[0-9]+){1,3})'\s*$");
+        return match.Success && TryNormalizeVersion(match.Groups[1].Value, out normalized);
     }
 
     public static void ValidateLegacyMigrationSource(string root) {
@@ -997,7 +1049,15 @@ static class Installer {
             int total = 0, n;
             while (total < buffer.Length && (n = fs.Read(buffer, total, buffer.Length - total)) > 0) total += n;
             EnsureNoReparseExistingPath(path);
-            return new UTF8Encoding(false, true).GetString(buffer, 0, total);
+            // 固定字节边界可能正好切在一个中文 UTF-8 字符中间。Decoder 的非终结 flush
+            // 会保留该尾部残片，同时仍对前缀中的真实坏编码抛错；读完整文件时则严格收尾。
+            var encoding = new UTF8Encoding(false, true);
+            Decoder decoder = encoding.GetDecoder();
+            char[] chars = new char[encoding.GetMaxCharCount(total)];
+            int bytesUsed, charsUsed; bool completed;
+            decoder.Convert(buffer, 0, total, chars, 0, chars.Length, total == fs.Length,
+                out bytesUsed, out charsUsed, out completed);
+            return new string(chars, 0, charsUsed);
         }
     }
 

@@ -63,9 +63,9 @@
     <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
     <a class="cta alt" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer">GitHub 仓库</a>
   </p>
-  <p class="ver">当前版本 v0.20.0 · 仅支持 Windows 10/11 · 旧版本已停止支持</p>
+  <p class="ver">当前版本 v0.20.1 · 仅支持 Windows 10/11 · 旧版本已停止支持</p>
   <div class="downloads" aria-label="最新版下载">
-    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.20.0/DeltaForceBooster-Setup-v0.20.0.exe"><strong>v0.20.0</strong><span>最新版</span></a>
+    <a class="download-link" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/releases/download/v0.20.1/DeltaForceBooster-Setup-v0.20.1.exe"><strong>v0.20.1</strong><span>最新版</span></a>
   </div>
 
   <div class="card">
@@ -84,7 +84,14 @@
   <div class="card">
     <h2>更新记录</h2>
     <div class="release">
-      <div class="release-ver">v0.20.0<small>2026-08-10</small><span class="latest">LATEST</span></div>
+      <div class="release-ver">v0.20.1<small>2026-08-10</small><span class="latest">LATEST</span></div>
+      <ul>
+        <li>修复从 v0.19.x 等旧安装目录升级时，安装器错误要求旧版必须包含新版本才新增的脚本，导致更新安装失败的问题。</li>
+        <li>旧版配置、自存方案和备份继续保留迁移；此前更新失败的用户可直接下载安装 v0.20.1 恢复正常启动。</li>
+      </ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.20.0<small>2026-08-10</small></div>
       <ul>
         <li>新增「自动寻找最佳配置 Beta」：先完成三次基线，再按固定规则测试三个低风险、无需重启的优化组；使用平均帧率、1% 低帧率、P99 帧时间、卡顿、温度和功耗判断结果，收益不明确或出现负面变化时只回滚本轮候选。</li>
         <li>实验会保存进度并校验游戏、显卡、驱动、画质环境与采样质量；游戏退出、切出前台、场景或设置变化等样本不会参与结论，意外关闭后可安全继续或恢复。</li>

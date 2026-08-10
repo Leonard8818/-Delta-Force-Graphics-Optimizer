@@ -542,16 +542,16 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @(
-  '新增「自动寻找最佳配置 Beta」：三次基线、低风险 A/B 交替测试、定向回滚和最终安全复核。'
-  '修复安装更新、备份还原、权限边界、多显卡识别、性能采样与诊断历史等已知问题。'
-  '本版要求升级，官网仅提供 v0.20.0 最新安装包。'
+  '修复从 v0.19.x 等旧安装目录更新时，安装器误判缺少新版本文件并中止的问题。'
+  '旧版配置、方案与备份继续保留迁移；更新失败的用户可直接安装本版恢复正常启动。'
+  '本版要求升级，官网仅提供 v0.20.1 最新安装包。'
 ) -join "`n"
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂
   version  = "$ver"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.20.0'
+  minimumSupportedVersion = '0.20.1'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'
