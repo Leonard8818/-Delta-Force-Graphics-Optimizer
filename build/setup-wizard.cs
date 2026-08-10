@@ -64,6 +64,13 @@ static class Program {
 
     [STAThread]
     static void Main(string[] args) {
+        // The launcher deliberately starts PowerShell with the product directory as its working
+        // directory.  An updater started by that GUI inherits the same CWD; even after /waitpid
+        // observes the GUI exit, this setup process would then keep the directory open itself and
+        // Directory.Move would fail with ERROR_SHARING_VIOLATION.  Move to a trusted neutral
+        // directory before doing anything that can hand off/elevate or switch the install tree.
+        try { Environment.CurrentDirectory = Environment.SystemDirectory; }
+        catch (Exception) { }
         string dir = null, logFile = null, renderDir = null, checkDir = null;
         bool silent = false, runAfter = false;
         bool migrationPrepared = false;
@@ -233,7 +240,8 @@ static class Program {
                 FileName = Assembly.GetExecutingAssembly().Location,
                 Arguments = string.Join(" ", quoted),
                 UseShellExecute = true,
-                Verb = "runas"
+                Verb = "runas",
+                WorkingDirectory = Environment.SystemDirectory
             });
             return true;
         } catch (Exception) { return false; }
@@ -1151,6 +1159,37 @@ static class Installer {
         }
     }
 
+    // A normal performance capture is hosted in the GUI runspace but PresentMon itself is a child
+    // process.  Environment.Exit terminates the GUI, not that child; older clients also launched it
+    // with the product root as CWD, which keeps the directory locked after /waitpid succeeds.
+    // Only stop the exact binary inside the already-validated product tree.  Same-named tools from
+    // any other path are never touched; if one of those still locks the directory, the transaction
+    // fails before the old tree is moved and therefore remains fail-closed.
+    static int StopInstalledPresentMon(string installRoot) {
+        string expected = Path.GetFullPath(Path.Combine(installRoot, "tools", "PresentMon.exe"));
+        if (!File.Exists(expected)) return 0;
+        int stopped = 0;
+        foreach (Process process in Process.GetProcessesByName("PresentMon")) {
+            using (process) {
+                string actual;
+                try {
+                    if (process.HasExited || process.MainModule == null) continue;
+                    actual = Path.GetFullPath(process.MainModule.FileName);
+                } catch (Exception) { continue; }
+                if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) continue;
+                try {
+                    process.Kill();
+                    if (!process.WaitForExit(10000))
+                        throw new IOException("旧版性能采样进程未能在 10 秒内退出：" + expected);
+                    stopped++;
+                } catch (Exception ex) {
+                    throw new IOException("无法停止旧版性能采样进程，安装目录尚未改动：" + expected, ex);
+                }
+            }
+        }
+        return stopped;
+    }
+
     // 清理时遇到重解析点只删除链接本身，永不递归进入其目标。
     static void SafeDeleteTree(string root) {
         if (!Directory.Exists(root)) return;
@@ -1444,6 +1483,10 @@ static class Installer {
                 // 明确白名单数据迁到 LocalAppData，旧目录随后仅原子改名保留。
             }
             HardenInstalledTree(stage);
+
+            int stoppedPresentMon = StopInstalledPresentMon(full);
+            if (stoppedPresentMon > 0)
+                LastMigrationNote = "更新前已停止旧版性能采样进程：" + stoppedPresentMon + " 个";
 
             string injectedFailure = TestInstallFailureAt(full);
             if (injectedFailure == "after-extract") throw new IOException("测试注入：after-extract");

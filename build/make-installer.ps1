@@ -503,7 +503,7 @@ $manifestObj = [ordered]@{
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂
   version  = "$ver"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.20.3'
+  minimumSupportedVersion = '0.20.4'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

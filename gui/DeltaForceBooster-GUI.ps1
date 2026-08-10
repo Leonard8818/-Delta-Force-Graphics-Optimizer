@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.20.3
+  DeltaForceBooster 图形界面 — v0.20.4
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.20.4：修复了一些已知问题。
   v0.20.3：修复了一些已知问题。
   v0.20.2：修复了一些已知问题。
   v0.20.1：修复从 v0.19.x 等旧安装目录更新时，安装器错误要求旧版必须包含
@@ -228,7 +229,7 @@ function Move-LegacyUserDataForward {
 Move-LegacyUserDataForward
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.20.3'
+$script:GuiVersion = '0.20.4'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -602,7 +603,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.20.3 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.20.4 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1023,7 +1024,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.20.3 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.20.4 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2299,7 +2300,9 @@ $script:PerformanceCaptureWorker = {
   $started = Get-Date
   $tmp = Join-Path ([IO.Path]::GetTempPath()) "dfb-presentmon-$GamePid-$([guid]::NewGuid().ToString('N')).csv"
   try {
-    $pm = Start-Process -FilePath $PresentMon -WindowStyle Hidden -PassThru -ArgumentList @(
+    # PresentMon must not inherit the product root as CWD.  A capture can outlive an abrupt GUI
+    # exit; inheriting that directory would keep it locked and make the transactional updater fail.
+    $pm = Start-Process -FilePath $PresentMon -WorkingDirectory ([Environment]::SystemDirectory) -WindowStyle Hidden -PassThru -ArgumentList @(
       '--process_id', "$GamePid", '--output_file', "`"$tmp`"", '--timed', "$SampleSeconds",
       '--terminate_after_timed', '--terminate_on_proc_exit', '--no_console_stats',
       '--session_name', "DFB-$GamePid-$([guid]::NewGuid().ToString('N'))")
@@ -4338,7 +4341,9 @@ $script:SetupLogPath = Join-Path $script:UserConfigDir 'update-setup.log'
 # SHA256 与大小同时传入，安装器在提权后重新从文件句柄校验，封闭下载后的替换窗口。
 function Invoke-BoosterSetupRun([string]$SetupFile, [string]$TargetDir, [string]$LogFile,
                                 [string]$Sha256, [long]$Size) {
-  Start-Process -FilePath $SetupFile -PassThru -ArgumentList @(
+  # Do not pass the product root as the setup process CWD: a process cannot rename its own CWD.
+  # The installer also resets this itself so updates launched by older GUIs receive the same fix.
+  Start-Process -FilePath $SetupFile -WorkingDirectory ([Environment]::SystemDirectory) -PassThru -ArgumentList @(
     '/silent', "/dir=`"$TargetDir`"", "/waitpid=$PID", '/runafter', "/log=`"$LogFile`"",
     "/sha256=$Sha256", "/size=$Size")
 }
@@ -4584,7 +4589,7 @@ function Show-UpdateDialog($UpdInfo) {
     $script:UpdUi.CurText.Text += " · 此版本已停止支持，需升级后继续使用"
   }
   if ($UpdInfo.CanInline) {
-    $script:UpdUi.InlineNote.Text = '「立即更新」全程自动：从官方源（df.ltz88.cn）下载 → 双重校验完整性 → 事务安装 → 自动打开新版本。旧版若仍在下载文件夹，会自动迁移到 Program Files；自存方案、备份和运行状态会保留。'
+    $script:UpdUi.InlineNote.Visibility = 'Collapsed'
   } else {
     # 清单缺 sha256/size 或 setupUrl 过不了白名单安检：内置更新不可用，退回旧行为并留痕
     $script:UpdUi.UpdBtn.Visibility = 'Collapsed'

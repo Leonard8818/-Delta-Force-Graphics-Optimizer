@@ -24,6 +24,13 @@ $ast = [Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$tokens
 Assert-True ($errors.Count -eq 0) ('GUI PowerShell AST parse failed: ' + (($errors | ForEach-Object Message) -join '; '))
 $raw = [IO.File]::ReadAllText($guiPath, [Text.Encoding]::UTF8)
 
+Assert-True (-not $raw.Contains('「立即更新」全程自动：')) 'obsolete inline-update explanation is still shown'
+Assert-True $raw.Contains("`$script:UpdUi.InlineNote.Visibility = 'Collapsed'") 'inline-update explanation row is not collapsed'
+Assert-True ($raw -match 'Start-Process\s+-FilePath\s+\$PresentMon\s+-WorkingDirectory\s+\(\[Environment\]::SystemDirectory\)') `
+  'PresentMon does not use the trusted neutral working directory'
+Assert-True ($raw -match 'Start-Process\s+-FilePath\s+\$SetupFile\s+-WorkingDirectory\s+\(\[Environment\]::SystemDirectory\)') `
+  'inline setup still inherits the product working directory'
+
 function Find-GuiFunction([string]$Name) {
   $matches = @($ast.FindAll({
     param($node)

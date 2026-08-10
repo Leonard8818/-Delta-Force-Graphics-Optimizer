@@ -14,8 +14,10 @@ $testBase = Join-Path ([IO.Path]::GetTempPath()) ('DeltaForceBooster-Tests\insta
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERT: $Message" }
 }
-function Invoke-TestSetup([string[]]$Arguments) {
-  $p = Start-Process -FilePath $setup -ArgumentList $Arguments -Wait -PassThru
+function Invoke-TestSetup([string[]]$Arguments, [string]$WorkingDirectory = '') {
+  $start = @{ FilePath = $setup; ArgumentList = $Arguments; Wait = $true; PassThru = $true }
+  if ($WorkingDirectory) { $start.WorkingDirectory = $WorkingDirectory }
+  $p = Start-Process @start
   $p.ExitCode
 }
 function Set-TestPaths([string]$Case, [string]$ProgramFiles) {
@@ -52,6 +54,35 @@ function Test-UpdaterHandleSharing {
     if ($writer) { $writer.Dispose() }
     if ($helper) { $helper.Dispose() }
     if ($parent) { $parent.Dispose() }
+  }
+}
+
+function New-TestLockingPresentMon([string]$Path) {
+  $windows = Split-Path -Parent ([Environment]::SystemDirectory)
+  $csc = Join-Path $windows 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+  if (-not (Test-Path -LiteralPath $csc -PathType Leaf)) {
+    $csc = Join-Path $windows 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
+  }
+  Assert-True (Test-Path -LiteralPath $csc -PathType Leaf) 'system csc missing for PresentMon lock fixture'
+  $source = [IO.Path]::ChangeExtension($Path, '.fixture.cs')
+  $code = @'
+using System;
+using System.IO;
+using System.Threading;
+static class PresentMonLockFixture {
+    static void Main(string[] args) {
+        Environment.CurrentDirectory = Path.GetFullPath(args[0]);
+        Thread.Sleep(Timeout.Infinite);
+    }
+}
+'@
+  if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+  [IO.File]::WriteAllText($source, $code, (New-Object Text.UTF8Encoding($false)))
+  try {
+    & $csc /nologo /target:winexe /optimize+ "/out:$Path" $source
+    Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Path -PathType Leaf)) 'PresentMon lock fixture compile failed'
+  } finally {
+    Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -162,6 +193,70 @@ try {
     $integrityError = [string]$validateFiles.Invoke($null, $invokeArgs)
     Assert-True ($integrityError -like 'scripts\tuning-experiment.ps1*完整性校验失败*') 'launcher accepted a modified tuning rules module'
   } finally { [IO.File]::WriteAllBytes($tuningModule, $tuningBytes) }
+
+  # The released launcher sets the GUI CWD to the product root.  Old GUIs pass that CWD to setup,
+  # and an ordinary performance worker can leave an orphaned product PresentMon with the same CWD.
+  # The new installer must release its own inherited lock, stop only that verified product helper,
+  # wait for it, and then complete the directory transaction.
+  $productPresentMon = $null
+  $oldGui = $null
+  $productPresentMonPath = Join-Path $dest 'tools\PresentMon.exe'
+  New-TestLockingPresentMon $productPresentMonPath
+  try {
+    $productPresentMon = Start-Process -FilePath $productPresentMonPath -WorkingDirectory $dest `
+      -ArgumentList "`"$dest`"" -PassThru
+    $oldGui = Start-Process -FilePath (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') `
+      -WorkingDirectory $dest -WindowStyle Hidden -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 2') -PassThru
+    Start-Sleep -Milliseconds 300
+    Assert-True (-not $productPresentMon.HasExited) 'product PresentMon lock fixture exited early'
+    Assert-True (-not $oldGui.HasExited) 'old GUI waitpid fixture exited before setup started'
+    $productLockLog = Join-Path $case 'product-presentmon-lock.log'
+    $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", "/waitpid=$($oldGui.Id)", "/log=`"$productLockLog`"") $dest
+    Assert-True ($code -eq 0) "product PresentMon/CWD update exit=$code"
+    Assert-True ($oldGui.HasExited) 'installer did not wait for the old GUI fixture to exit'
+    Assert-True ($productPresentMon.WaitForExit(5000)) 'installer did not stop product PresentMon'
+    Assert-True ((Get-Content $productLockLog -Raw) -like '*更新前已停止旧版性能采样进程：1 个*') 'installer did not log product PresentMon cleanup'
+    Assert-True ((Get-FileHash $productPresentMonPath -Algorithm SHA256).Hash -eq
+      (Get-FileHash (Join-Path $root 'tools\PresentMon.exe') -Algorithm SHA256).Hash) 'update did not restore released PresentMon payload'
+  } finally {
+    if ($oldGui -and -not $oldGui.HasExited) { $oldGui.Kill(); $oldGui.WaitForExit() }
+    if ($oldGui) { $oldGui.Dispose() }
+    if ($productPresentMon -and -not $productPresentMon.HasExited) {
+      $productPresentMon.Kill(); $productPresentMon.WaitForExit()
+    }
+    if ($productPresentMon) { $productPresentMon.Dispose() }
+  }
+
+  # A same-named executable outside the verified product path is not ours to terminate.  Give it
+  # the product root as CWD to create a permanent unknown lock: install must fail before moving the
+  # old tree, leave the foreign process alive, and preserve all existing files/user data.
+  [IO.Directory]::CreateDirectory((Join-Path $case 'external')) | Out-Null
+  $externalPresentMonPath = Join-Path $case 'external\PresentMon.exe'
+  New-TestLockingPresentMon $externalPresentMonPath
+  [IO.Directory]::CreateDirectory((Join-Path $dest 'config')) | Out-Null
+  $foreignMarker = Join-Path $dest 'config\foreign-lock-marker.json'
+  [IO.File]::WriteAllText($foreignMarker, '{"keep":true}')
+  $beforeForeignLock = (Get-FileHash (Join-Path $dest '启动优化工具.exe') -Algorithm SHA256).Hash
+  $externalPresentMon = $null
+  try {
+    $externalPresentMon = Start-Process -FilePath $externalPresentMonPath -WorkingDirectory $dest `
+      -ArgumentList "`"$dest`"" -PassThru
+    Start-Sleep -Milliseconds 300
+    Assert-True (-not $externalPresentMon.HasExited) 'external PresentMon lock fixture exited early'
+    $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", "/log=`"$(Join-Path $case 'external-presentmon-lock.log')`"")
+    Assert-True ($code -eq 1) "foreign PresentMon lock was not fail-closed (exit=$code)"
+    Assert-True (-not $externalPresentMon.HasExited) 'installer terminated a same-named process outside the product path'
+    Assert-True ((Get-FileHash (Join-Path $dest '启动优化工具.exe') -Algorithm SHA256).Hash -eq $beforeForeignLock) 'foreign lock changed old launcher'
+    Assert-True ((Test-Path -LiteralPath $foreignMarker -PathType Leaf) -and
+      ([IO.File]::ReadAllText($foreignMarker) -eq '{"keep":true}')) 'foreign lock lost existing user data'
+    Assert-True (@(Get-ChildItem -LiteralPath $pf -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-*').Count -eq 0) `
+      'foreign lock left a transaction directory'
+  } finally {
+    if ($externalPresentMon -and -not $externalPresentMon.HasExited) {
+      $externalPresentMon.Kill(); $externalPresentMon.WaitForExit()
+    }
+    if ($externalPresentMon) { $externalPresentMon.Dispose() }
+  }
 
   # 正式 v0.19.4 已有 install.identity，但 payload 还没有 tuning-experiment.ps1。
   # 该受保护 Program Files 形态必须能凭 identity→launcher hash 和版本链原地升级。
