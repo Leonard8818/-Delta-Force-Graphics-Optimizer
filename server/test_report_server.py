@@ -332,6 +332,8 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(8 if key == "active15m" else 7, len(values))
             self.assertTrue(all(isinstance(value, int) and value >= 0 for value in values))
         self.assertEqual(public["users"], public["trends"]["users"][-1])
+        self.assertEqual(public["active7d"], public["trends"]["active7d"][-1])
+        self.assertEqual(public["active15m"], public["trends"]["active15m"][-1])
         self.assertEqual(public["launchesToday"], public["trends"]["launchesToday"][-1])
         self.assertEqual(public["totalLaunches"], public["trends"]["totalLaunches"][-1])
         self.assertEqual(public["totalApplies"], public["trends"]["totalApplies"][-1])

@@ -2070,19 +2070,31 @@ def _build_public_stats(now=None):
             trends["totalApplies"].append(running_applies)
             trends["totalApplyOk"].append(running_apply_ok)
 
+        users = int(conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0])
+        active_7d = int(conn.execute(
+            "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 7 * 86400,)
+        ).fetchone()[0])
+        active_15m = int(conn.execute(
+            "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 900,)
+        ).fetchone()[0])
+        launches_today = int(conn.execute(
+            "SELECT COALESCE(SUM(launches),0) FROM daily_usage WHERE day=?",
+            (today.isoformat(),),
+        ).fetchone()[0])
+        trends["users"][-1] = users
+        trends["active7d"][-1] = active_7d
+        trends["active15m"][-1] = active_15m
+        trends["launchesToday"][-1] = launches_today
+        trends["totalLaunches"][-1] = int(totals["launches"])
+        trends["totalApplies"][-1] = int(totals["applies"])
+        trends["totalApplyOk"][-1] = int(totals["apply_ok"])
+
         return {
             "generatedAt": now,
-            "users": int(conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]),
-            "active7d": int(conn.execute(
-                "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 7 * 86400,)
-            ).fetchone()[0]),
-            "active15m": int(conn.execute(
-                "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 900,)
-            ).fetchone()[0]),
-            "launchesToday": int(conn.execute(
-                "SELECT COALESCE(SUM(launches),0) FROM daily_usage WHERE day=?",
-                (today.isoformat(),),
-            ).fetchone()[0]),
+            "users": users,
+            "active7d": active_7d,
+            "active15m": active_15m,
+            "launchesToday": launches_today,
             "totalLaunches": int(totals["launches"]),
             "totalApplies": int(totals["applies"]),
             "totalApplyOk": int(totals["apply_ok"]),
