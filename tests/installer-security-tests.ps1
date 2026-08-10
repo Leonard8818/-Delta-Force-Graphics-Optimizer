@@ -129,6 +129,12 @@ try {
   } | Sort-Object)
   $payloadDiff = @(Compare-Object $expectedPayload $actualPayload)
   Assert-True ($payloadDiff.Count -eq 0) ('installed payload differs from whitelist: ' + ($payloadDiff | Out-String))
+  $uninstallText = [IO.File]::ReadAllText((Join-Path $dest 'uninstall.ps1'))
+  Assert-True ($uninstallText -notmatch '是否保留优化备份') 'ordinary uninstall still offers protected-backup deletion'
+  Assert-True ($uninstallText -notmatch 'Remove-TreeNoFollow\s+\$protectedBackup') 'ordinary uninstall can still recursively delete protected backups'
+  Assert-True ($uninstallText -notmatch '\$backupDeleteFailed|已按选择清理 ProgramData') 'obsolete protected-backup deletion branch remains'
+  Assert-True ($uninstallText -match '普通卸载始终保留受保护备份' -and
+    $uninstallText -match '重新安装本工具后仍可点击「还原设置」') 'uninstall does not explain retained-backup recovery'
   $lines = [IO.File]::ReadAllLines($identity)
   $sha = (Get-FileHash (Join-Path $dest '启动优化工具.exe') -Algorithm SHA256).Hash
   Assert-True ($lines.Count -eq 3 -and $lines[2] -eq "LauncherSha256=$sha") 'identity/launcher hash mismatch'

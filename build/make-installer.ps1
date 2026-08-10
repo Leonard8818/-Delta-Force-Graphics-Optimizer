@@ -117,9 +117,9 @@ $installIdentity = "SchemaVersion=1`nProductId=DeltaForceBooster`nLauncherSha256
 # 全程不用 WScript.Shell：它按系统 ANSI 代码页转字符串，非中文代码页（如 1252）的系统上
 # 中文全变 "?"。消息框走 .NET WinForms（原生 Unicode）。
 $uninstallPs = @'
-# DeltaForceBooster 卸载：①可选先按备份还原系统改动（卸载后工具就没了，这是最后机会）
+# DeltaForceBooster 卸载：①可选先按备份还原系统改动；跳过或失败时仍永久保留备份
 # ②无条件清理 PowerPlanLock 计划任务（SYSTEM 每分钟重设电源方案，残留后没人能停）
-# ③删快捷方式与完整程序目录；受保护备份位于 ProgramData，用户可选择保留供重装后还原
+# ③删快捷方式与完整程序目录；受保护备份位于 ProgramData，普通卸载始终保留供重装后还原
 param([string]$UserSid, [string]$UserLocalAppData)
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
@@ -150,38 +150,6 @@ try {
 if (-not $identityOk) {
   [Windows.Forms.MessageBox]::Show('安装目录产品身份校验失败，卸载已取消。请从系统“已安装的应用”确认正确版本。', 'DeltaForceBooster 卸载', 'OK', 'Warning') | Out-Null
   exit 1
-}
-function Test-ExactProtectedEntry([string]$Path, [bool]$Directory) {
-  try {
-    $sections = [Security.AccessControl.AccessControlSections]'Owner, Access'
-    $acl = $(if ($Directory) { (New-Object IO.DirectoryInfo($Path)).GetAccessControl($sections) }
-             else { (New-Object IO.FileInfo($Path)).GetAccessControl($sections) })
-    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($owner -notin @('S-1-5-18','S-1-5-32-544') -or -not $acl.AreAccessRulesProtected) { return $false }
-    $adminFull = $false; $systemFull = $false
-    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-      $sid = $rule.IdentityReference.Value
-      if ($sid -notin @('S-1-5-18','S-1-5-32-544')) { return $false }
-      if ($rule.AccessControlType -eq 'Allow' -and (($rule.FileSystemRights -band 'FullControl') -eq 'FullControl')) {
-        if ($sid -eq 'S-1-5-18') { $systemFull = $true }
-        if ($sid -eq 'S-1-5-32-544') { $adminFull = $true }
-      }
-    }
-    ($adminFull -and $systemFull)
-  } catch { $false }
-}
-function Test-ExactProtectedTree([string]$Path) {
-  try {
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        -not (Test-ExactProtectedEntry $Path ([bool]$item.PSIsContainer))) { return $false }
-    if ($item.PSIsContainer) {
-      foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
-        if (-not (Test-ExactProtectedTree $child.FullName)) { return $false }
-      }
-    }
-    $true
-  } catch { $false }
 }
 function Test-ProtectedProgramEntry([string]$Path, [bool]$Directory) {
   try {
@@ -266,7 +234,7 @@ $hasBackup = [bool](@(
   Get-Item $legacyRoots -ErrorAction SilentlyContinue
 ).Count)
 if ($hasBackup) {
-  if (Ask-YesNo "卸载前是否先还原本工具做过的系统改动？`n`n还没「还原设置」过的话请选「是」——卸载后工具就没了，这是最后一次自动还原的机会。") {
+  if (Ask-YesNo "卸载前是否先还原本工具做过的系统改动？`n`n建议选择「是」。如果暂不还原，受保护备份仍会保留，之后重新安装本工具也可继续还原。") {
     $p = Start-Process $psExe -Wait -PassThru -ArgumentList @(
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$engine`"", '-Restore',
       '-UserSid', "`"$UserSid`"", '-UserLocalAppData', "`"$UserLocalAppData`"")
@@ -300,9 +268,9 @@ foreach ($taskName in $taskNames) {
   if ($LASTEXITCODE -ne 0) { $taskFailed = $true } else { $taskDeleted = $true }
 }
 $taskRemoved = $(if ($taskFailed) { $false } elseif ($taskDeleted) { $true } else { $null })
-# ③ 是否保留受保护备份。程序根始终完整卸载；备份位于 ProgramData，重装后仍可还原。
-$keep = $true
-$keep = Ask-YesNo "是否保留优化备份？`n`n选「是」会保留 ProgramData 中受保护的备份；程序文件仍会完整卸载，之后重装本工具即可继续还原。"
+# ③ 普通卸载始终保留受保护备份。还原成功、失败或用户跳过还原都不得删除：
+# 它是精确回到优化前状态的唯一凭据，而且 ProgramData 备份区可能同时包含其他 Windows
+# 用户的备份。需要彻底清理时，应在确认所有用户均已成功还原后由管理员单独处理。
 function Remove-TreeNoFollow([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return }
   $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
@@ -319,15 +287,6 @@ foreach ($d in $deskDirs) {
   $lnk = Join-Path $d '三角洲行动优化助手.lnk'
   if (Test-Path $lnk) { Remove-Item $lnk -Force }
 }
-$backupDeleteFailed = $false
-if (-not $keep -and (Test-Path -LiteralPath $protectedBackup)) {
-  $expectedBackup = [IO.Path]::GetFullPath((Join-Path $protectedRoot 'backup'))
-  if ([IO.Path]::GetFullPath($protectedBackup) -ieq $expectedBackup) {
-    if ((Test-ExactProtectedEntry $protectedRoot $true) -and (Test-ExactProtectedTree $protectedBackup)) {
-      try { Remove-TreeNoFollow $protectedBackup } catch { $backupDeleteFailed = $true }
-    } else { $backupDeleteFailed = $true }
-  }
-}
 $programRemoved = $true
 if (Test-Path -LiteralPath $dest) {
   try { Remove-TreeNoFollow $dest } catch { $programRemoved = $false }
@@ -342,12 +301,9 @@ $sum += $(if ($restoreDone -eq $true) { '· 系统改动已按备份还原。' }
 if ($taskRemoved -eq $true) { $sum += '· 电源方案锁定计划任务已删除。' }
 elseif ($taskRemoved -eq $false) { $sum += '· 电源方案锁定计划任务删除失败，请在「任务计划程序」中手动删除 DeltaForceBooster-PowerPlanLock。' }
 if ($taskRejected) { $sum += '· 检测到同名计划任务，但执行内容不属于本工具，已原样保留。' }
-if ($keep -and $hasBackup) {
+if ($hasBackup) {
   $sum += "· 已保留受保护备份：$protectedBackup"
   $sum += '  重新安装本工具后仍可点击「还原设置」读取这些备份。'
-} elseif (-not $keep) {
-  $sum += $(if ($backupDeleteFailed) { '· ProgramData 受保护备份清理失败，已原样保留。' }
-            else { '· 已按选择清理 ProgramData 中的受保护备份；旧版用户目录未做提权递归删除。' })
 }
 [Windows.Forms.MessageBox]::Show(($sum -join "`n"), 'DeltaForceBooster', 'OK', 'Information') | Out-Null
 '@
@@ -547,7 +503,7 @@ $manifestObj = [ordered]@{
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂
   version  = "$ver"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.20.2'
+  minimumSupportedVersion = '0.20.3'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

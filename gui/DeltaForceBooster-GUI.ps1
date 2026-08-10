@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.20.2
+  DeltaForceBooster 图形界面 — v0.20.3
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.20.3：修复了一些已知问题。
   v0.20.2：修复了一些已知问题。
   v0.20.1：修复从 v0.19.x 等旧安装目录更新时，安装器错误要求旧版必须包含
         scripts\tuning-experiment.ps1，导致更新失败并被强制更新窗口锁住的问题。
@@ -227,7 +228,7 @@ function Move-LegacyUserDataForward {
 Move-LegacyUserDataForward
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.20.2'
+$script:GuiVersion = '0.20.3'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -601,7 +602,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.20.2 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.20.3 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1022,7 +1023,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.20.2 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.20.3 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2994,7 +2995,7 @@ function Get-ValidatedTuningCandidateRuntime([string]$GroupId) {
     if ([bool]$item.RequiresGame -and -not (Test-AllowedGameExecutable $script:TargetExe)) { throw "候选项需要有效游戏路径：$id" }
     [void]$resolved.Add($item)
   }
-  [pscustomobject]@{ Library=$library; Items=@($resolved) }
+  [pscustomobject]@{ Library=$library; Items=@($resolved.ToArray()) }
 }
 
 function Invoke-TuningRollbackBackup([string]$BackupFile, [string]$Reason) {
@@ -3895,7 +3896,37 @@ function Invoke-LocalNoBackupItems([object[]]$Items) {
       [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false; Msg = $_.Exception.Message })
     }
   }
-  @($results)
+  @($results.ToArray())
+}
+
+# 管理员引擎返回后，GUI 还要执行普通权限检测/缓存清理、遥测和界面刷新。后半段即使
+# 抛异常，系统批次也可能已经完成；把这个状态与普通前置失败分开，避免用户误以为本轮
+# 完全没执行而立刻重复点击。异常类型和脚本堆栈只写运行日志，弹窗继续使用人话提示。
+function Get-ApplyFailureContext($ErrorRecord, [bool]$AdminBatchReturned, $Reply) {
+  $exception = $(if ($ErrorRecord -and $ErrorRecord.Exception) { $ErrorRecord.Exception } else { $null })
+  $message = $(if ($exception -and $exception.Message) { "$($exception.Message)" }
+               elseif ($ErrorRecord) { "$ErrorRecord" } else { '未知错误' })
+  $exceptionType = $(if ($exception) { $exception.GetType().FullName } else { 'Unknown' })
+  $stack = $(if ($ErrorRecord -and "$($ErrorRecord.ScriptStackTrace)".Trim()) {
+               "$($ErrorRecord.ScriptStackTrace)".Trim()
+             } else { '(无)' })
+  $backupPath = $(if ($Reply -and $Reply.PSObject.Properties['Backup'] -and $Reply.Backup) {
+                    "$($Reply.Backup)"
+                  } else { $null })
+  $userMessage = $message
+  if ($AdminBatchReturned) {
+    $userMessage = "系统批次可能已经执行，但界面收尾没有完成。请不要重复点击「执行优化」。" +
+                   "`n`n请优先点击「还原设置」；如果提示没有可用备份，请点击「重新检测」确认当前状态。" +
+                   "`n`n收尾错误：$message"
+  }
+  [pscustomobject]@{
+    AdminBatchReturned = $AdminBatchReturned
+    ErrorMessage = $message
+    ExceptionType = $exceptionType
+    ScriptStackTrace = $stack
+    BackupPath = $backupPath
+    UserMessage = $userMessage
+  }
 }
 
 # GUI 始终以普通用户运行。只有用户明确点击「执行优化」或「还原设置」后，才把核心引擎
@@ -5136,6 +5167,9 @@ $ui.DelPresetBtn.Add_Click({
 })
 
 $ui.ApplyBtn.Add_Click({
+  $adminBatchReturned = $false
+  $adminBatchBackupLogged = $false
+  $r = $null
   try {
     if (Test-TuningExperimentActive) { throw '自动调优实验期间已锁定配置，请使用实验「下一步」，或先停止并回滚' }
     $ids = @($ui.ItemPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
@@ -5182,6 +5216,13 @@ $ui.ApplyBtn.Add_Click({
       $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
       $r = Invoke-ElevatedEngineAction -Action Apply -ItemIds $elevatedIds -GamePath $script:TargetExe `
            -AllowRisky ($riskyIds.Count -gt 0) -GpuSpoofModel $script:SelectedGpuSpoofModel
+      $adminBatchReturned = $true
+      # 系统批次与受保护备份已经完成，先记日志再进入普通权限收尾。后续检测、缓存、
+      # 遥测或界面刷新即使异常，用户仍能从日志和诊断报告里找到本轮备份。
+      if ($r.Backup) {
+        Write-Log "备份已保存：$($r.Backup)"
+        $adminBatchBackupLogged = $true
+      }
     } else {
       $r = [pscustomobject]@{ Results = @(); Backup = $null; BackupError = $null
                               UnrecordedNames = @(); EngineExitCode = 0 }
@@ -5214,7 +5255,7 @@ $ui.ApplyBtn.Add_Click({
     $att = $(if ($attList.Count -gt 0) { " / $($attList.Count) 项体检发现问题" })
     $ui.ProgText.Text = "执行完成：$okN 成功 / $($failList.Count) 失败 / $($skipList.Count) 跳过$att"
     $ui.ProgCount.Text = "共 $total 项"
-    if ($r.Backup) { Write-Log "备份已保存：$($r.Backup)" }
+    if ($r.Backup -and -not $adminBatchBackupLogged) { Write-Log "备份已保存：$($r.Backup)" }
     # 备份写盘失败 = 「系统改了、凭据没记全」，比任何一项优化失败都严重：
     # 日志 + 弹窗双通道警告，并把已生效项名和抢救出的部分备份当场给到用户
     if ($r.BackupError) {
@@ -5259,9 +5300,24 @@ $ui.ApplyBtn.Add_Click({
       } else { Write-Log '你选择了稍后重启，优化项将在下次重启后完全生效。' }
     }
   } catch {
-    $err = $_.Exception.Message
-    Write-Log "执行失败：$err"
-    Show-ConfirmDialog '执行未完成' 'APPLY NOT COMPLETED' $err '知道了' -InfoOnly | Out-Null
+    $failure = Get-ApplyFailureContext $_ $adminBatchReturned $r
+    if ($failure.AdminBatchReturned) {
+      Write-Log "执行收尾失败：$($failure.ErrorMessage)"
+      if ($failure.BackupPath -and -not $adminBatchBackupLogged) {
+        Write-Log "备份已保存：$($failure.BackupPath)"
+      }
+      Write-Log '！！系统批次可能已执行，请不要重复点击「执行优化」；请优先点击「还原设置」，若没有可用备份则点击「重新检测」确认当前状态。'
+    } else {
+      # UAC 取消、路径无效、参数校验等前置失败仍把原始错误原文直接给用户。
+      Write-Log "执行失败：$($failure.ErrorMessage)"
+    }
+    Write-Log "异常类型：$($failure.ExceptionType)"
+    Write-Log "ScriptStackTrace：$($failure.ScriptStackTrace)"
+    if ($failure.AdminBatchReturned) {
+      Show-ConfirmDialog '执行收尾未完成' 'APPLY FINALIZATION FAILED' $failure.UserMessage '知道了' -InfoOnly | Out-Null
+    } else {
+      Show-ConfirmDialog '执行未完成' 'APPLY NOT COMPLETED' $failure.UserMessage '知道了' -InfoOnly | Out-Null
+    }
   }
   finally { Set-BusyState $false }
 })

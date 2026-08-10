@@ -37,6 +37,8 @@ $getUacFunction = Find-GuiFunction 'Get-UacEnableLuaValue'
 $getFilterFunction = Find-GuiFunction 'Get-UacFilterAdministratorTokenValue'
 $sidFunction = Find-GuiFunction 'Test-IsBuiltInAdministratorSid'
 $enableUacFunction = Find-GuiFunction 'Enable-UacForNextRestart'
+$localNoBackupFunction = Find-GuiFunction 'Invoke-LocalNoBackupItems'
+$validatedCandidateFunction = Find-GuiFunction 'Get-ValidatedTuningCandidateRuntime'
 $adminBranches = @($ast.FindAll({
   param($node)
   $node -is [Management.Automation.Language.IfStatementAst] -and
@@ -63,6 +65,36 @@ $uacWrites = @($enableUacFunction.FindAll({
   $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'New-ItemProperty'
 }, $true))
 Assert-True ($uacWrites.Count -eq 2) 'UAC helper must define only the EnableLUA and conditional FilterAdministratorToken writes'
+
+# PowerShell 对 Generic.List<T> 的直接数组子表达式 `@($list)` 会抛
+# System.ArgumentException: Argument types do not match。扫描每个 GUI helper 内的 List 声明，
+# 禁止以后再次写回这种会在 Windows PowerShell 5.1 实机上阻断执行收尾的形式。
+$genericListWrapFailures = New-Object 'System.Collections.Generic.List[string]'
+$guiFunctions = @($ast.FindAll({
+  param($node)
+  $node -is [Management.Automation.Language.FunctionDefinitionAst]
+}, $true))
+foreach ($function in $guiFunctions) {
+  $listAssignments = @($function.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+      $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+      $node.Right.Extent.Text -match '(?i)^\s*New-Object\s+[''"]?(?:System\.)?Collections\.Generic\.List\['
+  }, $true))
+  foreach ($assignment in $listAssignments) {
+    $variableName = $assignment.Left.VariablePath.UserPath
+    $directWrapPattern = '^@\(\s*\$' + [regex]::Escape($variableName) + '\s*\)$'
+    $badWraps = @($function.FindAll({
+      param($node)
+      $node -is [Management.Automation.Language.ArrayExpressionAst]
+    }, $true) | Where-Object { $_.Extent.Text -match $directWrapPattern })
+    foreach ($badWrap in $badWraps) {
+      [void]$genericListWrapFailures.Add("$($function.Name):$($badWrap.Extent.StartLineNumber) $($badWrap.Extent.Text)")
+    }
+  }
+}
+Assert-True ($genericListWrapFailures.Count -eq 0) `
+  ('Generic.List must call ToArray() before @(): ' + ($genericListWrapFailures -join '; '))
 
 # 只执行四个纯 helper，并用同名 mock 拦截注册表访问；测试不得改变测试机的真实 UAC。
 $getUacFunctionText = $getUacFunction.Extent.Text
@@ -189,4 +221,61 @@ $enableUacFunctionText = $enableUacFunction.Extent.Text
   Remove-Variable MockUacValues,MockUacReadFailureName,MockUacWriteFailureName,MockUacHoldWriteName,MockUacWrites,MockUacReads -Scope Script -ErrorAction SilentlyContinue
 } $getUacFunctionText $getFilterFunctionText $sidFunctionText $enableUacFunctionText
 
-Write-Host 'PASS: GUI UAC recovery covers ordinary administrators and RID-500 approval mode without forcing restart'
+$localNoBackupFunctionText = $localNoBackupFunction.Extent.Text
+& {
+  param([string]$FunctionText)
+
+  function Get-MockHealthyCheck { [pscustomobject]@{ Ok = $true; Text = 'healthy' } }
+  function Get-MockAttentionCheck { [pscustomobject]@{ Ok = $false; Text = 'attention' } }
+  function Clear-ShaderCache { @{ Cleared = @('mock cache cleared'); Failed = @() } }
+
+  Invoke-Expression $FunctionText
+  $items = @(
+    [pscustomobject]@{ Id = 'check-ok'; Name = 'check ok'; Kind = 'check'; Check = 'Get-MockHealthyCheck' }
+    [pscustomobject]@{ Id = 'check-attention'; Name = 'check attention'; Kind = 'check'; Check = 'Get-MockAttentionCheck' }
+    [pscustomobject]@{ Id = 'cache'; Name = 'cache'; Kind = 'cache'; Check = $null }
+  )
+  $results = @(Invoke-LocalNoBackupItems $items)
+  Assert-True ($results.Count -eq 3) 'local no-backup runner did not return every result under Windows PowerShell 5.1'
+  Assert-True (($results.Id -join ',') -eq 'check-ok,check-attention,cache') 'local no-backup results changed order or identity'
+  Assert-True ($results[0].Ok -and -not $results[0].Attention) 'healthy local check result was misclassified'
+  Assert-True (-not $results[1].Ok -and $results[1].Attention) 'attention local check result was misclassified'
+  Assert-True ($results[2].Ok -and -not $results[2].Skipped) 'local cache result was misclassified'
+
+  $noItems = @()
+  Assert-True (@(Invoke-LocalNoBackupItems $noItems).Count -eq 0) 'empty local no-backup batch did not return an empty result set'
+} $localNoBackupFunctionText
+
+$validatedCandidateFunctionText = $validatedCandidateFunction.Extent.Text
+& {
+  param([string]$FunctionText)
+
+  $previousTargetExe = $script:TargetExe
+  try {
+    $script:TargetExe = 'C:\Games\DeltaForceClient-Win64-Shipping.exe'
+    function Get-TuningCandidate([string]$GroupId) {
+      [pscustomobject]@{
+        GroupId = $GroupId; Source = 'rules'; RiskLevel = 'low'; RequiresReboot = $false
+        ItemIds = @('candidate-a', 'candidate-b')
+      }
+    }
+    function Get-OptItems([string]$GamePath) {
+      @(
+        [pscustomobject]@{ Id = 'candidate-a'; Tier = 'safe'; Reboot = $false; Kind = 'multi'
+          RequiresGame = $false; Ops = @([pscustomobject]@{ Kind = 'reg' }) }
+        [pscustomobject]@{ Id = 'candidate-b'; Tier = 'safe'; Reboot = $false; Kind = 'multi'
+          RequiresGame = $false; Ops = @([pscustomobject]@{ Kind = 'kvstr' }) }
+      )
+    }
+    function Test-AllowedGameExecutable([string]$GamePath) { $true }
+
+    Invoke-Expression $FunctionText
+    $runtime = Get-ValidatedTuningCandidateRuntime 'G1'
+    Assert-True (@($runtime.Items).Count -eq 2) 'validated tuning candidate lost Generic.List items under Windows PowerShell 5.1'
+    Assert-True (($runtime.Items.Id -join ',') -eq 'candidate-a,candidate-b') 'validated tuning candidate changed item order or identity'
+  } finally {
+    $script:TargetExe = $previousTargetExe
+  }
+} $validatedCandidateFunctionText
+
+Write-Host 'PASS: GUI UAC recovery and WinPS5.1 Generic.List result paths are regression covered'

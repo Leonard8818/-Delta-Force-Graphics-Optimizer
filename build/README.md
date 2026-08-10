@@ -36,14 +36,16 @@ payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`
 - 覆盖安装采用同卷 staging → 完整 payload 哈希核对 → 目录事务切换；中断或失败时恢复
   rollback，未知的非空目标目录没有产品身份文件时原样拒绝，不会整目录替换。
 - 卸载目标以 `uninstall.ps1` 自身所在目录为准（位置可自选后不能再假定 LOCALAPPDATA）；
-  默认**保留 backup 目录**——那是撤销系统改动的唯一凭据；用户明确选「否」才全删。
+  普通卸载**始终保留** `%ProgramData%\DeltaForceBooster\backup`——它可能同时包含多个
+  Windows 用户撤销系统改动的唯一凭据。还原成功、失败或跳过还原均省略删除选项；
+  重装后仍可点击「还原设置」继续读取。
 - 自动化验证参数（普通用户双击即图形向导，无需了解）：
   `/silent /dir=<路径> /log=<文件>` 静默安装（可加 `/waitpid=<进程Id>` 先等旧进程退出、
   `/runafter` 装完自启新版；内置更新还会成对传 `/sha256=<64位哈希> /size=<字节数>`，
   安装器启动后与受保护 staging 的完整性 sidecar 交叉复验）；`/checkdir=<路径> /log=<文件>` 只跑权限
   预检（退出码 0 可安装 / 2 需管理员 / 3 无效）；`/render=<目录>` 离屏渲染各页为 PNG 并
   导出界面字符串。`DFB_TEST_*` 测试钩子只存在于显式 `-TestBuild` 产物，生产安装器会做
-  静态扫描确认没有这些入口。卸载脚本仍认 `DFB_INSTALL_SILENT=1`（不弹框、保留备份）。
+  静态扫描确认没有这些入口。卸载没有静默清理恢复数据的入口，普通卸载始终保留受保护备份。
 - **快捷方式落点**（真机踩过「装完找不到入口」）：提权安装（右键管理员运行，或选
   Program Files 触发提权重启）时 `%APPDATA%` 指向提权账号，多账户机器上快捷方式会
   建进管理员的开始菜单——所以提权态一律写公共开始菜单/公共桌面（所有用户可见）；
@@ -113,8 +115,8 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
 
 ```json
 {
-  "version": "0.20.2",
-  "minimumSupportedVersion": "0.20.2",
+  "version": "0.20.3",
+  "minimumSupportedVersion": "0.20.3",
   "notes": "修复了一些已知问题。",
   "url": "https://df.ltz88.cn/",
   "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
