@@ -541,17 +541,13 @@ if ($TestBuild) {
 # scripts\updater.ps1 的白名单内，否则老客户端会拒绝下载。
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
-$manifestNotes = @(
-  '修复从 v0.19.x 等旧安装目录更新时，安装器误判缺少新版本文件并中止的问题。'
-  '旧版配置、方案与备份继续保留迁移；更新失败的用户可直接安装本版恢复正常启动。'
-  '本版要求升级，官网仅提供 v0.20.1 最新安装包。'
-) -join "`n"
+$manifestNotes = '修复了一些已知问题。'
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂
   version  = "$ver"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.20.1'
+  minimumSupportedVersion = '0.20.2'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

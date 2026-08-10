@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.20.1
+  DeltaForceBooster 图形界面 — v0.20.2
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.20.2：修复了一些已知问题。
   v0.20.1：修复从 v0.19.x 等旧安装目录更新时，安装器错误要求旧版必须包含
         scripts\tuning-experiment.ps1，导致更新失败并被强制更新窗口锁住的问题。
   v0.20.0：①新增「自动寻找最佳配置 Beta」，以同一设备三次基线和 A/B 交替采样测试
@@ -33,7 +34,7 @@
   v0.18.2：修复双显卡笔记本误把 AMD/Intel 核显用于显卡指引，改为稳定选择独显；
         NVIDIA 笔记本补充 Game Ready 驱动选择说明。
   v0.18.1：修复显卡型号伪装参数与 GUI 状态变量同名，导致程序启动时直接退出。
-  v0.17：①「危险区域」改为中性的「显卡型号伪装」，RTX 30 系默认 705 Ti、40/50 系默认
+  v0.17：①「危险区域」改为中性的「显卡型号伪装」，RTX 30 系默认 750 Ti、40/50 系默认
         1050 Ti，并可在界面手动切换；②修复内置更新覆盖 app.ico 时可能被旧窗口占用。
   v0.16.2：打包修正版——v0.16.1 的安装包误将构建者本机的自存方案（profiles\）打了进去，
         装完会凭空多出别人的方案。界面与引擎均无改动，仅版本号跟随。
@@ -61,14 +62,107 @@
 
 $ErrorActionPreference = 'Stop'
 
+# UAC 被关闭时，即使 asInvoker 启动器也会拿到完整管理员令牌；内置 Administrator 还需
+# 管理员审批模式。这里只恢复这两个必要策略；当前进程仍退出，长期 GUI 不跨越权限边界。
+function Get-UacEnableLuaValue {
+  try {
+    $policy = Get-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'EnableLUA' -ErrorAction Stop
+    if ($null -eq $policy.EnableLUA) { return $null }
+    return [int]$policy.EnableLUA
+  } catch {
+    return $null
+  }
+}
+
+function Get-UacFilterAdministratorTokenValue {
+  try {
+    $policy = Get-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'FilterAdministratorToken' -ErrorAction Stop
+    if ($null -eq $policy.FilterAdministratorToken) { return $null }
+    return [int]$policy.FilterAdministratorToken
+  } catch {
+    return $null
+  }
+}
+
+function Test-IsBuiltInAdministratorSid([string]$SidValue) {
+  if ([string]::IsNullOrWhiteSpace($SidValue)) { return $false }
+  return $SidValue.EndsWith('-500', [StringComparison]::Ordinal)
+}
+
+function Enable-UacForNextRestart([switch]$EnableBuiltInAdministratorApprovalMode) {
+  if ($EnableBuiltInAdministratorApprovalMode) {
+    $null = New-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'FilterAdministratorToken' -Value 1 -PropertyType DWord -Force -ErrorAction Stop
+    if ((Get-UacFilterAdministratorTokenValue) -ne 1) {
+      throw 'Windows 没有保存内置 Administrator 的管理员审批模式，请检查系统策略后重试。'
+    }
+  }
+  $null = New-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+    -Name 'EnableLUA' -Value 1 -PropertyType DWord -Force -ErrorAction Stop
+  if ((Get-UacEnableLuaValue) -ne 1) {
+    throw 'Windows 没有保存 UAC 设置，请检查系统策略后重试。'
+  }
+}
+
 # 长期运行的 WPF、联网更新和外部工具检测不持有管理员权限。若用户主动“以管理员身份
-# 运行”主程序，直接说明正确入口并退出；真正的系统修改只在点击按钮后由短进程提权。
-$isAdminGui = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+# 运行”主程序，直接说明正确入口并退出；若系统整体关闭了 UAC，或当前账户是仍未进入
+# 管理员审批模式的内置 Administrator（SID RID 500），则提供一次确认即可恢复，但不代替
+# 用户重启；真正的系统修改只在点击按钮后由短进程提权。
+$currentWindowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentSidValue = $(if ($currentWindowsIdentity.User) { $currentWindowsIdentity.User.Value } else { '' })
+$isBuiltInAdministrator = Test-IsBuiltInAdministratorSid $currentSidValue
+$isAdminGui = ([Security.Principal.WindowsPrincipal]$currentWindowsIdentity
   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($isAdminGui) {
   Add-Type -AssemblyName PresentationFramework
-  [Windows.MessageBox]::Show('主界面应以普通方式运行，请关闭后直接双击“启动优化工具.exe”。点击执行优化或还原时，软件会单独请求管理员权限。',
-    '三角洲行动 · 画面优化助手', 'OK', 'Information') | Out-Null
+  $enableLUA = Get-UacEnableLuaValue
+  $filterAdministratorToken = $(if ($isBuiltInAdministrator) { Get-UacFilterAdministratorTokenValue } else { $null })
+  $needsUacRepair = $(if ($isBuiltInAdministrator) {
+    $enableLUA -ne 1 -or $filterAdministratorToken -ne 1
+  } else {
+    $enableLUA -eq 0
+  })
+  if ($needsUacRepair) {
+    $repairPrompt = $(if ($isBuiltInAdministrator) {
+      "检测到当前账户是 Windows 内置 Administrator（RID 500），并且 UAC 或此账户的「管理员审批模式」未开启，因此主界面仍会持有完整管理员权限。`n`n点击「是」：开启 UAC，并为内置 Administrator 开启管理员审批模式。`n点击「否」：暂不修改并退出软件。`n`n只会修改这两项 Windows 安全策略；设置在下次重启后生效。软件不会自动重启，您可以先保存工作，再自行选择时间重启。"
+    } else {
+      "检测到 Windows 的「用户账户控制（UAC）」已被关闭。这会让当前管理员账户启动的程序都持有管理员权限，因此本软件为保护更新和联网功能而停止启动。`n`n点击「是」：立即把 UAC 恢复为开启状态。`n点击「否」：暂不修改并退出软件。`n`n修改只会在下次重启后生效；软件不会自动重启，您可以先保存工作，再自行选择时间重启。"
+    })
+    $choice = [Windows.MessageBox]::Show(
+      $repairPrompt,
+      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Warning)
+    if ($choice -eq [Windows.MessageBoxResult]::Yes) {
+      try {
+        Enable-UacForNextRestart -EnableBuiltInAdministratorApprovalMode:$isBuiltInAdministrator
+        $repairResult = $(if ($isBuiltInAdministrator) {
+          'UAC 与内置 Administrator 的管理员审批模式均已开启。'
+        } else {
+          'UAC 已恢复为开启状态。'
+        })
+        [Windows.MessageBox]::Show(
+          "$repairResult`n`n请先保存正在进行的工作，再由您选择合适的时间重启电脑。软件不会自动重启；重启后直接双击「启动优化工具.exe」即可。",
+          '修复完成 · 等待重启', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
+      } catch {
+        $manualRecovery = $(if ($isBuiltInAdministrator) {
+          '请在本地安全策略中开启「用户账户控制：用于内置管理员账户的管理员审批模式」，并确认 UAC 已开启，然后自行重启电脑。'
+        } else {
+          '请在 Windows 的「更改用户账户控制设置」中把滑块调回默认位置，然后自行重启电脑。'
+        })
+        [Windows.MessageBox]::Show(
+          "UAC 自动恢复失败：$($_.Exception.Message)`n`n$manualRecovery",
+          'UAC 修复失败', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
+      }
+    }
+  } elseif ($isBuiltInAdministrator) {
+    [Windows.MessageBox]::Show(
+      'UAC 和内置 Administrator 的管理员审批模式已经开启。若刚完成修复，请先保存工作并自行选择时间重启；若已经重启，请不要使用「以管理员身份运行」启动软件。软件不会自动重启。',
+      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
+  } else {
+    [Windows.MessageBox]::Show('主界面应以普通方式运行，请关闭后直接双击“启动优化工具.exe”。点击执行优化或还原时，软件会单独请求管理员权限。',
+      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
+  }
   exit
 }
 
@@ -133,7 +227,7 @@ function Move-LegacyUserDataForward {
 Move-LegacyUserDataForward
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.20.1'
+$script:GuiVersion = '0.20.2'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -507,7 +601,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.20.1 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.20.2 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -928,7 +1022,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.20.1 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.20.2 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>

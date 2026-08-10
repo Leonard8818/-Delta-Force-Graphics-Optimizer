@@ -1,9 +1,9 @@
 {
-    "version":  "0.20.1",
-    "minimumSupportedVersion":  "0.20.1",
-    "notes":  "修复从 v0.19.x 等旧安装目录更新时，安装器误判缺少新版本文件并中止的问题。\n旧版配置、方案与备份继续保留迁移；更新失败的用户可直接安装本版恢复正常启动。\n本版要求升级，官网仅提供 v0.20.1 最新安装包。",
+    "version":  "0.20.2",
+    "minimumSupportedVersion":  "0.20.2",
+    "notes":  "修复了一些已知问题。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "9ea3a955627895b651b8928ba05f67f04b62008117797c5faf624d2744452af6",
-    "size":  731136
+    "sha256":  "fcc8c29fa8376c4f73ff7a7e2c6a28095f051b5f558f343fd44910fe47787b04",
+    "size":  733696
 }

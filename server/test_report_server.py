@@ -619,6 +619,33 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue(filters["validOnly"])
         self.assertTrue(live)
 
+        period, filters, live = SERVER._parse_weekly_query(
+            "/api/weekly?startDate=2026-05-11&endDate=2026-08-10&gpu=NVIDIA+Test+GPU",
+            known_now,
+        )
+        self.assertEqual(SERVER.CustomPeriod(dt.date(2026, 5, 11), dt.date(2026, 8, 10)), period)
+        self.assertEqual("NVIDIA Test GPU", filters["gpu"])
+        self.assertFalse(live)
+        single_day, _, _ = SERVER._parse_weekly_query(
+            "/api/weekly?startDate=2026-08-10&endDate=2026-08-10", known_now
+        )
+        self.assertEqual(SERVER.CustomPeriod(dt.date(2026, 8, 10), dt.date(2026, 8, 10)), single_day)
+        invalid_custom_queries = (
+            "/api/weekly?startDate=2026-08-01",
+            "/api/weekly?endDate=2026-08-01",
+            "/api/weekly?weekStart=2026-08-03&startDate=2026-08-03&endDate=2026-08-09",
+            "/api/weekly?startDate=2026-08-03&endDate=2026-08-02",
+            "/api/weekly?startDate=2026-05-10&endDate=2026-08-10",
+            "/api/weekly?startDate=2026-08-03&endDate=2026-08-11",
+            "/api/weekly?startDate=2026-8-03&endDate=2026-08-09",
+            "/api/weekly?startDate=2026-02-30&endDate=2026-03-01",
+            "/api/weekly?startDate=0001-01-01&endDate=0001-01-01",
+            "/api/weekly?startDate=2026-08-03&startDate=2026-08-04&endDate=2026-08-09",
+        )
+        for query in invalid_custom_queries:
+            with self.subTest(query=query), self.assertRaises(ValueError):
+                SERVER._parse_weekly_query(query, known_now)
+
     def test_weekly_week_over_week_and_trusted_pairing(self):
         previous = dt.date(2026, 7, 20)
         current = dt.date(2026, 7, 27)
@@ -700,6 +727,123 @@ class TelemetryTests(unittest.TestCase):
             row["value"] for row in filtered["filterOptions"]["versions"]
         })
 
+    def test_custom_period_uses_inclusive_range_adjacent_comparison_and_equal_trends(self):
+        previous_start = dt.date(2026, 7, 7)
+        previous_day = dt.date(2026, 7, 9)
+        current_start = dt.date(2026, 7, 10)
+        current_end = dt.date(2026, 7, 12)
+        after = dt.date(2026, 7, 13)
+        before = dt.date(2026, 7, 6)
+        profile = {
+            "version": "2.0.0", "gpu": "NVIDIA Custom GPU",
+            "device_type": "laptop", "authenticated": True,
+        }
+        self.seed_weekly_client(
+            "custom-previous", previous_start, previous_day, launches=2,
+            applies=1, apply_ok=1, apply_failed=1, **profile
+        )
+        self.seed_weekly_client(
+            "custom-current", current_start, current_end, launches=5,
+            applies=2, apply_ok=2, apply_failed=3, restores=1,
+            restore_failed=1, **profile
+        )
+        self.seed_weekly_client(
+            "custom-unmatched", current_start, current_start, version="1.0.0",
+            gpu="AMD Other GPU", device_type="desktop", launches=50,
+        )
+        self.seed_weekly_client("custom-before", before, before, launches=99, **profile)
+        self.seed_weekly_client("custom-after", after, after, launches=99, **profile)
+        self.seed_weekly_performance(
+            "custom-previous", previous_day, "baseline", 90, 55,
+            gpu="NVIDIA Custom GPU",
+        )
+        self.seed_weekly_performance(
+            "custom-current", current_end, "baseline", 100, 60,
+            gpu="NVIDIA Custom GPU",
+        )
+        self.seed_weekly_performance(
+            "custom-current", current_end, "full", 120, 75,
+            gpu="NVIDIA Custom GPU",
+        )
+        self.seed_weekly_performance(
+            "custom-after", after, "full", 999, 999,
+            gpu="NVIDIA Custom GPU",
+        )
+
+        def noon(day):
+            return int(dt.datetime.combine(day, dt.time(hour=12), tzinfo=dt.timezone.utc).timestamp())
+
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.executemany(
+                    """INSERT INTO tuning_experiments (
+                           experiment_id, client_hash, created_at, completed_at, status,
+                           goal, risk_level, app_version, gpu_model, result
+                       ) VALUES (?, ?, ?, ?, 'completed', 'balanced', 'low', '2.0.0',
+                                 'NVIDIA Custom GPU', ?)""",
+                    (
+                        ("custom-exp-previous", "custom-previous", noon(previous_day), noon(previous_day), "no_significant_gain"),
+                        ("custom-exp-current", "custom-current", noon(current_end), noon(current_end), "found_better"),
+                        ("custom-exp-after", "custom-after", noon(after), noon(after), "found_better"),
+                    ),
+                )
+        finally:
+            conn.close()
+
+        for name, day in (
+            ("DFB-ABCD.txt", previous_day),
+            ("DFB-EFGH.txt", current_end),
+            ("DFB-IJKL.txt", after),
+        ):
+            path = os.path.join(SERVER.REPORT_DIR, name)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("diagnostic")
+            os.utime(path, (noon(day), noon(day)))
+
+        filters = {
+            "version": "2.0.0", "gpu": "NVIDIA Custom GPU",
+            "deviceType": "laptop", "validOnly": True,
+        }
+        report = SERVER._build_custom_period_report(
+            current_start, current_end, filters,
+            now=noon(dt.date(2026, 8, 10)),
+        )
+        self.assertEqual("custom", report["week"]["periodMode"])
+        self.assertEqual(
+            {"start": "2026-07-10", "end": "2026-07-12", "endExclusive": "2026-07-13"},
+            report["week"]["current"],
+        )
+        self.assertEqual(
+            {"start": "2026-07-07", "end": "2026-07-09", "endExclusive": "2026-07-10"},
+            report["week"]["previous"],
+        )
+        self.assertEqual(5, report["core"]["launches"]["current"])
+        self.assertEqual(2, report["core"]["launches"]["previous"])
+        self.assertEqual(2, report["core"]["performanceSessions"]["current"])
+        self.assertEqual(1, report["core"]["performanceSessions"]["previous"])
+        usage = {row["key"]: row for row in report["usageComparison"]}
+        self.assertEqual(2, usage["applies"]["current"])
+        self.assertEqual(1, usage["applies"]["previous"])
+        self.assertEqual(1, usage["restores"]["current"])
+        self.assertEqual(0, usage["restores"]["previous"])
+        self.assertEqual(3, report["issues"]["applyFailures"]["current"])
+        self.assertEqual(1, report["issues"]["applyFailures"]["previous"])
+        self.assertEqual(1, report["issues"]["diagnosticReports"]["current"])
+        self.assertEqual(1, report["issues"]["diagnosticReports"]["previous"])
+        self.assertEqual(1, report["tuning"]["summary"]["started"]["current"])
+        self.assertEqual(1, report["tuning"]["summary"]["started"]["previous"])
+        self.assertEqual(1, report["tuning"]["summary"]["foundBetter"]["current"])
+        self.assertEqual(["2.0.0"], [row["label"] for row in report["versions"]])
+        self.assertEqual(["laptop"], [row["label"] for row in report["devices"]])
+        self.assertEqual("NVIDIA Custom GPU", report["gpuRanking"][0]["gpu"])
+        self.assertEqual(1, report["versionAdoption"][0]["activeDevices"])
+        self.assertEqual("2026-07-10", report["trends"][-1]["weekStart"])
+        self.assertEqual("2026-07-12", report["trends"][-1]["weekEnd"])
+        self.assertEqual("2026-07-07", report["trends"][-2]["weekStart"])
+        self.assertEqual("2026-07-09", report["trends"][-2]["weekEnd"])
+        self.assertTrue(report["summary"]["text"].startswith("本周期"))
+
     def test_weekly_snapshot_auth_conflict_overwrite_and_stable_read(self):
         week = dt.date(2026, 7, 27)
         self.seed_weekly_client("snapshot-client", week, week, launches=1)
@@ -731,15 +875,25 @@ class TelemetryTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as denied_get:
                 get("/api/weekly?weekStart=2026-07-27", authorized=False)
             self.assertEqual(403, denied_get.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as denied_custom_get:
+                get("/api/weekly?startDate=2026-07-27&endDate=2026-08-02", authorized=False)
+            self.assertEqual(403, denied_custom_get.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as bad_custom_range:
+                get("/api/weekly?startDate=2026-05-10&endDate=2026-08-10")
+            self.assertEqual(400, bad_custom_range.exception.code)
             with self.assertRaises(urllib.error.HTTPError) as denied_post:
                 post({"weekStart": "2026-07-27"}, authorized=False)
             self.assertEqual(403, denied_post.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as custom_snapshot:
+                post({"startDate": "2026-07-27", "endDate": "2026-08-02"})
+            self.assertEqual(400, custom_snapshot.exception.code)
 
             status, created = post({"weekStart": "2026-07-27", "overwrite": False})
             self.assertEqual(201, status)
             self.assertFalse(created["overwritten"])
             _, snapshot = get("/api/weekly?weekStart=2026-07-27")
             self.assertTrue(snapshot["week"]["snapshot"]["used"])
+            self.assertEqual("week", snapshot["week"]["periodMode"])
             self.assertEqual(1, snapshot["core"]["launches"]["current"])
 
             conn = SERVER._connect()
@@ -755,6 +909,11 @@ class TelemetryTests(unittest.TestCase):
             _, live = get("/api/weekly?weekStart=2026-07-27&live=1")
             self.assertEqual(9, live["core"]["launches"]["current"])
             self.assertFalse(live["week"]["snapshot"]["used"])
+            _, custom = get("/api/weekly?startDate=2026-07-27&endDate=2026-08-02")
+            self.assertEqual("custom", custom["week"]["periodMode"])
+            self.assertEqual(9, custom["core"]["launches"]["current"])
+            self.assertFalse(custom["week"]["snapshot"]["used"])
+            self.assertFalse(custom["week"]["snapshot"]["available"])
 
             with self.assertRaises(urllib.error.HTTPError) as conflict:
                 post({"weekStart": "2026-07-27", "overwrite": False})

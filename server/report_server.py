@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections import deque
+from collections import deque, namedtuple
 
 
 REPORT_DIR = os.environ.get("DFB_REPORT_DIR", "/opt/df-booster-reports")
@@ -52,6 +52,7 @@ MAX_RATE_BUCKETS = 20000
 TOKEN_REQUIRED_VERSION = (0, 19, 4)
 WEEKLY_SCHEMA_VERSION = 2
 WEEKLY_FILTER_LIMITS = {"version": 24, "gpu": 160, "deviceType": 24}
+CUSTOM_PERIOD_MAX_DAYS = 92
 CONFIG_TIERS = ("baseline", "light", "balanced", "full")
 CONFIG_TIER_LABELS = {
     "baseline": "未使用本工具优化",
@@ -141,6 +142,9 @@ class TelemetryConflictError(ValueError):
 
 class WeeklySnapshotError(RuntimeError):
     pass
+
+
+CustomPeriod = namedtuple("CustomPeriod", ("start", "end"))
 
 
 def _rate_ok(bucket, maximum, window=RATE_WINDOW):
@@ -1888,6 +1892,12 @@ def _latest_complete_week_start(now=None):
     return today - dt.timedelta(days=today.weekday() + 7)
 
 
+def _taipei_today(now=None):
+    now = int(time.time() if now is None else now)
+    report_timezone = dt.timezone(dt.timedelta(hours=8))
+    return dt.datetime.fromtimestamp(now, report_timezone).date()
+
+
 def _parse_week_start(value=None, now=None):
     if value in (None, ""):
         return _latest_complete_week_start(now)
@@ -1903,12 +1913,47 @@ def _parse_week_start(value=None, now=None):
     return result
 
 
+def _parse_period_date(name, value):
+    value = str(value)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError("%s must be YYYY-MM-DD" % name)
+    try:
+        result = dt.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("%s is not a valid date" % name)
+    if result.isoformat() != value:
+        raise ValueError("%s must be YYYY-MM-DD" % name)
+    return result
+
+
+def _parse_custom_period(start_value, end_value, now=None):
+    if start_value in (None, "") or end_value in (None, ""):
+        raise ValueError("startDate and endDate must be provided together")
+    start = _parse_period_date("startDate", start_value)
+    end = _parse_period_date("endDate", end_value)
+    days = (end - start).days + 1
+    if days < 1:
+        raise ValueError("startDate must not be after endDate")
+    if days > CUSTOM_PERIOD_MAX_DAYS:
+        raise ValueError("custom period must be between 1 and %d days" % CUSTOM_PERIOD_MAX_DAYS)
+    if end > _taipei_today(now):
+        raise ValueError("endDate must not be in the future")
+    try:
+        start - dt.timedelta(days=days * 7)
+    except OverflowError:
+        raise ValueError("startDate is too early")
+    return CustomPeriod(start, end)
+
+
 def _parse_weekly_query(raw_path, now=None):
     parsed = urllib.parse.urlsplit(raw_path)
     if len(parsed.query) > 512:
         raise ValueError("query too long")
     pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    allowed = {"weekStart", "version", "gpu", "deviceType", "validOnly", "live"}
+    allowed = {
+        "weekStart", "startDate", "endDate", "version", "gpu", "deviceType",
+        "validOnly", "live",
+    }
     values = {}
     for key, value in pairs:
         if key not in allowed or key in values:
@@ -1929,7 +1974,14 @@ def _parse_weekly_query(raw_path, now=None):
     live_text = values.get("live", "0")
     if live_text not in ("0", "1"):
         raise ValueError("live must be 0 or 1")
-    return _parse_week_start(values.get("weekStart"), now), filters, live_text == "1"
+    has_custom_dates = "startDate" in values or "endDate" in values
+    if has_custom_dates:
+        if "weekStart" in values:
+            raise ValueError("weekStart cannot be combined with startDate or endDate")
+        period = _parse_custom_period(values.get("startDate"), values.get("endDate"), now)
+    else:
+        period = _parse_week_start(values.get("weekStart"), now)
+    return period, filters, live_text == "1"
 
 
 def _default_weekly_filters():
@@ -2197,8 +2249,7 @@ def _weekly_performance_summary(rows, pairs):
     return trusted, {"overall": _weekly_pair_summary(pairs), "configTiers": tiers}
 
 
-def _period_bundle(conn, start, filters):
-    end = start + dt.timedelta(days=7)
+def _period_bundle(conn, start, end, filters):
     rows = _weekly_performance_rows(conn, start, end, filters)
     pairs = _weekly_performance_pairs(rows)
     overall, comparisons = _weekly_performance_summary(rows, pairs)
@@ -2723,11 +2774,13 @@ def _save_weekly_snapshot(week_start, report, overwrite=False):
     return stored
 
 
-def _weekly_summary(core, comparison, issues):
+def _weekly_summary(core, comparison, issues, period_mode="week"):
     active = core["activeUsers"]["current"]
     launches = core["launches"]["current"]
     pair_summary = comparison["overall"]
-    text = "本周 %d 台活跃设备，共启动 %d 次。" % (active, launches)
+    current_label = "本周期" if period_mode == "custom" else "本周"
+    previous_label = "上一等长周期" if period_mode == "custom" else "前一周"
+    text = "%s %d 台活跃设备，共启动 %d 次。" % (current_label, active, launches)
     if pair_summary["published"]:
         text += " 可信配对样本的帧率中位变化为 %+.1f。" % pair_summary["fpsDeltaMedian"]
     else:
@@ -2735,13 +2788,16 @@ def _weekly_summary(core, comparison, issues):
     highlights = []
     concerns = []
     if core["activeUsers"]["changePct"] is not None and core["activeUsers"]["changePct"] > 0:
-        highlights.append({"code": "activeUsersUp", "text": "活跃设备较前一周增长 %.1f%%。" % core["activeUsers"]["changePct"]})
+        highlights.append({
+            "code": "activeUsersUp",
+            "text": "活跃设备较%s增长 %.1f%%。" % (previous_label, core["activeUsers"]["changePct"]),
+        })
     if pair_summary["published"] and pair_summary["fpsDeltaMedian"] > 0:
         highlights.append({"code": "frameRateUp", "text": "可信配对的帧率中位数提升 %.1f。" % pair_summary["fpsDeltaMedian"]})
     if issues["applyFailures"]["current"] > 0:
-        concerns.append({"code": "applyFailures", "text": "本周记录到 %d 个应用失败项。" % issues["applyFailures"]["current"]})
+        concerns.append({"code": "applyFailures", "text": "%s记录到 %d 个应用失败项。" % (current_label, issues["applyFailures"]["current"])})
     if issues["restoreFailures"]["current"] > 0:
-        concerns.append({"code": "restoreFailures", "text": "本周记录到 %d 个还原失败项。" % issues["restoreFailures"]["current"]})
+        concerns.append({"code": "restoreFailures", "text": "%s记录到 %d 个还原失败项。" % (current_label, issues["restoreFailures"]["current"])})
     if not pair_summary["published"]:
         concerns.append({"code": "insufficientPairs", "text": "性能配对少于 5 台独立设备，仅展示样本数。"})
     return {"text": text, "activeDevices": active, "launches": launches}, highlights, concerns
@@ -2750,30 +2806,45 @@ def _weekly_summary(core, comparison, issues):
 def _build_weekly_report(week_start=None, filters=None, now=None):
     now = int(time.time() if now is None else now)
     week_start = _parse_week_start(week_start, now)
+    return _build_period_report(
+        week_start, week_start + dt.timedelta(days=7), filters, now, "week"
+    )
+
+
+def _build_custom_period_report(start, end, filters=None, now=None):
+    now = int(time.time() if now is None else now)
+    period = _parse_custom_period(start, end, now)
+    return _build_period_report(
+        period.start, period.end + dt.timedelta(days=1), filters, now, "custom"
+    )
+
+
+def _build_period_report(period_start, current_end, filters, now, period_mode):
     filters = dict(_default_weekly_filters() if filters is None else filters)
-    current_end = week_start + dt.timedelta(days=7)
-    previous_start = week_start - dt.timedelta(days=7)
+    period_days = (current_end - period_start).days
+    previous_start = period_start - dt.timedelta(days=period_days)
     conn = _connect()
     try:
         # Keep all database-derived sections on one WAL snapshot while uploads continue.
         conn.execute("BEGIN")
-        current = _period_bundle(conn, week_start, filters)
-        previous = _period_bundle(conn, previous_start, filters)
+        current = _period_bundle(conn, period_start, current_end, filters)
+        previous = _period_bundle(conn, previous_start, period_start, filters)
         filter_options = _weekly_filter_options(conn)
-        versions = _active_distribution(conn, week_start, current_end, filters, "app_version")
-        devices = _active_distribution(conn, week_start, current_end, filters, "device_type")
-        version_adoption = _weekly_version_adoption(conn, week_start, current_end, filters)
+        versions = _active_distribution(conn, period_start, current_end, filters, "app_version")
+        devices = _active_distribution(conn, period_start, current_end, filters, "device_type")
+        version_adoption = _weekly_version_adoption(conn, period_start, current_end, filters)
         gpu_ranking = _weekly_gpu_ranking(conn, current, filters)
-        tuning = _weekly_tuning(conn, week_start, current_end, previous_start, filters)
+        tuning = _weekly_tuning(conn, period_start, current_end, previous_start, filters)
         trends = []
         for offset in range(7, -1, -1):
-            start = week_start - dt.timedelta(days=offset * 7)
-            bundle = current if start == week_start else _period_bundle(conn, start, filters)
+            start = period_start - dt.timedelta(days=offset * period_days)
+            end = start + dt.timedelta(days=period_days)
+            bundle = current if start == period_start else _period_bundle(conn, start, end, filters)
             usage = bundle["usage"]
             pair_summary = bundle["performanceComparison"]["overall"]
             trends.append({
                 "weekStart": start.isoformat(),
-                "weekEnd": (start + dt.timedelta(days=6)).isoformat(),
+                "weekEnd": (end - dt.timedelta(days=1)).isoformat(),
                 "newUsers": usage["newUsers"],
                 "activeUsers": usage["activeUsers"],
                 "launches": usage["launches"],
@@ -2789,7 +2860,7 @@ def _build_weekly_report(week_start=None, filters=None, now=None):
         excluded_performance = conn.execute(
             """SELECT COUNT(*) FROM performance_sessions ps JOIN clients c ON c.client_hash=ps.client_hash
                 WHERE ps.day>=? AND ps.day<? AND ps.authenticated=0""" + where,
-            [week_start.isoformat(), current_end.isoformat()] + args,
+            [period_start.isoformat(), current_end.isoformat()] + args,
         ).fetchone()[0]
     finally:
         conn.close()
@@ -2830,8 +2901,8 @@ def _build_weekly_report(week_start=None, filters=None, now=None):
         "label": label,
         **_metric_comparison(current_usage[key], previous_usage[key]),
     } for key, label in comparison_keys]
-    diagnostic_current = _diagnostic_reports_in_period(week_start, current_end)
-    diagnostic_previous = _diagnostic_reports_in_period(previous_start, week_start)
+    diagnostic_current = _diagnostic_reports_in_period(period_start, current_end)
+    diagnostic_previous = _diagnostic_reports_in_period(previous_start, period_start)
     issues = {
         "applyFailures": _metric_comparison(current_usage["applyFailures"], previous_usage["applyFailures"]),
         "restoreFailures": _metric_comparison(current_usage["restoreFailures"], previous_usage["restoreFailures"]),
@@ -2841,7 +2912,9 @@ def _build_weekly_report(week_start=None, filters=None, now=None):
             "reason": "客户端协议尚未上报采样失败次数",
         },
     }
-    summary, highlights, concerns = _weekly_summary(core, current["performanceComparison"], issues)
+    summary, highlights, concerns = _weekly_summary(
+        core, current["performanceComparison"], issues, period_mode
+    )
     selected_filters = {
         "version": filters.get("version"), "gpu": filters.get("gpu"),
         "deviceType": filters.get("deviceType"), "validOnly": bool(filters.get("validOnly")),
@@ -2850,9 +2923,10 @@ def _build_weekly_report(week_start=None, filters=None, now=None):
         "schemaVersion": WEEKLY_SCHEMA_VERSION,
         "generatedAt": now,
         "week": {
-            "weekStart": week_start.isoformat(),
-            "current": {"start": week_start.isoformat(), "end": (current_end - dt.timedelta(days=1)).isoformat(), "endExclusive": current_end.isoformat()},
-            "previous": {"start": previous_start.isoformat(), "end": (week_start - dt.timedelta(days=1)).isoformat(), "endExclusive": week_start.isoformat()},
+            "periodMode": period_mode,
+            "weekStart": period_start.isoformat(),
+            "current": {"start": period_start.isoformat(), "end": (current_end - dt.timedelta(days=1)).isoformat(), "endExclusive": current_end.isoformat()},
+            "previous": {"start": previous_start.isoformat(), "end": (period_start - dt.timedelta(days=1)).isoformat(), "endExclusive": period_start.isoformat()},
             "snapshot": _snapshot_metadata(),
         },
         "filters": selected_filters,
@@ -3046,7 +3120,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not _admin_authorized(self):
                 return self._reply_json(403, {"error": "forbidden"})
             try:
-                week_start, filters, live = _parse_weekly_query(self.path)
+                period, filters, live = _parse_weekly_query(self.path)
+                if isinstance(period, CustomPeriod):
+                    report = _build_custom_period_report(period.start, period.end, filters)
+                    return self._reply_json(200, _mark_snapshot(report, False, False))
+                week_start = period
                 if not live and _filters_are_default(filters):
                     snapshot = _load_weekly_snapshot(week_start)
                     if snapshot is not None:

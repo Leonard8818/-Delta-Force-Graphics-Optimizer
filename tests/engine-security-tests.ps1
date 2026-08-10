@@ -140,6 +140,14 @@ try {
   Assert-True ($mainPreset.Items -notcontains 'nvidia-profile') 'NPI 不得进入主推方案'
   Assert-True ($mainPreset.Items -notcontains 'nv-autoopt-off') '用户可写 NVIDIA 配置文件不得进入提权主推方案'
   Assert-True ($mainPreset.Items -contains 'gpu-name-spoof') '主推方案应包含显卡型号伪装，执行仍由 -Risky 契约拦截'
+  $spoofModels = @(Get-GpuSpoofModels)
+  Assert-True ($spoofModels.Count -eq 2 -and
+    $spoofModels[0] -eq 'NVIDIA GeForce GTX 750 Ti' -and
+    $spoofModels[1] -eq 'NVIDIA GeForce GTX 1050 Ti') '显卡型号伪装下拉选项必须使用 GTX 750 Ti/1050 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 3060 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') 'RTX 30 系默认应伪装为 GTX 750 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 4070' $false) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 40 系默认应伪装为 GTX 1050 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 5060 Laptop GPU' $true) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 50 系笔记本默认应伪装为 GTX 1050 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce GTX 1660 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') '其他台式 N 卡兜底应伪装为 GTX 750 Ti'
   $noChange = [pscustomobject]@{ Ok=$true; Skipped=$false; Msg='已写入' }
   [void](Set-ApplyResultChangeState $noChange $false)
   Assert-True (-not $noChange.Changed -and $noChange.Skipped -and $noChange.Msg -like '无需修改*') '0 个 applied WAL 的成功项必须标记 Changed=false/Skipped=true'
@@ -165,7 +173,58 @@ try {
   $validExe = Join-Path $temp 'DeltaForceClient-Win64-Shipping.exe'
   [IO.File]::WriteAllText($validExe,'fixture')
   Assert-True ((Resolve-ValidatedGamePath $validExe) -eq [IO.Path]::GetFullPath($validExe)) '允许的游戏主程序应返回规范绝对路径'
+
+  # 第三方平台偶尔会把 REG_SZ 写成带尾随 NUL；WinPS 5.1 原先会在 Find-GamePath 的
+  # Test-Path 直接抛 Illegal characters in path，GUI 因而停在“检测失败 / 定位中”。
+  $searchRoot = Join-Path $temp 'game-search-fixture'
+  $searchExe = Join-Path $searchRoot 'DeltaForce\Binaries\Win64\DeltaForceClient-Win64-Shipping.exe'
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $searchExe))
+  [IO.File]::WriteAllText($searchExe,'fixture')
+  $uninstaller = Join-Path $searchRoot 'uninstall.exe'
+  [IO.File]::WriteAllText($uninstaller,'fixture')
+  Assert-True ((Resolve-RegistryFileParent ('"' + $uninstaller + '" /S') $false) -eq $searchRoot) '带引号和参数的 UninstallString 应只解析 EXE 父目录'
+  Assert-True ((Resolve-RegistryFileParent ('"' + $uninstaller + '",0') $true) -eq $searchRoot) 'DisplayIcon 的引号和资源索引不得混进目录'
+  Assert-True ((Resolve-RegistryFileParent ($uninstaller + ' /quiet') $false) -eq $searchRoot) '未加引号且路径含空格的卸载命令应解析到首个完整 EXE'
+  Assert-True ($null -eq (Resolve-ExistingGameSearchRoot ([IO.Path]::GetPathRoot($searchRoot)))) '损坏候选不得把整盘根加入递归扫描'
+  Assert-True ($null -eq (Resolve-ExistingGameSearchRoot ("C:\bad" + [char]0 + 'embedded'))) '含内嵌 NUL 的损坏候选应跳过'
+
+  $originalGetRegValue = ${function:Get-RegValue}
+  try {
+    $script:MockGameSearchRoot = $searchRoot + [char]0
+    $script:ObservedGameSearchRoots = New-Object System.Collections.Generic.List[string]
+    function Get-RegValue([string]$Path, [string]$Name) {
+      if ($Path -match 'Tencent\\WeGame') { return $script:MockGameSearchRoot }
+      $null
+    }
+    function Get-Process { [CmdletBinding()]param([string[]]$Name) @() }
+    function Get-ItemProperty { [CmdletBinding()]param([object[]]$Path) @() }
+    function Get-PSDrive { [CmdletBinding()]param([string[]]$PSProvider) @() }
+    function Get-ChildItem {
+      [CmdletBinding()]param([string]$LiteralPath,[switch]$Recurse,[int]$Depth,[string]$Filter,[switch]$File)
+      if ($LiteralPath) { [void]$script:ObservedGameSearchRoots.Add($LiteralPath) }
+      @()
+    }
+    Assert-True ((Find-GamePath) -eq $searchExe) '尾随 NUL 应被清理，合法 WeGame 根仍须自动定位游戏'
+    $script:MockGameSearchRoot = [IO.Path]::GetPathRoot($searchRoot)
+    $script:ObservedGameSearchRoots.Clear()
+    Assert-True ($null -eq (Find-GamePath)) '只有整盘根候选时应返回未定位而不是递归整盘'
+    Assert-True ($script:ObservedGameSearchRoots.Count -eq 0) 'Get-ChildItem 不得收到文件系统根候选'
+    $script:MockGameSearchRoot = "C:\bad" + [char]0 + 'embedded'
+    Assert-True ($null -eq (Find-GamePath)) '坏平台注册表候选不得使自动定位抛异常'
+  } finally {
+    Set-Item -Path Function:\Get-RegValue -Value $originalGetRegValue
+    foreach ($fn in 'Get-Process','Get-ItemProperty','Get-PSDrive','Get-ChildItem') {
+      Remove-Item -Path ("Function:\" + $fn) -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  $noGameItems = @(Get-OptItems $null)
+  $nonGameItem = $noGameItems | Where-Object Id -eq 'game-mode' | Select-Object -First 1
+  $gameOnlyItem = $noGameItems | Where-Object Id -eq 'fso-off' | Select-Object -First 1
+  Assert-True (@($nonGameItem.Ops).Count -gt 0) '未定位游戏时，非游戏系统项仍应保留可执行操作'
+  Assert-True ($gameOnlyItem.RequiresGame -and -not $gameOnlyItem.Ops) '未定位游戏时，只应让依赖路径的项目进入明确跳过分支'
   $engineText = Get-Content -LiteralPath $engine -Raw -Encoding UTF8
+  Assert-True ($engineText -notmatch '(?i)705\s*Ti') '引擎参数、注册表目标字符串及文案不得残留错误型号 705 Ti'
   Assert-True ($engineText -match "Name = 'SystemResponsiveness'; Value = 10") 'SystemResponsiveness 必须使用有效最低值 10'
   $partial = [pscustomobject]@{ BackupError=$null; Results=@([pscustomobject]@{Ok=$false;Skipped=$false;Attention=$false}) }
   $backupFail = [pscustomobject]@{ BackupError='disk'; Results=@() }

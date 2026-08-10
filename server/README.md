@@ -56,8 +56,11 @@ Content-Type: application/json
 实验运行独立写入 `tuning_*` 表，不混入普通 `performance_sessions`。
 
 私有周报 API 为 `GET /api/weekly`，默认完整周按 `Asia/Taipei (UTC+8)` 的周一至周日计算，
-并可按版本、真实显卡和设备类型筛选；
-`POST /api/weekly/snapshot` 固化历史周报。两者都要求 `X-DFB-Admin-Token`。自动调优结论要求
+也可用 `startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` 查询包含首尾的自定义周期。自定义周期为
+1–92 天，结束日期不晚于台北当天；对比周期是紧邻当前周期且天数相同的上一周期，趋势图使用
+最近 8 个等长周期。两种模式都可按版本、真实显卡和设备类型筛选。自定义周期始终实时计算，
+不会读取或生成周快照；`POST /api/weekly/snapshot` 只固化以周一为起点的标准历史周报。两者都要求
+`X-DFB-Admin-Token`。自动调优结论要求
 每个实验至少 3 次稳定基线、3 次当前对照、2 次候选有效运行，环境和设置摘要一致、顺序受控且
 候选全量成功；每组至少覆盖 20 台独立匿名设备才发布胜出率、性能变化与回滚率，同一设备每组
 只贡献一份汇总，样本不足时只返回数量。

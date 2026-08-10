@@ -13,7 +13,7 @@
   v0.16.2：主推全套加入显卡型号伪装；GUI 仍会单独列出并要求二次确认，CLI 仍需 -Risky。
   v0.16.1：双显卡按独显性能优先级选择主显卡，不再因 WMI 返回顺序误把 AMD/Intel
         核显用于显卡指引；NVIDIA 笔记本指引补充 Game Ready 驱动选择说明。
-  v0.16：显卡型号伪装按代际给默认值（RTX 30 系 → GTX 705 Ti，RTX 40/50 系 →
+  v0.16：显卡型号伪装按代际给默认值（RTX 30 系 → GTX 750 Ti，RTX 40/50 系 →
         GTX 1050 Ti），并新增 -GpuSpoofModel 供 GUI/CLI 明确选择目标型号。
   v0.15.1：pcfg 还原兜底改按「残留是否在还原后最终生效的方案里」判定（原先只认工具
         自建方案，名字匹配来的卓越性能方案会误报还原失败）；真失败时给人话错误并带项名。
@@ -69,7 +69,7 @@ param(
   [string]$ResultId,
   [string]$UserSid,
   [string]$UserLocalAppData,
-  [ValidateSet('NVIDIA GeForce GTX 705 Ti', 'NVIDIA GeForce GTX 1050 Ti')]
+  [ValidateSet('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti')]
   [string]$GpuSpoofModel,
   [switch]$Risky,
   [switch]$Json
@@ -1282,6 +1282,53 @@ function Resolve-ValidatedGamePath([string]$Path) {
   $full
 }
 
+# 平台/卸载信息来自第三方注册表。少数安装器会把 REG_SZ 写成带尾随 NUL 的字符串；
+# Windows PowerShell 5.1 在 Test-Path 这类值时会直接抛“路径中具有非法字符”，使整个
+# 启动检测中断。自动定位是尽力而为：清掉无意义的尾随 NUL，规范化确实存在的目录；
+# 其余损坏、带参数或已离线的单个候选只跳过，不能拖垮硬件检测和系统优化。
+function Resolve-ExistingGameSearchRoot([string]$Candidate) {
+  if ([string]::IsNullOrWhiteSpace($Candidate)) { return $null }
+  try {
+    $value = "$Candidate".Trim().TrimEnd([char[]]@([char]0)).Trim()
+    if ($value.Length -ge 2 -and $value[0] -eq '"' -and $value[$value.Length - 1] -eq '"') {
+      $value = $value.Substring(1, $value.Length - 2).Trim()
+    }
+    if (-not $value -or $value.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0 -or
+        -not [IO.Path]::IsPathRooted($value)) { return $null }
+    $full = [IO.Path]::GetFullPath($value)
+    # 损坏的卸载项若误指到 C:\ / 共享根，后面的 Depth 6 会退化成整盘/整共享扫描。
+    # 自动定位不接受文件系统根；平台根下的正常子目录仍照常使用。
+    if ($full.TrimEnd('\') -ieq ([IO.Path]::GetPathRoot($full)).TrimEnd('\')) { return $null }
+    if (Test-Path -LiteralPath $full -PathType Container -ErrorAction SilentlyContinue) { return $full }
+  } catch {}
+  $null
+}
+
+# UninstallString 是命令行，DisplayIcon 是“文件路径[,资源索引]”；二者都不能直接当目录。
+# 引号形式只取第一段引号内容，未加引号的卸载命令只取开头到首个完整 .exe，随后再把
+# 解析出的文件父目录交给同一条路径校验。这样参数里的 /S、引号、逗号都不会混进搜索根。
+function Resolve-RegistryFileParent([string]$RawValue, [bool]$DisplayIcon = $false) {
+  if ([string]::IsNullOrWhiteSpace($RawValue)) { return $null }
+  try {
+    $text = "$RawValue".Trim().TrimEnd([char[]]@([char]0)).Trim()
+    $filePath = $null
+    if ($text -match '^"([^"]+)"(?:\s.*|,\s*-?\d+\s*)?$') {
+      $filePath = $Matches[1]
+    } elseif ($DisplayIcon) {
+      # 未加引号的图标值没有命令行参数，只允许末尾的资源索引。
+      $filePath = ($text -replace ',\s*-?\d+\s*$', '').Trim()
+    } elseif ($text -match '^(.+?\.exe)(?:\s+(?:/|-).*)?$') {
+      $filePath = $Matches[1]
+    }
+    if (-not $filePath -or $filePath.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0 -or
+        -not [IO.Path]::IsPathRooted($filePath)) { return $null }
+    $full = [IO.Path]::GetFullPath($filePath)
+    $parent = [IO.Path]::GetDirectoryName($full)
+    if ($parent) { return Resolve-ExistingGameSearchRoot $parent }
+  } catch {}
+  $null
+}
+
 function Find-GamePath {
   # 三角洲行动国服走 WeGame，国际服(Delta Force)走 Steam。但玩家常把游戏装到
   # 平台目录之外（实测有人装在 E:\Delta Force\Delta Force），所以按可靠性排序多路查找：
@@ -1303,26 +1350,30 @@ function Find-GamePath {
   foreach ($e in @(Get-ItemProperty $unKeys -ErrorAction SilentlyContinue |
                    Where-Object { $_.DisplayName -match '三角洲|Delta\s*Force|DeltaForce' })) {
     # InstallLocation 常为空，此时从卸载程序/图标路径倒推安装目录
-    foreach ($cand in @($e.InstallLocation,
-                        $(if ($e.UninstallString) { Split-Path -Parent ($e.UninstallString -replace '^"|"$') }),
-                        $(if ($e.DisplayIcon)     { Split-Path -Parent ($e.DisplayIcon -replace '^"|"$' -replace ',\d+$') }))) {
-      if ($cand -and (Test-Path -LiteralPath $cand -ErrorAction SilentlyContinue)) { $roots.Add($cand) }
+    $candidates = @($e.InstallLocation,
+                    (Resolve-RegistryFileParent "$($e.UninstallString)" $false),
+                    (Resolve-RegistryFileParent "$($e.DisplayIcon)" $true))
+    foreach ($cand in $candidates) {
+      $resolved = Resolve-ExistingGameSearchRoot "$cand"
+      if ($resolved) { $roots.Add($resolved) }
     }
   }
 
   foreach ($rk in 'HKLM:\SOFTWARE\WOW6432Node\Tencent\WeGame', 'HKCU:\Software\Tencent\WeGame') {
-    $ip = Get-RegValue $rk 'InstallPath'
-    if ($ip -and (Test-Path -LiteralPath $ip)) { $roots.Add($ip) }
+    $ip = Resolve-ExistingGameSearchRoot "$(Get-RegValue $rk 'InstallPath')"
+    if ($ip) { $roots.Add($ip) }
   }
 
-  $steam = Get-RegValue 'HKCU:\Software\Valve\Steam' 'SteamPath'
+  $steam = Resolve-ExistingGameSearchRoot "$(Get-RegValue 'HKCU:\Software\Valve\Steam' 'SteamPath')"
   if ($steam) {
     $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
     if (Test-Path -LiteralPath $vdf) {
       foreach ($m in [regex]::Matches((Get-Content -LiteralPath $vdf -Raw), '"path"\s+"([^"]+)"')) {
-        $lib = $m.Groups[1].Value -replace '\\\\', '\'
-        $g = Join-Path $lib 'steamapps\common\Delta Force'
-        if (Test-Path -LiteralPath $g) { $roots.Add($g) }
+        $lib = Resolve-ExistingGameSearchRoot ($m.Groups[1].Value -replace '\\\\', '\')
+        if ($lib) {
+          $g = Resolve-ExistingGameSearchRoot (Join-Path $lib 'steamapps\common\Delta Force')
+          if ($g) { $roots.Add($g) }
+        }
       }
     }
   }
@@ -1342,15 +1393,15 @@ function Find-GamePath {
   # 兜底：平台目录下按盘符猜测（放最后，因为这里最可能扫到无关的大目录）
   foreach ($d in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' })) {
     foreach ($guess in 'Delta Force', 'WeGame', 'WeGameApps', 'Program Files\WeGame') {
-      $p = Join-Path $d.Root $guess
-      if (Test-Path -LiteralPath $p) { $uniq += $p }
+      $p = Resolve-ExistingGameSearchRoot (Join-Path $d.Root $guess)
+      if ($p) { $uniq += $p }
     }
   }
 
   $found = @()
   foreach ($r in ($uniq | Select-Object -Unique)) {
     foreach ($n in $exeNames) {
-      $found += @(Get-ChildItem -Path $r -Recurse -Depth 6 -Filter $n -File -ErrorAction SilentlyContinue |
+      $found += @(Get-ChildItem -LiteralPath $r -Recurse -Depth 6 -Filter $n -File -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty FullName)
     }
     # 找到就停，别为了凑齐所有结果把每个候选目录都递归扫一遍
@@ -1488,16 +1539,16 @@ $script:SubUsb  = '2a737441-1930-4402-8d77-b2bebba308a3'
 $script:SubProc = '54533251-82be-4824-96c1-47b60b740d00'
 
 function Get-GpuSpoofModels {
-  @('NVIDIA GeForce GTX 705 Ti', 'NVIDIA GeForce GTX 1050 Ti')
+  @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti')
 }
 
 function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop) {
-  # 按用户实机经验做代际映射：RTX 30 系默认伪装为 705 Ti，40/50 系默认 1050 Ti。
+  # 按用户实机经验做代际映射：RTX 30 系默认伪装为 750 Ti，40/50 系默认 1050 Ti。
   # 其他型号保留原先的机型兜底逻辑，界面仍允许用户手动切换两种目标型号。
-  if ("$GpuName" -match '(?i)RTX\s*30\d{2}') { return 'NVIDIA GeForce GTX 705 Ti' }
+  if ("$GpuName" -match '(?i)RTX\s*30\d{2}') { return 'NVIDIA GeForce GTX 750 Ti' }
   if ("$GpuName" -match '(?i)RTX\s*(?:40|50)\d{2}') { return 'NVIDIA GeForce GTX 1050 Ti' }
   if ($IsLaptop) { return 'NVIDIA GeForce GTX 1050 Ti' }
-  'NVIDIA GeForce GTX 705 Ti'
+  'NVIDIA GeForce GTX 750 Ti'
 }
 
 function Test-TrustedNvidiaProfileInspector([string]$Path) {
