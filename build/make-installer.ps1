@@ -640,7 +640,7 @@ if ($TestBuild) {
 # scripts\updater.ps1 的白名单内，否则老客户端会拒绝下载。
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
-$manifestNotes = '修复了一些已知问题。'
+$manifestNotes = '修复非中文区域设置的电脑上软件完全无法打开的问题：读取程序路径的系统调用未指定 Unicode，安装目录里的中文文件名被转成问号，导致管理员助手启动即退出。\n卸载程序存在同一问题，一并修复。\n另修复启动器在报错时会覆盖真实原因、误报为「启动失败」的问题。'
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂

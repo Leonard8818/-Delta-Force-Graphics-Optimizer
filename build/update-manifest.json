@@ -1,9 +1,9 @@
 {
-    "version":  "0.21.5",
-    "minimumSupportedVersion":  "0.20.4",
-    "notes":  "修复了一些已知问题。",
-    "url":  "https://df.ltz88.cn/",
-    "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "bdd345e5fe08e5aec77b73ab591255116c3cf7fde1251b30a366ea0d89ba352a",
-    "size":  819712
+  "version": "0.21.5",
+  "minimumSupportedVersion": "0.20.4",
+  "notes": "修复非中文区域设置的电脑上软件完全无法打开的问题：读取程序路径的系统调用未指定 Unicode，安装目录里的中文文件名被转成问号，导致管理员助手启动即退出。\\n卸载程序存在同一问题，一并修复。\\n另修复启动器在报错时会覆盖真实原因、误报为「启动失败」的问题。",
+  "url": "https://df.ltz88.cn/",
+  "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
+  "sha256": "bdd345e5fe08e5aec77b73ab591255116c3cf7fde1251b30a366ea0d89ba352a",
+  "size": 819712
 }
