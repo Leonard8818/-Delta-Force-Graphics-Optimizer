@@ -1,5 +1,9 @@
 ﻿<#
-  DeltaForceBooster 启动器构建脚本 — v0.5
+  DeltaForceBooster 启动器构建脚本 — v0.6
+  v0.6：收尾阶段不再对 GetProcessById 拿到的 EngineHost 直接读 ExitCode/WaitForExit——
+        那会抛「进程不是由此对象启动的」，把 EngineHost 真正的失败原因盖成一句无关
+        报错；改为可失败的安全读取，读不到就如实说明。会话建立后再出错也不再谎称
+        「启动失败」。
   v0.5：asInvoker 启动器不再直接运行 PowerShell；它校验受保护安装目录、
         EngineHost 与全部可执行负载，再通过双向命名管道启动唯一的管理员会话。
   v0.4：启动器改为 asInvoker；启动 GUI 前校验关键脚本/PresentMon 的发布哈希，
@@ -509,6 +513,46 @@ $hashRowsText
         return "'" + (value ?? "").Replace("'", "''") + "'";
     }
 
+    // 管理员会话是否已经建立：建立之后再出错就不是「启动失败」，而是运行/收尾阶段的问题。
+    // 两者的用户动作完全不同（重装 vs 重开），文案不能混用
+    static bool s_sessionStarted = false;
+
+    // 下面三个都用于「不是本进程启动的」目标进程（GetProcessById 拿到的 EngineHost）。
+    // .NET 对这类 Process 对象读退出状态可能抛 InvalidOperationException（没有句柄所有权）
+    // 或 Win32Exception（medium 启动器打不开 high 完整性进程）。这些都属于「查不到」，
+    // 不是致命错误：一旦让它们抛出去，真正的失败原因就会被掩盖成一句无关的报错。
+    static bool ForeignHasExited(Process p) {
+        try { return p.HasExited; }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
+        // 查不到状态时按“仍在运行”处理：宁可多等一会儿，也不要误判成已退出而提前收尾
+        return false;
+    }
+
+    static bool TryGetForeignExitCode(Process p, out int code) {
+        code = 0;
+        try {
+            if (!p.HasExited) return false;
+            code = p.ExitCode;
+            return true;
+        }
+        catch (InvalidOperationException) { return false; }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+    }
+
+    // WaitForExit 需要 SYNCHRONIZE 权限，medium→high 会被拒；拿不到就退化成轮询
+    static bool WaitForForeignExit(Process p, int timeoutMs) {
+        try { return p.WaitForExit(timeoutMs); }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs) {
+            if (ForeignHasExited(p)) return true;
+            System.Threading.Thread.Sleep(150);
+        }
+        return ForeignHasExited(p);
+    }
+
     static Process StartEngineHostWithPolicyFallback(ProcessStartInfo direct, string hostPath,
         string pipeName, string session, out bool usedFallback) {
         usedFallback = false;
@@ -590,17 +634,20 @@ $hashRowsText
                 writer.Write(localAppData);
                 writer.Write(repairOnly);
                 writer.Flush();
+                s_sessionStarted = true;
 
                 // asInvoker 启动器在整个 GUI 生命周期内保留：它既在 UAC 前持有
                 // 单实例 mutex，也作为唯一的 medium-token broker。EngineHost 只能
                 // 通过已认证的这条管道请求固定动作，不能把任意命令交给低权限端。
+                bool sessionCompleted = false;
                 while (true) {
                     string message;
                     try { message = reader.ReadString(); }
                     catch (EndOfStreamException) { break; }
-                    catch (IOException) { if (host.HasExited) break; throw; }
+                    catch (IOException) { if (ForeignHasExited(host)) break; throw; }
                     if (message == "DFB_ENGINE_DONE/1") {
                         if (reader.ReadString() != session) throw new InvalidOperationException("管理员助手结束会话标记无效");
+                        sessionCompleted = true;
                         break;
                     }
                     if (message != "DFB_LOW_REQUEST/1" || reader.ReadString() != session)
@@ -616,10 +663,19 @@ $hashRowsText
                     WriteBoundedUtf8(writer, result.Payload, MaxBrokerPayloadBytes);
                     writer.Flush();
                 }
-                if (!host.HasExited && !host.WaitForExit(30000))
+                if (!WaitForForeignExit(host, 30000))
                     throw new TimeoutException("管理员助手结束会话后未在 30 秒内退出");
-                if (host.HasExited && host.ExitCode != 0)
-                    throw new InvalidOperationException("管理员助手异常退出（退出码 " + host.ExitCode + "）");
+                // host 来自 GetProcessById，不是本对象启动的：直接读 ExitCode 会抛
+                // “进程不是由此对象启动的，因此无法确定所请求的信息”，把 EngineHost
+                // 真正的失败原因整个盖掉，用户只看到一句与病因无关的话。读不到退出码
+                // 本身不是错误——报错路径绝不允许自己再抛一次异常
+                int hostExitCode;
+                if (TryGetForeignExitCode(host, out hostExitCode)) {
+                    if (hostExitCode != 0)
+                        throw new InvalidOperationException("管理员助手异常退出（退出码 " + hostExitCode + "）");
+                } else if (!sessionCompleted) {
+                    throw new InvalidOperationException("管理员助手在会话正常结束前退出，且无法读取其退出码");
+                }
                 }
                 if (!elevation.HasExited && !elevation.WaitForExit(30000))
                     throw new TimeoutException("管理员启动边界未在 30 秒内退出");
@@ -674,8 +730,14 @@ $hashRowsText
             }
             LaunchEngineHost(root, repairOnly);
         } catch (Exception ex) {
-            string reason = (ex is System.ComponentModel.Win32Exception && ((System.ComponentModel.Win32Exception)ex).NativeErrorCode == 1223)
-                ? "已取消管理员授权，软件未启动。" : "启动失败：" + ex.Message;
+            string reason;
+            if (ex is System.ComponentModel.Win32Exception && ((System.ComponentModel.Win32Exception)ex).NativeErrorCode == 1223)
+                reason = "已取消管理员授权，软件未启动。";
+            else if (s_sessionStarted)
+                // 会话已经建起来过，问题出在运行或收尾阶段：让用户重开而不是去重装
+                reason = "运行过程中出现问题：" + ex.Message + "\n\n软件已退出，可以重新打开试试。";
+            else
+                reason = "启动失败：" + ex.Message;
             MessageBox.Show(reason, "三角洲行动优化助手", MessageBoxButtons.OK, MessageBoxIcon.Error);
         } finally {
             if (marker != null) marker.Dispose();

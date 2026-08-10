@@ -101,7 +101,11 @@ $hashRowsText
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
-    [DllImport("kernel32.dll", SetLastError = true)]
+    // 必须显式 Unicode：DllImport 默认 CharSet.Ansi 会绑到 ...NameA，按系统 ANSI 代码页转字符串。
+    // 启动器叫「启动优化工具.exe」，在非中文区域设置（本机 ACP=1252）上中文全变成 ?，随后
+    // .NET Framework 的 Path.GetFullPath 把 ? 当通配符拒绝，抛「路径中具有非法字符」——
+    // EngineHost 启动即死，而弹出的报错与真因毫无关系
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder path, ref int size);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool CloseHandle(IntPtr handle);

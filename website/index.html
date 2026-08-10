@@ -39,21 +39,19 @@
   .proof-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
   .proof-card { min-height:137px; padding:14px 15px 12px; position:relative; overflow:hidden; border:1px solid #1B392D; background:#0A1612; }
   .proof-card::before { content:""; position:absolute; left:0; top:0; width:30px; height:2px; background:var(--green); }
-  .proof-arrow { position:absolute; right:13px; top:12px; color:var(--green); font:700 15px/1 Consolas,monospace; animation:arrowFloat 1.7s ease-in-out infinite; }
+  .proof-arrow { position:absolute; right:13px; top:12px; color:var(--green); font:700 15px/1 Consolas,monospace; opacity:.8; }
   .proof-label { color:#92A79E; font-size:11px; }
   .proof-value { margin-top:13px; color:#F8FFFC; font:700 27px/1 Consolas,monospace; font-variant-numeric:tabular-nums; }
   .proof-spark { display:block; width:100%; height:38px; margin:7px 0 1px; overflow:visible; }
   .proof-spark-grid { stroke:#17372B; stroke-width:1; vector-effect:non-scaling-stroke; }
   .proof-spark-area { fill:rgba(0,232,132,.17); }
-  .proof-spark-line { fill:none; stroke:var(--green); stroke-width:2.35; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; filter:drop-shadow(0 0 2px rgba(0,232,132,.72)); animation:sparkDraw .9s ease-out both; }
-  .proof-spark-dot { fill:#07110D; stroke:var(--green); stroke-width:2; vector-effect:non-scaling-stroke; filter:drop-shadow(0 0 3px rgba(0,232,132,.95)); animation:sparkPulse 1.8s ease-in-out infinite; }
+  .proof-spark-line { fill:none; stroke:var(--green); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; animation:sparkFade .45s ease-out both; }
+  .proof-spark-dot { stroke:var(--green); stroke-width:5; stroke-linecap:round; vector-effect:non-scaling-stroke; }
   .proof-hint { margin-top:4px; color:#537466; font-size:9px; }
   .proof-note { margin:11px 1px 0; color:#516E62; font-size:9px; }
   @keyframes livePulse { 70% { box-shadow:0 0 0 8px rgba(0,232,132,0) } 100% { box-shadow:0 0 0 0 rgba(0,232,132,0) } }
-  @keyframes arrowFloat { 0%,100% { transform:translateY(1px); opacity:.65 } 50% { transform:translateY(-3px); opacity:1 } }
-  @keyframes sparkDraw { from { stroke-dasharray:120; stroke-dashoffset:120; opacity:.35 } to { stroke-dasharray:120; stroke-dashoffset:0; opacity:1 } }
-  @keyframes sparkPulse { 0%,100% { opacity:.72; transform:scale(.9); transform-origin:center } 50% { opacity:1; transform:scale(1.16); transform-origin:center } }
-  @media (prefers-reduced-motion:reduce) { .proof-spark-line,.proof-spark-dot,.proof-arrow,.live-dot { animation:none } }
+  @keyframes sparkFade { from { opacity:0 } to { opacity:1 } }
+  @media (prefers-reduced-motion:reduce) { .proof-spark-line,.live-dot { animation:none } }
   .card { background:var(--panel); border:1px solid var(--line); padding:18px 22px; margin:26px 0 }
   .card h2 { font-size:14px; margin:0 0 10px; color:var(--green) }
   .card ul { margin:0; padding-left:20px; color:var(--tx2); font-size:14px }
@@ -73,7 +71,6 @@
            font-family:Consolas,monospace; letter-spacing:.1em }
   @media (max-width:760px) { .proof-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
   @media (max-width:520px) { .release { grid-template-columns:1fr; gap:5px } .release-ver small { display:inline; margin-left:8px } .proof{padding:16px}.proof-head{align-items:flex-start;flex-direction:column}.proof-card{min-height:132px}.proof-value{font-size:23px} }
-  @media (prefers-reduced-motion:reduce) { .live-dot,.proof-arrow { animation:none } }
 </style>
 </head>
 <body>
@@ -104,13 +101,13 @@
       <div class="live-state"><span class="live-dot"></span><span id="publicStatsStatus">正在连接实时数据</span></div>
     </div>
     <div class="proof-grid">
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计用户</div><div class="proof-value" data-stat="users">—</div><svg class="proof-spark" data-spark="users" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">已使用工具的匿名安装标识</div></article>
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">近 7 日活跃</div><div class="proof-value" data-stat="active7d">—</div><svg class="proof-spark" data-spark="active7d" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">最近 7 天有启动或操作</div></article>
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">近 15 分钟在线</div><div class="proof-value" data-stat="active15m">—</div><svg class="proof-spark" data-spark="active15m" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">按最近一次事件估算</div></article>
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">今日启动次数</div><div class="proof-value" data-stat="launchesToday">—</div><svg class="proof-spark" data-spark="launchesToday" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">北京时间自然日</div></article>
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计启动次数</div><div class="proof-value" data-stat="totalLaunches">—</div><svg class="proof-spark" data-spark="totalLaunches" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">历史启动事件累计</div></article>
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计执行优化</div><div class="proof-value" data-stat="totalApplies">—</div><svg class="proof-spark" data-spark="totalApplies" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">用户主动执行优化的次数</div></article>
-      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计优化成功项</div><div class="proof-value" data-stat="totalApplyOk">—</div><svg class="proof-spark" data-spark="totalApplyOk" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><circle class="proof-spark-dot" r="1.8"/></svg><div class="proof-hint">引擎确认成功的优化项目</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计用户</div><div class="proof-value" data-stat="users">—</div><svg class="proof-spark" data-spark="users" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">已使用工具的匿名安装标识</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">近 7 日活跃</div><div class="proof-value" data-stat="active7d">—</div><svg class="proof-spark" data-spark="active7d" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">最近 7 天有启动或操作</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">近 15 分钟在线</div><div class="proof-value" data-stat="active15m">—</div><svg class="proof-spark" data-spark="active15m" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">按最近一次事件估算</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">今日启动次数</div><div class="proof-value" data-stat="launchesToday">—</div><svg class="proof-spark" data-spark="launchesToday" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">北京时间自然日</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计启动次数</div><div class="proof-value" data-stat="totalLaunches">—</div><svg class="proof-spark" data-spark="totalLaunches" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">历史启动事件累计</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计执行优化</div><div class="proof-value" data-stat="totalApplies">—</div><svg class="proof-spark" data-spark="totalApplies" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">用户主动执行优化的次数</div></article>
+      <article class="proof-card"><span class="proof-arrow">↗</span><div class="proof-label">累计优化成功项</div><div class="proof-value" data-stat="totalApplyOk">—</div><svg class="proof-spark" data-spark="totalApplyOk" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><line class="proof-spark-grid" x1="2" y1="33" x2="98" y2="33"/><polygon class="proof-spark-area"/><polyline class="proof-spark-line"/><line class="proof-spark-dot"/></svg><div class="proof-hint">引擎确认成功的优化项目</div></article>
     </div>
     <div class="proof-note">统计为客户端自报的匿名汇总，仅用于展示工具使用情况；不包含用户名、机器名、游戏路径或诊断正文。</div>
   </section>
@@ -343,9 +340,13 @@
     const serialized=points.map(point=>point.map(value=>value.toFixed(2)).join(',')).join(' ');
     node.querySelector('.proof-spark-line').setAttribute('points',serialized);
     node.querySelector('.proof-spark-area').setAttribute('points',`2,33 ${serialized} 98,33`);
+    // 端点用零长度线段 + round linecap 画：viewBox 是 preserveAspectRatio="none" 横向拉伸的，
+    // <circle> 会被拉成椭圆；线段的圆头配合 non-scaling-stroke 在设备坐标里始终是正圆
     const last=points[points.length-1],dot=node.querySelector('.proof-spark-dot');
-    dot.setAttribute('cx',last[0].toFixed(2));
-    dot.setAttribute('cy',last[1].toFixed(2));
+    dot.setAttribute('x1',last[0].toFixed(2));
+    dot.setAttribute('x2',last[0].toFixed(2));
+    dot.setAttribute('y1',last[1].toFixed(2));
+    dot.setAttribute('y2',last[1].toFixed(2));
   }
   async function loadPublicStats() {
     const status=document.getElementById('publicStatsStatus');
