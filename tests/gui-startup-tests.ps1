@@ -46,26 +46,33 @@ $sidFunction = Find-GuiFunction 'Test-IsBuiltInAdministratorSid'
 $enableUacFunction = Find-GuiFunction 'Enable-UacForNextRestart'
 $localNoBackupFunction = Find-GuiFunction 'Invoke-LocalNoBackupItems'
 $validatedCandidateFunction = Find-GuiFunction 'Get-ValidatedTuningCandidateRuntime'
-$adminBranches = @($ast.FindAll({
+$repairBranches = @($ast.FindAll({
   param($node)
   $node -is [Management.Automation.Language.IfStatementAst] -and
-    $node.Clauses.Count -gt 0 -and $node.Clauses[0].Item1.Extent.Text.Trim() -eq '$isAdminGui'
+    $node.Clauses.Count -gt 0 -and $node.Clauses[0].Item1.Extent.Text.Trim() -eq '$needsUacRepair'
 }, $true))
-Assert-True ($adminBranches.Count -eq 1) 'elevated GUI startup guard missing or duplicated'
-$adminText = $adminBranches[0].Extent.Text
-$adminStatements = @($adminBranches[0].Clauses[0].Item2.Statements)
+Assert-True ($repairBranches.Count -eq 1) 'disabled-UAC recovery branch missing or duplicated'
+$repairText = $repairBranches[0].Extent.Text
+$repairStatements = @($repairBranches[0].Clauses[0].Item2.Statements)
 
-Assert-True $raw.Contains('$currentWindowsIdentity.User.Value') 'startup does not inspect the current Windows identity SID'
-Assert-True $raw.Contains('Test-IsBuiltInAdministratorSid $currentSidValue') 'startup does not identify the RID-500 built-in Administrator'
-Assert-True $adminText.Contains('$enableLUA = Get-UacEnableLuaValue') 'elevated startup does not inspect the real EnableLUA policy'
-Assert-True $adminText.Contains('$filterAdministratorToken') 'RID-500 startup does not inspect FilterAdministratorToken'
-Assert-True $adminText.Contains('$needsUacRepair') 'disabled UAC does not have a dedicated recovery branch'
-Assert-True $adminText.Contains('[Windows.MessageBoxButton]::YesNo') 'UAC recovery is not explicitly confirmed by the user'
-Assert-True $adminText.Contains('Enable-UacForNextRestart -EnableBuiltInAdministratorApprovalMode:$isBuiltInAdministrator') 'confirmed recovery does not select the correct ordinary/RID-500 write set'
-Assert-True $adminText.Contains('管理员审批模式') 'RID-500 recovery does not explain Administrator Approval Mode'
-Assert-True $adminText.Contains('软件不会自动重启') 'UAC recovery does not state that restart timing remains with the user'
-Assert-True ($adminStatements.Count -gt 0 -and $adminStatements[-1] -is [Management.Automation.Language.ExitStatementAst]) 'reject, write failure, or success can continue into the elevated GUI'
-Assert-True (-not $adminText.Contains('Restart-Computer') -and -not $adminText.Contains('shutdown.exe')) 'UAC recovery must not force a restart'
+Assert-True $raw.Contains('Test-IsBuiltInAdministratorSid $script:OriginalUserSid') `
+  'startup does not identify RID-500 from the authenticated original user SID'
+Assert-True (-not $raw.Contains('Test-IsBuiltInAdministratorSid $currentSidValue')) `
+  'startup can mistake an OTS approval administrator for the original user'
+Assert-True (-not ($raw -match '\$env:(?:USERNAME|USERDOMAIN|COMPUTERNAME)')) `
+  'high GUI diagnostics still read the UAC approval account environment'
+Assert-True ($raw.Contains('Split-Path -Parent $script:OriginalUserLocalAppData') -and
+  $raw.Contains('[Environment]::MachineName')) `
+  'diagnostic redaction is not derived from the authenticated original user context'
+Assert-True $raw.Contains('if (-not $isAdminGui) { Stop-UntrustedGuiStartup') 'main GUI does not fail closed without an administrator token'
+Assert-True $raw.Contains('$enableLUA = Get-UacEnableLuaValue') 'elevated startup does not inspect the real EnableLUA policy'
+Assert-True $raw.Contains('$filterAdministratorToken') 'RID-500 startup does not inspect FilterAdministratorToken'
+Assert-True $repairText.Contains('[Windows.MessageBoxButton]::YesNo') 'UAC recovery is not explicitly confirmed by the user'
+Assert-True $repairText.Contains('Enable-UacForNextRestart -EnableBuiltInAdministratorApprovalMode:$isBuiltInAdministrator') 'confirmed recovery does not select the correct ordinary/RID-500 write set'
+Assert-True $repairText.Contains('管理员审批模式') 'RID-500 recovery does not explain Administrator Approval Mode'
+Assert-True $repairText.Contains('软件不会自动重启') 'UAC recovery does not state that restart timing remains with the user'
+Assert-True ($repairStatements.Count -gt 0 -and $repairStatements[-1] -is [Management.Automation.Language.ExitStatementAst]) 'UAC recovery can continue into the elevated GUI'
+Assert-True (-not $repairText.Contains('Restart-Computer') -and -not $repairText.Contains('shutdown.exe')) 'UAC recovery must not force a restart'
 
 $uacWrites = @($enableUacFunction.FindAll({
   param($node)
@@ -234,7 +241,10 @@ $localNoBackupFunctionText = $localNoBackupFunction.Extent.Text
 
   function Get-MockHealthyCheck { [pscustomobject]@{ Ok = $true; Text = 'healthy' } }
   function Get-MockAttentionCheck { [pscustomobject]@{ Ok = $false; Text = 'attention' } }
-  function Clear-ShaderCache { @{ Cleared = @('mock cache cleared'); Failed = @() } }
+  function Invoke-EngineHostUserAction([string]$Action) {
+    if ($Action -ne 'ClearShaderCache') { throw "unexpected broker action: $Action" }
+    '{"Cleared":["mock cache cleared"],"Failed":[]}'
+  }
 
   Invoke-Expression $FunctionText
   $items = @(

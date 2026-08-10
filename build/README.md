@@ -16,7 +16,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
 | 产物 | 用途 |
 |---|---|
-| `DeltaForceBooster-Setup-vX.Y.Z.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/安装位置/进度/完成四页；默认安装到 `%ProgramFiles%\DeltaForceBooster`，创建开始菜单与桌面入口并可立即运行 |
+| `DeltaForceBooster-Setup-vX.Y.Z.exe` | 图形安装向导（单文件，payload 内嵌为程序集资源）：欢迎/安装位置/进度/完成四页；默认安装到 `%ProgramFiles%\DeltaForceBooster`，也支持其他本地固定 NTFS 盘，创建开始菜单与桌面入口并可立即运行 |
 | `update-manifest.json` | 更新清单：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 的 `$script:GuiVersion`（构建期与界面徽标交叉校验，不一致直接构建失败），`notes` 由构建脚本中的本版公开说明生成 |
 
 **只发安装版**：绿色免安装 zip 已于 v0.15 停产（服务器上的下载入口也已移除）。
@@ -25,22 +25,38 @@ payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`
 
 设计要点：
 
-- **安装位置**：默认 `%ProgramFiles%\DeltaForceBooster`。交互安装拒绝普通用户可写的程序目录；
-  静默更新遇到下载文件夹等旧版可写目录时，会把程序迁到 Program Files 并登记旧根，
+- **安装位置**：默认 `%ProgramFiles%\DeltaForceBooster`，该布局不变。其他本地固定 NTFS 盘
+  只允许选择卷根一级目录：界面中的 `D:\DeltaForceBooster` 是永不改名/删除的 permanent
+  anchor，实际代码位于 `D:\DeltaForceBooster\app`。anchor 关闭 ACL 继承，权限恰好为
+  Administrators/SYSTEM 完全控制、Users 只读执行，并设置可继承 High MIC NoWriteUp；
+  `anchor.identity` 绑定该布局。安装器拒绝 UNC、可移动/网络盘、非 NTFS、卷根本身、任意
+  中间父目录、reparse point、危险卷根 DeleteChild/WRITE_DAC/WRITE_OWNER 以及未通过 marker/
+  ACL/MIC 复验的既有同名目录。
+  静默更新遇到下载文件夹等旧版可写目录时，会把程序迁到默认受保护目录并登记旧根，
   旧入口停用，避免管理员进程加载普通进程可替换的脚本。
-- 安装器和启动器清单都是 `asInvoker`。主界面保持普通权限，只有具体系统操作、还原和
-  更新安装才启动短生命周期 UAC helper；启动器还会校验 GUI、引擎、更新器、遥测模块、
-  自动调优规则模块和 PresentMon 的构建时 SHA256。
-- 用户配置、自存方案和实验状态位于 `%LocalAppData%\DeltaForceBooster`；受保护备份位于
-  `%ProgramData%\DeltaForceBooster\backup`，不再和程序文件混放。
-- 覆盖安装采用同卷 staging → 完整 payload 哈希核对 → 目录事务切换；中断或失败时恢复
-  rollback，未知的非空目标目录没有产品身份文件时原样拒绝，不会整目录替换。
-- 卸载目标以 `uninstall.ps1` 自身所在目录为准（位置可自选后不能再假定 LOCALAPPDATA）；
+- 安装器和启动器清单是 `asInvoker`；自有 `EngineHost.exe` 使用 `requireAdministrator`。
+  启动器在 UAC 前完成完整性校验和单实例拦截，只对 EngineHost 请求一次管理员确认；
+  EngineHost 在整个 GUI 生命周期保持提升，优化、还原、Beta 和更新不再各自重复请求 UAC。
+- 用户配置、自存方案和实验状态位于受保护的 `%ProgramData%\DeltaForceBooster\users\<SID>`；
+  受保护备份位于 `%ProgramData%\DeltaForceBooster\backup`。UAC 使用另一管理员账户时，
+  原用户 SID/LocalAppData 由全生命周期低权限启动器经认证管道提供；旧 LocalAppData 数据
+  只由该低权限端按 JSON 白名单读取并导入，提权 GUI 不日常读写用户可控目录。
+- 覆盖安装采用同卷 staging → 完整 payload 哈希核对 → 目录事务切换；Program Files 沿用
+  同级事务目录，其他盘的 `.app.dfb-stage-*`/`.app.dfb-rollback-*` 全部位于 permanent
+  anchor 内，anchor 自身绝不参与切换。中断或失败时恢复 rollback，未知的非空目标目录
+  没有产品身份文件时原样拒绝，不会整目录替换。
+- `卸载.exe` 保留原交互用户普通令牌，只对带 `requireAdministrator` 清单和产品版本资源的
+  `UninstallHost.exe` 请求一次 UAC；Host 将哈希绑定的 `uninstall.ps1` 复制到受保护
+  ProgramData，以 System32 为工作目录等待卸载入口/Host 退出后再删除安装根，因此 UAC
+  显示软件卸载助手而非 Windows PowerShell，也不会由自身工作目录或映像锁住待删除目录。
   普通卸载**始终保留** `%ProgramData%\DeltaForceBooster\backup`——它可能同时包含多个
   Windows 用户撤销系统改动的唯一凭据。还原成功、失败或跳过还原均省略删除选项；
-  重装后仍可点击「还原设置」继续读取。
+  重装后仍可点击「还原设置」继续读取。其他盘卸载会再次复验卷根、anchor marker、ACL、
+  MIC 与 app 身份，只删除已验证的 app/完整事务项；永久 anchor、`anchor.identity` 和未知
+  sibling 原样保留，之后可在同一受保护位置重装。
 - 自动化验证参数（普通用户双击即图形向导，无需了解）：
-  `/silent /dir=<路径> /log=<文件>` 静默安装（可加 `/waitpid=<进程Id>` 先等旧进程退出、
+  `/silent /dir=<路径> /log=<文件>` 静默安装（可加 `/waitpid=<EngineHost进程Id>` 与
+  `/waitpid2=<启动器进程Id>`、`/waitpid3=<high GUI进程Id>` 依次等待整段旧会话退出、
   `/runafter` 装完自启新版；内置更新还会成对传 `/sha256=<64位哈希> /size=<字节数>`，
   安装器启动后与受保护 staging 的完整性 sidecar 交叉复验）；`/checkdir=<路径> /log=<文件>` 只跑权限
   预检（退出码 0 可安装 / 2 需管理员 / 3 无效）；`/render=<目录>` 离屏渲染各页为 PNG 并
@@ -49,7 +65,8 @@ payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`
 - **快捷方式落点**（真机踩过「装完找不到入口」）：提权安装（右键管理员运行，或选
   Program Files 触发提权重启）时 `%APPDATA%` 指向提权账号，多账户机器上快捷方式会
   建进管理员的开始菜单——所以提权态一律写公共开始菜单/公共桌面（所有用户可见）；
-  非提权态写当前用户。卸载脚本把用户/公共两处落点都清理。
+  非提权态写当前用户。卸载时 per-user 快捷方式由原用户令牌入口清理，high 脚本只清公共落点，
+  使用另一管理员凭据时不会误删批准账户的开始菜单或桌面。
 
 ## 二、两个必须知道的现实问题（别指望能绕过）
 
@@ -101,9 +118,9 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
   导去恶意地址。
 - 清单缺 `sha256` 或 `size`（或值不合法）时视为不可信，界面自动退化为
   「仅提示 + 浏览器打开下载页」的旧行为；下载完成后哈希或大小任一不符，
-  立即删除临时文件并报错。普通权限下载使用 LocalAppData 下随机 `CreateNew` 文件并保持
-  句柄约束，管理员 helper 再从句柄复验并复制到仅 Administrators/SYSTEM 可写的
-  `%ProgramData%\DeltaForceBooster-UpdateStaging`；安装器启动后仍会按参数与 sidecar 复验，
+  立即删除临时文件并报错。正常 GUI 已处于 EngineHost 管理员会话，下载直接落到仅
+  Administrators/SYSTEM 可写的 `%ProgramData%\DeltaForceBooster-UpdateStaging`；兼容入口
+  只允许继承现有 high token 的 helper 复验，不再通过 PowerShell 单独触发 UAC。安装器仍会按参数与 sidecar 复验，
   避免“校验后被同权限进程替换”的窗口。
 - **如实告知局限（别粉饰）**：SHA256 校验防的是*传输途中*被篡改（中间人、镜像污染）。
   清单和安装包放在同一台服务器上，**服务器本身被攻破时攻击者可以同时替换两者并配好
@@ -142,11 +159,14 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
    若换下载域名，必须同步改 `scripts\updater.ps1` 的白名单常量再出包，否则老客户端拒绝下载。
 
 更新检查的全部失败路径（断网、超时、清单格式坏）都静默吞掉，不会影响主程序；
-「不再提醒此版本」记录在 `%LocalAppData%\DeltaForceBooster\config\updater.json`，定时复查同样跳过该版本；低于 `minimumSupportedVersion` 时不提供跳过或稍后入口。
+「不再提醒此版本」记录在受保护的 per-SID `config\updater.json`，定时复查同样跳过该版本；低于 `minimumSupportedVersion` 时不提供跳过或稍后入口。
 **一键静默更新（v0.15）**：用户点「立即更新」即为授权，校验通过后主程序直接以
-`/silent /dir=<当前程序目录> /waitpid=<主程序PID> /runafter /log=<文件> /sha256=<哈希> /size=<字节数>` 拉起安装器
-并自退——安装器等旧进程退出后覆盖文件、装完自启新版，用户不必再走一遍向导。
-安全的 Program Files 安装执行原地事务更新；旧版普通用户可写目录会迁往默认 Program Files。
+`/silent /dir=<当前物理 app 目录> /waitpid=<EngineHost PID> /waitpid2=<启动器 PID> /waitpid3=<high GUI PID> /runafter /log=<文件> /sha256=<哈希> /size=<字节数>` 拉起安装器
+并自退——安装器等管理员宿主、全生命周期启动器和 GUI 都退出后才覆盖文件；只有 UAC 审批账户
+与原登录用户相同时才传 `/runafter`，使用另一管理员凭据时会提示原用户安装后手动打开，避免新版
+以批准管理员身份启动。
+Program Files 继续原地事务更新；其他盘会把 `...\anchor\app` 规范化回既有 anchor，并仅在
+anchor 内切换 app；旧版普通用户可写目录迁往默认受保护目录。
 安装失败时安装器弹框报错并指向下载页（主程序此刻已退出，不弹就等于静默失败）。
 主窗口图标用 `BitmapCacheOption.OnLoad` 读入内存后立即释放 `gui\app.ico`；安装器同时会在
 覆盖前礼貌关闭其他旧窗口，并对杀毒/索引器造成的短暂文件共享冲突重试约 3 秒。

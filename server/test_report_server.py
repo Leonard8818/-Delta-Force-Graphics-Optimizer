@@ -580,6 +580,49 @@ class TelemetryTests(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=3)
 
+    def test_stats_exposes_daily_and_last_24_utc_hours_in_one_user_analysis(self):
+        now = int(dt.datetime(2026, 8, 10, 13, 42, tzinfo=dt.timezone.utc).timestamp())
+        hour_12 = int(dt.datetime(2026, 8, 10, 12, 10, tzinfo=dt.timezone.utc).timestamp())
+        hour_13 = int(dt.datetime(2026, 8, 10, 13, 5, tzinfo=dt.timezone.utc).timestamp())
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.executemany(
+                    """INSERT INTO clients (client_hash, first_seen, last_seen)
+                       VALUES (?, ?, ?)""",
+                    [
+                        ("hour-a", hour_12, hour_13),
+                        ("hour-b", hour_13, hour_13),
+                        ("too-old", now - 25 * 3600, now - 25 * 3600),
+                    ],
+                )
+                conn.executemany(
+                    """INSERT INTO telemetry_replays (client_hash, event_id, seen_at)
+                       VALUES (?, ?, ?)""",
+                    [
+                        ("hour-a", "a-12", hour_12),
+                        ("hour-a", "a-13-1", hour_13),
+                        ("hour-a", "a-13-2", hour_13 + 60),
+                        ("hour-b", "b-13", hour_13),
+                        ("too-old", "old", now - 25 * 3600),
+                    ],
+                )
+        finally:
+            conn.close()
+
+        stats = SERVER._build_stats(now=now)
+        self.assertEqual(30, len(stats["daily"]))
+        self.assertEqual(24, len(stats["hourly"]))
+        self.assertEqual("2026-08-09T14:00Z", stats["hourly"][0]["hour"])
+        self.assertEqual("2026-08-10T13:00Z", stats["hourly"][-1]["hour"])
+        self.assertEqual({"active": 1, "newUsers": 1}, {
+            key: stats["hourly"][-2][key] for key in ("active", "newUsers")
+        })
+        self.assertEqual({"active": 2, "newUsers": 1}, {
+            key: stats["hourly"][-1][key] for key in ("active", "newUsers")
+        })
+        self.assertEqual("authenticated_event_receipts", stats["dataQuality"]["hourlyActivitySource"])
+
     def test_rejects_identifying_or_oversized_fields(self):
         with self.assertRaises(ValueError):
             SERVER._record_telemetry(self.payload("not-a-guid"), 1786248000)
@@ -597,6 +640,9 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(dt.date(2026, 7, 27), SERVER._parse_week_start("2026-07-27"))
         known_now = int(dt.datetime(2026, 8, 10, 12, tzinfo=dt.timezone.utc).timestamp())
         self.assertEqual(dt.date(2026, 8, 3), SERVER._parse_week_start(None, known_now))
+        self.assertEqual(1, SERVER._report_number(dt.date(2026, 8, 3)))
+        self.assertEqual(2, SERVER._report_number(dt.date(2026, 8, 10)))
+        self.assertIsNone(SERVER._report_number(dt.date(2026, 7, 27)))
         # 2026-08-09 23:53 UTC 已是台北 2026-08-10 周一早上；默认周报应切到 8/3–8/9。
         taipei_monday = int(dt.datetime(2026, 8, 9, 23, 53, tzinfo=dt.timezone.utc).timestamp())
         self.assertEqual(dt.date(2026, 8, 3), SERVER._parse_week_start(None, taipei_monday))
@@ -630,6 +676,18 @@ class TelemetryTests(unittest.TestCase):
             "/api/weekly?startDate=2026-08-10&endDate=2026-08-10", known_now
         )
         self.assertEqual(SERVER.CustomPeriod(dt.date(2026, 8, 10), dt.date(2026, 8, 10)), single_day)
+        selected_days, _, _ = SERVER._parse_weekly_query(
+            "/api/weekly?startDate=2026-08-10&endDate=2026-08-10"
+            "&compareStartDate=2026-08-01&compareEndDate=2026-08-01",
+            known_now,
+        )
+        self.assertEqual(
+            SERVER.CustomPeriod(
+                dt.date(2026, 8, 10), dt.date(2026, 8, 10),
+                dt.date(2026, 8, 1), dt.date(2026, 8, 1),
+            ),
+            selected_days,
+        )
         invalid_custom_queries = (
             "/api/weekly?startDate=2026-08-01",
             "/api/weekly?endDate=2026-08-01",
@@ -641,6 +699,9 @@ class TelemetryTests(unittest.TestCase):
             "/api/weekly?startDate=2026-02-30&endDate=2026-03-01",
             "/api/weekly?startDate=0001-01-01&endDate=0001-01-01",
             "/api/weekly?startDate=2026-08-03&startDate=2026-08-04&endDate=2026-08-09",
+            "/api/weekly?compareStartDate=2026-08-01&compareEndDate=2026-08-01",
+            "/api/weekly?startDate=2026-08-10&endDate=2026-08-10&compareStartDate=2026-08-01",
+            "/api/weekly?startDate=2026-08-09&endDate=2026-08-10&compareStartDate=2026-08-01&compareEndDate=2026-08-01",
         )
         for query in invalid_custom_queries:
             with self.subTest(query=query), self.assertRaises(ValueError):
@@ -843,6 +904,71 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual("2026-07-07", report["trends"][-2]["weekStart"])
         self.assertEqual("2026-07-09", report["trends"][-2]["weekEnd"])
         self.assertTrue(report["summary"]["text"].startswith("本周期"))
+
+    def test_selected_day_comparison_and_sampling_funnel_are_explicit(self):
+        selected = dt.date(2026, 8, 10)
+        comparison = dt.date(2026, 8, 1)
+        self.seed_weekly_client("selected", selected, selected, launches=3)
+        self.seed_weekly_client("comparison", comparison, comparison, launches=7)
+        self.seed_weekly_client(
+            "selected-legacy", selected, selected, authenticated=False, launches=1,
+        )
+        self.seed_weekly_performance("selected", selected, "baseline", 100, 60)
+        self.seed_weekly_performance(
+            "selected", selected, "full", 120, 75, authenticated=False,
+        )
+        self.seed_weekly_performance(
+            "selected-legacy", selected, "full", 130, 80, authenticated=False,
+        )
+        self.seed_weekly_performance("comparison", comparison, "baseline", 90, 50)
+        self.seed_weekly_performance("comparison", comparison, "full", 95, 55)
+
+        now = int(dt.datetime(2026, 8, 10, 12, tzinfo=dt.timezone.utc).timestamp())
+        report = SERVER._build_custom_period_report(
+            selected, selected, filters={"validOnly": True}, now=now,
+            comparison_start=comparison, comparison_end=comparison,
+        )
+
+        self.assertEqual("selected", report["week"]["comparisonMode"])
+        self.assertEqual("2026-08-01", report["week"]["previous"]["start"])
+        self.assertEqual("2026-08-01", report["week"]["previous"]["end"])
+        self.assertEqual(3, report["core"]["launches"]["current"])
+        self.assertEqual(7, report["core"]["launches"]["previous"])
+        sampling = report["performanceSampling"]
+        self.assertEqual(3, sampling["rawSessions"]["current"])
+        self.assertEqual(2, sampling["rawSessions"]["previous"])
+        self.assertEqual(1, sampling["trustedSessions"]["current"])
+        self.assertEqual(2, sampling["trustedSessions"]["previous"])
+        self.assertEqual(0, sampling["validPairs"]["current"])
+        self.assertEqual(1, sampling["validPairs"]["previous"])
+        self.assertFalse(sampling["conclusionPublished"])
+
+    def test_standard_report_number_starts_at_product_epoch(self):
+        week = dt.date(2026, 8, 3)
+        report = SERVER._build_weekly_report(week, now=1786305600)
+        self.assertEqual(1, report["week"]["reportNumber"])
+        self.assertEqual("adjacent", report["week"]["comparisonMode"])
+
+    def test_schema_two_weekly_snapshot_is_preserved_but_not_returned(self):
+        week = dt.date(2026, 8, 3)
+        legacy = json.dumps({
+            "schemaVersion": 2,
+            "week": {"weekStart": week.isoformat()},
+        })
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO weekly_snapshots (
+                           week_start, generated_at, schema_version, report_json
+                       ) VALUES (?, ?, 2, ?)""",
+                    (week.isoformat(), 1786305600, legacy),
+                )
+        finally:
+            conn.close()
+
+        self.assertIsNone(SERVER._load_weekly_snapshot(week))
+        self.assertTrue(SERVER._weekly_snapshot_exists(week))
 
     def test_weekly_snapshot_auth_conflict_overwrite_and_stable_read(self):
         week = dt.date(2026, 7, 27)

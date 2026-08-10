@@ -38,14 +38,20 @@ $script:BoosterManifestUrl = 'https://df.ltz88.cn/update-manifest.json'
 # 最关键的一道闸，改动它必须走代码审查而不是改配置。
 $script:BoosterDownloadHosts = @('df.ltz88.cn')
 
-# 本模块位于 scripts\，工具根目录是它的上一级；程序代码进入 Program Files 后，运行状态
-# 改落 %LocalAppData%\DeltaForceBooster\config，不再尝试写程序目录。
+# 本模块位于 scripts\，工具根目录是它的上一级。长期 high GUI 会把
+# $script:BoosterUserConfigDir 指向 ProgramData 的受保护 per-SID 状态区；只有旧的
+# medium 调用方才回退到它自己的 LocalAppData。
 $script:BoosterUpdaterRoot = Split-Path -Parent $PSScriptRoot
 $script:BoosterUpdaterPath = $PSCommandPath
 
 function Get-BoosterUpdateConfigPath {
-  $la = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-  $d = Join-Path $la 'DeltaForceBooster\config'
+  $d = $script:BoosterUserConfigDir
+  if (-not $d) {
+    if (Test-BoosterUpdaterElevated) { throw '管理员更新器缺少受保护 per-SID 配置目录' }
+    $la = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $d = Join-Path $la 'DeltaForceBooster\config'
+  }
+  $d = [IO.Path]::GetFullPath($d)
   if (-not (Test-Path -LiteralPath $d)) {
     try { New-Item -ItemType Directory -Path $d -Force | Out-Null } catch {}
   }
@@ -415,6 +421,9 @@ function Invoke-BoosterSecureStageHelper {
 
 function Copy-BoosterSetupToAdminStaging {
   param([string]$Source, [string]$Sha256, [long]$Size)
+  if (-not (Test-BoosterUpdaterElevated)) {
+    throw '更新安装必须在 EngineHost 管理员会话中执行，请从“启动优化工具.exe”重新打开软件'
+  }
   if (-not $script:BoosterUpdaterPath -or -not (Test-Path -LiteralPath $script:BoosterUpdaterPath -PathType Leaf)) {
     throw '更新 helper 脚本路径不存在'
   }
@@ -430,7 +439,8 @@ function Copy-BoosterSetupToAdminStaging {
     '-SecureStageHelper', '-StageSource', "`"$Source`"", '-StageId', $id, '-StageReaderSid', $readerSid,
     '-StageSha256', "$Sha256", '-StageSize', "$Size"
   )
-  $p = Start-Process $psExe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $args
+  # 正常会话已经由 EngineHost 提权；此兼容 helper 继承 high token，不再制造第二次 UAC。
+  $p = Start-Process $psExe -WindowStyle Hidden -Wait -PassThru -ArgumentList $args
   if (-not $p -or $p.ExitCode -ne 0) { throw "安全 staging helper 失败或 UAC 被取消（退出码 $($p.ExitCode)）" }
   $programData = Get-BoosterTrustedProgramData
   $dest = Join-Path (Join-Path $programData 'DeltaForceBooster-UpdateStaging') "$id\DeltaForceBooster-Setup.exe"

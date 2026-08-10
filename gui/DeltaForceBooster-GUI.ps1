@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.20.4
+  DeltaForceBooster 图形界面 — v0.21.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.21.0：修复了一些已知问题。
   v0.20.4：修复了一些已知问题。
   v0.20.3：修复了一些已知问题。
   v0.20.2：修复了一些已知问题。
@@ -64,6 +65,143 @@
 
 $ErrorActionPreference = 'Stop'
 
+# 这两个 Get-CimInstance 运行在引擎点源之前。UAC 过程会继承原用户环境，
+# 所以必须在第一次模块自动加载之前去掉用户可写 PSModulePath，防止高权限加载同名模块。
+$trustedBootstrapModuleRoots = @(
+  (Join-Path $PSHOME 'Modules'),
+  (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) 'WindowsPowerShell\Modules')
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique
+$env:PSModulePath = ($trustedBootstrapModuleRoots -join [IO.Path]::PathSeparator)
+$bootstrapWindows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+$bootstrapSystem = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+$env:PATH = @(
+  $bootstrapSystem, $bootstrapWindows, (Join-Path $bootstrapSystem 'Wbem'),
+  (Join-Path $bootstrapSystem 'WindowsPowerShell\v1.0')
+) -join [IO.Path]::PathSeparator
+$env:COMSPEC = Join-Path $bootstrapSystem 'cmd.exe'
+$env:PATHEXT = '.COM;.EXE;.BAT;.CMD'
+
+# 主界面只接受自有 EngineHost.exe 在一次 UAC 后启动。EngineHost 会从 asInvoker
+# 启动器通过认证管道提供原交互用户 SID/LocalAppData；这里再校验父进程、
+# 全生命周期启动器和会话标记，
+# 所以直接运行 ps1、用普通 PowerShell 打开或伪造环境变量都会关闭失败。
+function Test-BootstrapPathHasReparsePoint([string]$Path) {
+  try {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $root = [IO.Path]::GetPathRoot($full)
+    $current = $root
+    if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
+    foreach ($part in @($full.Substring($root.Length) -split '\\' | Where-Object { $_ })) {
+      $current = Join-Path $current $part
+      if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
+    }
+    $false
+  } catch { $true }
+}
+
+function Stop-UntrustedGuiStartup([string]$Reason) {
+  Add-Type -AssemblyName PresentationFramework
+  [Windows.MessageBox]::Show(
+    "软件已停止启动：$Reason`n`n请只通过「启动优化工具.exe」打开。如果仍然出现，请从官网重新安装完整版本。",
+    '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::OK,
+    [Windows.MessageBoxImage]::Error) | Out-Null
+  exit 1
+}
+
+$script:EngineHostSessionValidated = $false
+$bootstrapRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\')
+try {
+  $hostPidText = "$env:DFB_ENGINE_HOST_PID"
+  $launcherPidText = "$env:DFB_LAUNCHER_PID"
+  $sessionText = "$env:DFB_ENGINE_HOST_SESSION"
+  $originalSidText = "$env:DFB_ORIGINAL_USER_SID"
+  $originalLocalText = "$env:DFB_ORIGINAL_LOCALAPPDATA"
+  $repairOnlyText = "$env:DFB_REPAIR_ONLY"
+  $hostPid = 0
+  $launcherPid = 0
+  if (-not [int]::TryParse($hostPidText, [ref]$hostPid) -or $hostPid -le 0 -or
+      $sessionText -notmatch '^[0-9a-fA-F]{32}$') { throw 'EngineHost 会话标记缺失或无效' }
+  if (-not [int]::TryParse($launcherPidText, [ref]$launcherPid) -or $launcherPid -le 0) {
+    throw '启动器会话标记缺失或无效'
+  }
+  if ($repairOnlyText -notin '0','1') { throw 'EngineHost 修复会话标记无效' }
+  try { $originalSid = New-Object Security.Principal.SecurityIdentifier($originalSidText) }
+  catch { throw '原交互用户 SID 无效' }
+  if (-not $originalSid.IsAccountSid()) { throw '原交互用户 SID 不是账户 SID' }
+  if (-not [IO.Path]::IsPathRooted($originalLocalText)) { throw '原交互用户 LocalAppData 不是绝对路径' }
+  $originalLocal = [IO.Path]::GetFullPath($originalLocalText).TrimEnd('\')
+  if (-not (Test-Path -LiteralPath $originalLocal -PathType Container) -or
+      (Test-BootstrapPathHasReparsePoint $originalLocal) -or
+      (New-Object IO.DriveInfo([IO.Path]::GetPathRoot($originalLocal))).DriveType -ne [IO.DriveType]::Fixed) {
+    throw '原交互用户 LocalAppData 不在可验证的本地固定磁盘路径'
+  }
+  $expectedTemp = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) `
+    "DeltaForceBooster\session-temp\$sessionText"
+  $actualTemp = [IO.Path]::GetFullPath("$env:TEMP").TrimEnd('\')
+  if ($actualTemp -ine [IO.Path]::GetFullPath($expectedTemp).TrimEnd('\') -or
+      "$env:TMP" -ine $actualTemp -or -not (Test-Path -LiteralPath $actualTemp -PathType Container) -or
+      (Test-BootstrapPathHasReparsePoint $actualTemp)) {
+    throw 'EngineHost 会话临时目录无效'
+  }
+
+  $self = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+  if (-not $self -or [int]$self.ParentProcessId -ne $hostPid) { throw '主界面父进程不是当前 EngineHost 会话' }
+  $host = Get-CimInstance Win32_Process -Filter "ProcessId=$hostPid" -ErrorAction Stop
+  $expectedHost = [IO.Path]::GetFullPath((Join-Path $bootstrapRoot 'EngineHost.exe'))
+  if (-not $host -or -not $host.ExecutablePath -or
+      [IO.Path]::GetFullPath("$($host.ExecutablePath)") -ine $expectedHost -or
+      (Test-BootstrapPathHasReparsePoint $expectedHost)) { throw 'EngineHost 进程路径不匹配' }
+  $launcher = Get-CimInstance Win32_Process -Filter "ProcessId=$launcherPid" -ErrorAction Stop
+  $expectedLauncher = [IO.Path]::GetFullPath((Join-Path $bootstrapRoot '启动优化工具.exe'))
+  if (-not $launcher -or -not $launcher.ExecutablePath -or
+      [IO.Path]::GetFullPath("$($launcher.ExecutablePath)") -ine $expectedLauncher -or
+      (Test-BootstrapPathHasReparsePoint $expectedLauncher)) { throw '全生命周期启动器进程路径不匹配' }
+
+  $bootstrapIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  if (-not ([Security.Principal.WindowsPrincipal]$bootstrapIdentity).IsInRole(
+      [Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '主界面未继承管理员令牌' }
+  $script:OriginalUserSid = $originalSid.Value
+  $script:OriginalUserLocalAppData = $originalLocal
+  $script:EngineHostPid = $hostPid
+  $script:LauncherPid = $launcherPid
+  $script:RepairOnlySession = ($repairOnlyText -eq '1')
+  $script:EngineHostSessionValidated = $true
+} catch {
+  Stop-UntrustedGuiStartup $_.Exception.Message
+}
+
+function Invoke-EngineHostUserAction {
+  param(
+    [Parameter(Mandatory)][ValidateSet('MigrateLegacyData','ClearShaderCache','GetGpuPanelApps','GetNvAutoOptStatus','OpenUrl','OpenGpuPanel')][string]$Action,
+    [string]$Payload = ''
+  )
+  if ($script:RepairOnlySession) { throw 'UAC 修复会话不提供普通用户动作' }
+  if (-not $script:EngineHostSessionValidated -or
+      "$env:DFB_ENGINE_CONTROL_PIPE" -notmatch '^DeltaForceBooster\.Engine\.[0-9a-fA-F]{32}$' -or
+      "$env:DFB_ENGINE_HOST_SESSION" -notmatch '^[0-9a-fA-F]{32}$') {
+    throw '原用户 broker 会话不可用'
+  }
+  $pipe = New-Object IO.Pipes.NamedPipeClientStream('.', "$env:DFB_ENGINE_CONTROL_PIPE",
+    [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+  try {
+    $pipe.Connect(30000)
+    $encoding = New-Object Text.UTF8Encoding($false)
+    $writer = New-Object IO.BinaryWriter($pipe, $encoding, $true)
+    $reader = New-Object IO.BinaryReader($pipe, $encoding, $true)
+    if ($Payload.Length -gt 4096) { throw '原用户 broker 参数超过大小上限' }
+    $writer.Write('DFB_GUI_BROKER/1'); $writer.Write("$env:DFB_ENGINE_HOST_SESSION")
+    $writer.Write($Action); $writer.Write($Payload); $writer.Flush()
+    if ($reader.ReadString() -ne 'DFB_ENGINE_REPLY/1') { throw '原用户 broker 回复协议无效' }
+    $ok = $reader.ReadBoolean(); $payloadLength = $reader.ReadInt32()
+    if ($payloadLength -lt 0 -or $payloadLength -gt 24MB) { throw '原用户 broker 回复大小无效' }
+    $payloadBytes = $reader.ReadBytes($payloadLength)
+    if ($payloadBytes.Length -ne $payloadLength) { throw '原用户 broker 回复被截断' }
+    $payload = (New-Object Text.UTF8Encoding($false, $true)).GetString($payloadBytes)
+    if (-not $ok) { throw $(if ($payload) { $payload } else { '原用户 worker 执行失败' }) }
+    $payload
+  } finally { $pipe.Dispose() }
+}
+
 # UAC 被关闭时，即使 asInvoker 启动器也会拿到完整管理员令牌；内置 Administrator 还需
 # 管理员审批模式。这里只恢复这两个必要策略；当前进程仍退出，长期 GUI 不跨越权限边界。
 function Get-UacEnableLuaValue {
@@ -108,25 +246,27 @@ function Enable-UacForNextRestart([switch]$EnableBuiltInAdministratorApprovalMod
   }
 }
 
-# 长期运行的 WPF、联网更新和外部工具检测不持有管理员权限。若用户主动“以管理员身份
-# 运行”主程序，直接说明正确入口并退出；若系统整体关闭了 UAC，或当前账户是仍未进入
-# 管理员审批模式的内置 Administrator（SID RID 500），则提供一次确认即可恢复，但不代替
-# 用户重启；真正的系统修改只在点击按钮后由短进程提权。
+# 主界面已由 EngineHost 长期持有管理员令牌。这里仅保留“UAC 整体被关闭”或
+# “内置 Administrator 未开启审批模式”的修复门控；正常的提权 GUI 继续运行。
 $currentWindowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$currentSidValue = $(if ($currentWindowsIdentity.User) { $currentWindowsIdentity.User.Value } else { '' })
-$isBuiltInAdministrator = Test-IsBuiltInAdministratorSid $currentSidValue
+# UAC 审批账户可能与原登录用户不同；RID-500 修复策略必须只看经 launcher token
+# 认证的原交互用户，不能把 OTS 输入的管理员凭据误判成待修复用户。
+$isBuiltInAdministrator = Test-IsBuiltInAdministratorSid $script:OriginalUserSid
 $isAdminGui = ([Security.Principal.WindowsPrincipal]$currentWindowsIdentity
   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($isAdminGui) {
-  Add-Type -AssemblyName PresentationFramework
-  $enableLUA = Get-UacEnableLuaValue
-  $filterAdministratorToken = $(if ($isBuiltInAdministrator) { Get-UacFilterAdministratorTokenValue } else { $null })
-  $needsUacRepair = $(if ($isBuiltInAdministrator) {
-    $enableLUA -ne 1 -or $filterAdministratorToken -ne 1
-  } else {
-    $enableLUA -eq 0
-  })
-  if ($needsUacRepair) {
+if (-not $isAdminGui) { Stop-UntrustedGuiStartup '主界面没有管理员令牌' }
+Add-Type -AssemblyName PresentationFramework
+$enableLUA = Get-UacEnableLuaValue
+$filterAdministratorToken = $(if ($isBuiltInAdministrator) { Get-UacFilterAdministratorTokenValue } else { $null })
+$needsUacRepair = $(if ($isBuiltInAdministrator) {
+  $enableLUA -ne 1 -or $filterAdministratorToken -ne 1
+} else {
+  $enableLUA -eq 0
+})
+if ([bool]$needsUacRepair -ne [bool]$script:RepairOnlySession) {
+  Stop-UntrustedGuiStartup 'EngineHost 修复会话与当前 UAC 策略不匹配'
+}
+if ($needsUacRepair) {
     $repairPrompt = $(if ($isBuiltInAdministrator) {
       "检测到当前账户是 Windows 内置 Administrator（RID 500），并且 UAC 或此账户的「管理员审批模式」未开启，因此主界面仍会持有完整管理员权限。`n`n点击「是」：开启 UAC，并为内置 Administrator 开启管理员审批模式。`n点击「否」：暂不修改并退出软件。`n`n只会修改这两项 Windows 安全策略；设置在下次重启后生效。软件不会自动重启，您可以先保存工作，再自行选择时间重启。"
     } else {
@@ -157,14 +297,6 @@ if ($isAdminGui) {
           'UAC 修复失败', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
       }
     }
-  } elseif ($isBuiltInAdministrator) {
-    [Windows.MessageBox]::Show(
-      'UAC 和内置 Administrator 的管理员审批模式已经开启。若刚完成修复，请先保存工作并自行选择时间重启；若已经重启，请不要使用「以管理员身份运行」启动软件。软件不会自动重启。',
-      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
-  } else {
-    [Windows.MessageBox]::Show('主界面应以普通方式运行，请关闭后直接双击“启动优化工具.exe”。点击执行优化或还原时，软件会单独请求管理员权限。',
-      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
-  }
   exit
 }
 
@@ -181,55 +313,122 @@ if (-not $createdNew) {
 
 $script:RootDir = Split-Path -Parent $PSScriptRoot
 . (Join-Path $script:RootDir 'scripts\delta-booster.ps1')
-$script:UserConfigDir = $(if ($script:ConfigDir) { $script:ConfigDir } else {
-  Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DeltaForceBooster\config'
-})
+try {
+  # 二次根据 ProfileList/HKEY_USERS 复验受信 launcher 传入的用户与 LocalAppData，
+  # 并让提权引擎的 HKCU 显式指向 HKEY_USERS\<原用户 SID>。
+  Set-TargetUserContext $script:OriginalUserSid $script:OriginalUserLocalAppData
+} catch {
+  Stop-UntrustedGuiStartup "原交互用户上下文复验失败：$($_.Exception.Message)"
+}
+# 主界面会在整个会话保持 high token，所以绝不把日常状态写回原用户可控制的
+# LocalAppData。每个原交互用户使用独立的 ProgramData 受保护区；SID 只作为经过
+# SecurityIdentifier 规范化后的目录名，且每一层都由 engine 的严格 ACL/reparse
+# 校验创建，预占了不安全目录时直接停止启动。
+function Initialize-ProtectedUserStateStore {
+  $sid = New-Object Security.Principal.SecurityIdentifier($script:OriginalUserSid)
+  if (-not $sid.IsAccountSid() -or $sid.Value -notmatch '^S-1-[0-9-]{3,184}$') {
+    throw '原交互用户 SID 不能用作受保护状态分区'
+  }
+  $usersRoot = Join-Path $script:ProgramDataRoot 'users'
+  $userRoot = Join-Path $usersRoot $sid.Value
+  $configRoot = Join-Path $userRoot 'config'
+  $profileRoot = Join-Path $userRoot 'profiles'
+  foreach ($dir in $script:ProgramDataRoot,$usersRoot,$userRoot,$configRoot,$profileRoot) {
+    New-ProtectedDirectory $dir $false
+  }
+  $script:ProtectedUserStateRoot = $userRoot
+  $script:UserDataRoot = $userRoot
+  $script:ConfigDir = $configRoot
+  $script:ProfileDir = $profileRoot
+  $script:UserConfigDir = $configRoot
+  # updater.ps1 点源时优先使用这个受保护位置；不要依赖 elevated 账户的
+  # Environment.SpecialFolder.LocalApplicationData。
+  $script:BoosterUserConfigDir = $configRoot
+}
+
+try { Initialize-ProtectedUserStateStore }
+catch { Stop-UntrustedGuiStartup "受保护用户状态初始化失败：$($_.Exception.Message)" }
+
+# NVIDIA App 的配置位于原交互用户可写的 LocalAppData。high GUI 不直接读取该树；
+# 保留引擎原有检查接口，但把实际只读解析交给 lifetime launcher 的 medium worker。
+function Get-NvAutoOptStatus {
+  try { (Invoke-EngineHostUserAction -Action GetNvAutoOptStatus) | ConvertFrom-Json -ErrorAction Stop }
+  catch { @{ Ok = $null; Text = "NVIDIA App 自动优化检测失败：$($_.Exception.Message)" } }
+}
 $script:TelemetryClientPath = Join-Path $script:RootDir 'scripts\telemetry-client.ps1'
 if (Test-Path -LiteralPath $script:TelemetryClientPath) { . $script:TelemetryClientPath }
 
-# v0.19.3 及更早版本把用户数据放在程序目录。GUI 仍处于原用户上下文时，只迁移明确
-# 白名单内、可解析的 JSON；不碰受保护备份（由提权引擎按旧 schema 验证后迁移签名）。
-function Copy-LegacyJsonIfMissing([string]$Source, [string]$Destination, [int]$MaxBytes = 1048576) {
-  try {
-    if ((Test-Path -LiteralPath $Destination) -or -not (Test-Path -LiteralPath $Source -PathType Leaf)) { return }
-    if ((Get-Item -LiteralPath $Source -Force).Length -gt $MaxBytes -or (Test-PathHasReparsePoint $Source)) { return }
-    $text = [IO.File]::ReadAllText($Source, [Text.Encoding]::UTF8)
-    $null = $text | ConvertFrom-Json
-    $dir = Split-Path -Parent $Destination
-    if (-not (Test-Path -LiteralPath $dir)) { [void][IO.Directory]::CreateDirectory($dir) }
-    $bytes = (New-Object Text.UTF8Encoding($true)).GetBytes($text)
-    $stream = New-Object IO.FileStream($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
-                                      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
-    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-  } catch {
-    # 目标已由另一实例/新版本创建或旧文件损坏时保留目标现状，主程序继续启动。
+# 旧状态只由原交互用户的 medium broker 读取。broker 返回严格白名单、定长、带
+# SHA256 的 JSON 包；high GUI 复验后仅向上面的受保护区 CreateNew，绝不覆盖新版状态。
+function Import-ProtectedLegacyState([string]$PackageJson) {
+  if ([Text.Encoding]::UTF8.GetByteCount("$PackageJson") -gt 24MB) { throw '旧状态迁移包超过大小上限' }
+  $package = "$PackageJson" | ConvertFrom-Json -ErrorAction Stop
+  Assert-ExactProperties $package @('SchemaVersion','Files','Skipped') @() '旧状态迁移包'
+  if ([int]$package.SchemaVersion -ne 1) { throw '不支持的旧状态迁移包版本' }
+  $files = @($package.Files)
+  if ($files.Count -gt 140) { throw '旧状态迁移包文件数超过上限' }
+  $total = 0L; $imported = 0
+  foreach ($entry in $files) {
+    Assert-ExactProperties $entry @('RelativePath','Length','Sha256','ContentBase64') @() '旧状态迁移项'
+    $relative = "$($entry.RelativePath)".Replace('/','\')
+    $allowed = $relative -in @(
+      'config\telemetry.json','config\disclaimer.json','config\updater.json',
+      'config\performance-sessions.json','config\power-scheme.json',
+      'config\tuning-telemetry-outbox.json'
+    ) -or $relative -match '^config\\experiments\\(?:active-experiment|exp_[0-9a-f]{32})\.json$' -or
+      $relative -match '^profiles\\[^\\/:*?"<>|]{1,80}\.json$'
+    if (-not $allowed -or "$($entry.Sha256)" -notmatch '^[0-9a-fA-F]{64}$') {
+      throw "旧状态迁移项路径或哈希无效：$relative"
+    }
+    $length = [long]$entry.Length
+    if ($length -lt 2 -or $length -gt 4MB) { throw "旧状态迁移项大小无效：$relative" }
+    try { $bytes = [Convert]::FromBase64String("$($entry.ContentBase64)") }
+    catch { throw "旧状态迁移项 Base64 无效：$relative" }
+    if ($bytes.Length -ne $length) { throw "旧状态迁移项长度不匹配：$relative" }
+    $total += $bytes.Length
+    if ($total -gt 12MB) { throw '旧状态迁移包解码后超过总大小上限' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') }
+    finally { $sha.Dispose() }
+    if ($actualHash -ine "$($entry.Sha256)") { throw "旧状态迁移项哈希不匹配：$relative" }
+    try {
+      $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+      $offset = $(if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { 3 } else { 0 })
+      $jsonText = $strictUtf8.GetString($bytes, $offset, $bytes.Length - $offset)
+      $null = $jsonText | ConvertFrom-Json -ErrorAction Stop
+    } catch { throw "旧状态迁移项不是有效 UTF-8 JSON：$relative" }
+
+    $destination = [IO.Path]::GetFullPath((Join-Path $script:ProtectedUserStateRoot $relative))
+    $prefix = [IO.Path]::GetFullPath($script:ProtectedUserStateRoot).TrimEnd('\') + '\'
+    if (-not $destination.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "旧状态迁移项目标越界：$relative"
+    }
+    $parent = Split-Path -Parent $destination
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-ProtectedDirectory $parent $false }
+    if (-not (Test-ProtectedDirectoryAclExact $parent $false) -or (Test-PathHasReparsePoint $parent)) {
+      throw "旧状态迁移项目标目录不安全：$relative"
+    }
+    if (Test-Path -LiteralPath $destination) { continue }
+    $stream = $null
+    try {
+      $stream = New-Object IO.FileStream($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+        [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+      $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+      $stream.Dispose(); $stream = $null
+      Set-ProtectedFileAcl $destination
+      if (-not (Test-ProtectedFileAcl $destination)) { throw "旧状态迁移项 ACL 校验失败：$relative" }
+      $imported++
+    } finally { if ($stream) { $stream.Dispose() } }
   }
+  [pscustomobject]@{ Imported = $imported; Skipped = @($package.Skipped).Count }
 }
 
-function Move-LegacyUserDataForward {
-  $legacyConfig = Join-Path $script:RootDir 'config'
-  if ([IO.Path]::GetFullPath($legacyConfig).TrimEnd('\') -ine [IO.Path]::GetFullPath($script:UserConfigDir).TrimEnd('\') -and
-      (Test-Path -LiteralPath $legacyConfig -PathType Container) -and -not (Test-PathHasReparsePoint $legacyConfig)) {
-    foreach ($name in 'telemetry.json','disclaimer.json','updater.json','performance-sessions.json','power-scheme.json') {
-      Copy-LegacyJsonIfMissing (Join-Path $legacyConfig $name) (Join-Path $script:UserConfigDir $name)
-    }
-  }
-  $legacyProfiles = Join-Path $script:RootDir 'profiles'
-  if ((Test-Path -LiteralPath $legacyProfiles -PathType Container) -and -not (Test-PathHasReparsePoint $legacyProfiles)) {
-    $profileDir = $(if ($script:ProfileDir) { $script:ProfileDir } else {
-      Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DeltaForceBooster\profiles'
-    })
-    foreach ($file in @(Get-ChildItem -LiteralPath $legacyProfiles -Filter '*.json' -File -ErrorAction SilentlyContinue | Select-Object -First 100)) {
-      if ($file.Name -match '^[^\\/:*?"<>|]{1,80}\.json$') {
-        Copy-LegacyJsonIfMissing $file.FullName (Join-Path $profileDir $file.Name) 262144
-      }
-    }
-  }
-}
-Move-LegacyUserDataForward
+$script:LegacyMigrationNotice = ''
+try { $script:LegacyMigrationResult = Import-ProtectedLegacyState (Invoke-EngineHostUserAction MigrateLegacyData) }
+catch { $script:LegacyMigrationNotice = "旧版用户数据迁移未完成：$($_.Exception.Message)" }
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.20.4'
+$script:GuiVersion = '0.21.0'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -603,7 +802,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.20.4 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.21.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1024,7 +1223,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.20.4 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.21.0 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1474,9 +1673,11 @@ $script:CheckHelp = @{
   }
 }
 
-# 打开外部链接的唯一出口：只放行 http/https 网页地址（与更新入口同一条红线）
+# 打开外部链接的唯一出口：high GUI 不直接启动浏览器。URL 交给 UAC 前持续存活的
+# medium launcher broker，并由其再次强制 HTTPS + 固定域名白名单。
 function Open-HelpLink([string]$Url) {
-  if ($Url -match '^https?://') { Start-Process $Url } else { Write-Log "已拦截非网页链接：$Url" }
+  try { Invoke-EngineHostUserAction -Action OpenUrl -Payload $Url | Out-Null }
+  catch { Write-Log "已拦截或无法打开外部链接：$($_.Exception.Message)" }
 }
 
 # 「体检发现问题」对话框：日志里的纯文本链接等于没给（实机反馈用户不会手抄网址），
@@ -1829,7 +2030,7 @@ function Update-StreamerPage {
       $lnk.Margin = New-Object Windows.Thickness 10, 0, 0, 0
       $lnk.Tag = "$($s.url)"
       # 循环里挂的处理器不能直接引用 $s（点击时 $s 早已是最后一个元素），从 sender.Tag 取
-      $lnk.Add_Click({ $u = "$($this.Tag)"; if ($u -match '^https?://') { Start-Process $u } })
+      $lnk.Add_Click({ Open-HelpLink "$($this.Tag)" })
       $head.Children.Add($lnk) | Out-Null
     }
     $csp.Children.Add($head) | Out-Null
@@ -3589,7 +3790,12 @@ function Protect-ReportText([string]$Text) {
   if (-not $Text) { return $Text }
   $t = $Text -replace '(?i)([A-Za-z]:\\Users\\)[^\\\r\n"'']+', '${1}<user>'
   $t = $t -replace '(?i)(\\Users\\)[^\\\r\n"'']+', '${1}<user>'
-  foreach ($pair in @(@($env:USERNAME, '<user>'), @($env:COMPUTERNAME, '<pc>'), @($env:USERDOMAIN, '<domain>'))) {
+  # 高权限 GUI 的环境经过 EngineHost 最小化，不能读取 UAC 审批账户的
+  # USERNAME/USERDOMAIN。用户名只从已经认证、复验过的原用户 LocalAppData
+  # 推导；机器名使用 .NET，避免重新引入高权限账户环境。
+  $originalProfile = Split-Path -Parent (Split-Path -Parent $script:OriginalUserLocalAppData)
+  $originalUserName = if ($originalProfile) { Split-Path -Leaf $originalProfile } else { '' }
+  foreach ($pair in @(@($originalUserName, '<user>'), @([Environment]::MachineName, '<pc>'))) {
     if ("$($pair[0])".Length -ge 2) { $t = $t -replace [regex]::Escape($pair[0]), $pair[1] }
   }
   $t
@@ -3682,10 +3888,19 @@ function Invoke-ReportUpload([string]$Body) {
 
 # ---------- 显卡指引对话框（驱动层设置 + 控制面板入口） ----------
 
-# 启动控制面板的唯一出口。appx 没有可直接执行的 exe 路径，只能经 shell:appsFolder
+# high GUI 不直接启动 explorer/Appx/供应商程序；launcher 只接受四个固定产品 Key，
+# 并在 medium token 中自行解析受信 Known Folder 与固定目标。
 function Open-GpuPanel($App) {
-  if ($App.Kind -eq 'appx') { Start-Process 'explorer.exe' "shell:appsFolder\$($App.Target)" }
-  else { Start-Process -FilePath $App.Target }
+  if (-not $App -or "$($App.Key)" -notin 'nv-cpl','nv-app','amd-sw','intel-gcc') {
+    throw '显卡控制面板动作不在白名单'
+  }
+  Invoke-EngineHostUserAction -Action OpenGpuPanel -Payload "$($App.Key)" | Out-Null
+}
+
+function Get-GuiGpuPanelApps([string]$Vendor) {
+  if ($Vendor -notin 'NVIDIA','AMD','Intel') { return @() }
+  try { @((Invoke-EngineHostUserAction -Action GetGpuPanelApps -Payload $Vendor) | ConvertFrom-Json) }
+  catch { Write-Log "显卡软件检测失败：$($_.Exception.Message)"; @() }
 }
 
 function Build-GpuGuideDialog($Hw) {
@@ -3750,7 +3965,7 @@ function Build-GpuGuideDialog($Hw) {
   $dlg.FindName('MsgTxt').Text = Get-GpuGuideText $Hw.MainGpuVendor $Hw.MainGpuName $Hw.IsLaptop
 
   $panel = $dlg.FindName('AppPanel')
-  foreach ($app in @(Get-GpuPanelApps $Hw.MainGpuVendor)) {
+  foreach ($app in @(Get-GuiGpuPanelApps $Hw.MainGpuVendor)) {
     $row = New-Object Windows.Controls.StackPanel
     $row.Orientation = 'Horizontal'
     $row.Margin = New-Object Windows.Thickness 0, 0, 0, 6
@@ -3762,7 +3977,7 @@ function Build-GpuGuideDialog($Hw) {
       $b.Height = 26
       $b.MinWidth = 168
       # 循环里挂的处理器不能闭包引用循环变量，一律从 sender.Tag 取
-      $b.Tag = [pscustomobject]@{ Kind = $app.Kind; Target = $app.Target; Name = $app.Name }
+      $b.Tag = [pscustomobject]@{ Key = $app.Key; Kind = $app.Kind; Target = $app.Target; Name = $app.Name }
       $b.Add_Click({
         try { Open-GpuPanel $this.Tag; Write-Log "已打开 $($this.Tag.Name)。" }
         catch { Write-Log "打开 $($this.Tag.Name) 失败：$($_.Exception.Message)" }
@@ -3870,13 +4085,15 @@ function Update-RestoreProgress($p) {
 }
 
 # 纯检测和用户着色器缓存不需要、也不应获得管理员权限。尤其用户缓存目录可由同权限
-# 进程调整目录结构；保持普通用户 token，即使发生竞态也不会扩大到用户本来无权删除的位置。
+# 进程调整目录结构；缓存删除始终由 medium worker 完成，即使发生竞态也不会扩大权限。
 function Invoke-LocalNoBackupItems([object[]]$Items) {
   $results = New-Object System.Collections.Generic.List[object]
   foreach ($it in @($Items)) {
     try {
       if ($it.Kind -eq 'cache') {
-        $cache = Clear-ShaderCache
+        # 着色器缓存在原用户可写 LocalAppData 中；即使 GUI 已提权也不放宽
+        # 引擎的安全拒绝，而是经 EngineHost 转发给全生命周期 medium launcher worker。
+        $cache = (Invoke-EngineHostUserAction ClearShaderCache) | ConvertFrom-Json
         if (@($cache.Cleared).Count -eq 0 -and @($cache.Failed).Count -eq 0) {
           [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $true
             Msg = '无缓存可清理（本机没有找到着色器缓存文件）' })
@@ -3893,7 +4110,7 @@ function Invoke-LocalNoBackupItems([object[]]$Items) {
         [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = ($state.Ok -eq $true)
           Skipped = $false; Attention = ($state.Ok -ne $true); Msg = "纯检测：$($state.Text)" })
       } else {
-        throw "普通权限执行器不接受项目类型：$($it.Kind)"
+        throw "本地收尾执行器不接受项目类型：$($it.Kind)"
       }
     } catch {
       [void]$results.Add([pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $false; Skipped = $false; Msg = $_.Exception.Message })
@@ -3902,8 +4119,8 @@ function Invoke-LocalNoBackupItems([object[]]$Items) {
   @($results.ToArray())
 }
 
-# 管理员引擎返回后，GUI 还要执行普通权限检测/缓存清理、遥测和界面刷新。后半段即使
-# 抛异常，系统批次也可能已经完成；把这个状态与普通前置失败分开，避免用户误以为本轮
+# 管理员引擎返回后，GUI 还要执行只读检测、medium worker 缓存清理、遥测和界面刷新。后半段即使
+# 抛异常，系统批次也可能已经完成；把这个状态与会话前置失败分开，避免用户误以为本轮
 # 完全没执行而立刻重复点击。异常类型和脚本堆栈只写运行日志，弹窗继续使用人话提示。
 function Get-ApplyFailureContext($ErrorRecord, [bool]$AdminBatchReturned, $Reply) {
   $exception = $(if ($ErrorRecord -and $ErrorRecord.Exception) { $ErrorRecord.Exception } else { $null })
@@ -3932,43 +4149,32 @@ function Get-ApplyFailureContext($ErrorRecord, [bool]$AdminBatchReturned, $Reply
   }
 }
 
-# GUI 始终以普通用户运行。只有用户明确点击「执行优化」或「还原设置」后，才把核心引擎
-# 作为短生命周期管理员子进程启动；结果写入受保护的 ProgramData IPC 文件，再由 GUI 只读。
-# 这避免让整个 WPF/网络/更新流程长期持有管理员权限。
+# GUI 由 EngineHost 在一次 UAC 后长期持有管理员令牌。Apply/Restore/Beta 仍使用
+# 短生命周期 PowerShell 子进程与受保护 ProgramData IPC，用于隔离引擎退出码/结果；
+# 子进程只继承已提权令牌，不再调用 RunAs，因此每次操作不再重复弹 UAC。
 function Test-ProtectedProgramRoot {
   try {
     $root = [IO.Path]::GetFullPath($script:RootDir).TrimEnd('\')
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $false }
     if ($root.StartsWith('\\')) { return $false }
-
-    # 路径链上出现 junction / symbolic link 时，提权进程可能被引到程序目录之外。
-    $cursor = Get-Item -LiteralPath $root -Force
-    while ($cursor) {
-      if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-      $cursor = $cursor.Parent
-    }
-
-    # 非管理员 GUI 若能在程序根目录新建文件，说明同权限进程也能在 UAC 前替换引擎。
-    # 探针用 CreateNew，且无论结果如何都清理；受保护目录会抛 UnauthorizedAccessException。
-    $probe = Join-Path $root ('.dfb-write-probe-' + [guid]::NewGuid().ToString('N') + '.tmp')
-    try {
-      $fs = New-Object IO.FileStream($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
-                                    [IO.FileShare]::None, 1, [IO.FileOptions]::WriteThrough)
-      $fs.Dispose()
-      Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-      return $false
-    } catch {
-      $err = $_.Exception
-      while ($err) {
-        if ($err -is [UnauthorizedAccessException]) { return $true }
-        $err = $err.InnerException
-      }
-      return $false
-    } finally {
-      if ($probe -and (Test-Path -LiteralPath $probe)) {
-        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    if ((New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root))).DriveType -ne [IO.DriveType]::Fixed -or
+        (Test-BootstrapPathHasReparsePoint $root)) { return $false }
+    $acl = [IO.Directory]::GetAccessControl($root,
+      [Security.AccessControl.AccessControlSections]'Owner, Access')
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18','S-1-5-32-544') -and $owner -notlike 'S-1-5-80-*') { return $false }
+    $writeMask = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      $sid = $rule.IdentityReference.Value
+      $trusted = $sid -in @('S-1-5-18','S-1-5-32-544') -or $sid -like 'S-1-5-80-*'
+      $creatorInheritOnly = $sid -eq 'S-1-3-0' -and
+        (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+          -not $trusted -and -not $creatorInheritOnly -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
+        return $false
       }
     }
+    $true
   } catch { return $false }
 }
 
@@ -3986,8 +4192,11 @@ function Invoke-ElevatedEngineAction {
     [string]$BackupFile,
     [string]$ResultId
   )
+  if (-not $script:EngineHostSessionValidated -or -not $isAdminGui) {
+    throw '当前不在受信 EngineHost 管理员会话中，已拒绝执行'
+  }
   if (-not (Test-ProtectedProgramRoot)) {
-    throw '当前程序仍在普通软件可修改的旧目录中。请运行最新版安装器，把软件迁移到 Program Files 后再执行系统优化或还原。'
+    throw '当前程序目录不是受保护的本地安装目录。请用最新安装器修复安装后重试。'
   }
   $engine = Join-Path $script:RootDir 'scripts\delta-booster.ps1'
   if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) { throw '核心优化引擎缺失，请重新安装软件' }
@@ -3997,19 +4206,20 @@ function Invoke-ElevatedEngineAction {
     throw '管理员执行结果 ID 无效'
   }
   $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-  $userLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  $userLocalAppData = $script:OriginalUserLocalAppData
   if (-not $programData -or -not $userLocalAppData) { throw '系统未提供用户数据目录' }
   $resultFile = Join-Path (Join-Path $programData 'DeltaForceBooster\ipc') ($resultId + '.json')
-  $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $userSid = $script:OriginalUserSid
   $userLocalAppData = [IO.Path]::GetFullPath($userLocalAppData)
   $parts = New-Object System.Collections.Generic.List[string]
   $parts.Add('& ' + (ConvertTo-PsSingleQuotedLiteral $engine))
   $parts.Add('-' + $Action)
   $parts.Add('-ResultId ' + (ConvertTo-PsSingleQuotedLiteral $resultId))
-  # UAC 可能由另一管理员账户批准；显式传入原交互用户上下文，避免 HKCU/LocalAppData
-  # 被错误地改到管理员账户。引擎会将 HKCU 映射到 HKEY_USERS\<SID> 并校验路径。
+  # 原交互用户上下文来自全生命周期 asInvoker 启动器的认证管道；引擎还会
+  # 将 HKCU 映射到 HKEY_USERS\<SID> 并按 ProfileList 二次校验 LocalAppData。
   $parts.Add('-UserSid ' + (ConvertTo-PsSingleQuotedLiteral $userSid))
   $parts.Add('-UserLocalAppData ' + (ConvertTo-PsSingleQuotedLiteral $userLocalAppData))
+  $parts.Add('-UserStateRoot ' + (ConvertTo-PsSingleQuotedLiteral $script:ProtectedUserStateRoot))
   if ($Action -eq 'Apply') {
     $itemLiterals = @($ItemIds | ForEach-Object { ConvertTo-PsSingleQuotedLiteral "$_" })
     $parts.Add('-Items @(' + ($itemLiterals -join ',') + ')')
@@ -4023,18 +4233,17 @@ function Invoke-ElevatedEngineAction {
   }
   $command = ($parts -join ' ') + '; exit $LASTEXITCODE'
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-  # UAC 边界上的可执行文件必须从系统 Known Folder 得到；SystemRoot 环境变量由调用方
-  # 继承，若直接信任会让普通进程把管理员 helper 引到自定义目录。
+  # 即使已在管理员会话，系统可执行文件仍只从 Known Folder 取得。
   $windowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
   if (-not $windowsDir) { throw '系统未提供 Windows 目录' }
   $powershellExe = Join-Path $windowsDir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
   try {
-    $proc = Start-Process -FilePath $powershellExe -Verb RunAs -WindowStyle Hidden -PassThru `
+    # 继承 EngineHost 的 high token，不跨越新的 UAC 边界。
+    $proc = Start-Process -FilePath $powershellExe -WindowStyle Hidden -PassThru `
       -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded)
   } catch {
-    if ($_.Exception.Message -match 'canceled|cancelled|取消') { throw '已取消管理员授权，本次没有执行任何系统修改' }
-    throw "管理员执行进程启动失败：$($_.Exception.Message)"
+    throw "引擎子进程启动失败：$($_.Exception.Message)"
   }
   while (-not $proc.HasExited) {
     $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Background)
@@ -4163,7 +4372,8 @@ function Invoke-SystemReboot {
   $windowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
   if (-not $windowsDir) { throw '系统未提供 Windows 目录' }
   $shutdownExe = Join-Path $windowsDir 'System32\shutdown.exe'
-  Start-Process -FilePath $shutdownExe -Verb RunAs -WindowStyle Hidden -ArgumentList '/r', '/t', '5'
+  # 主界面已经继承 EngineHost 的 high token，不再跨越第二次 UAC。
+  Start-Process -FilePath $shutdownExe -WindowStyle Hidden -ArgumentList '/r', '/t', '5'
 }
 
 # 执行完成后的醒目重启提醒：此前只在日志末尾一行小字，用户根本注意不到（实机反馈）。
@@ -4337,15 +4547,24 @@ function Show-NameDialog {
 $script:SetupLogPath = Join-Path $script:UserConfigDir 'update-setup.log'
 
 # 真正启动安装器的唯一出口：验证时整体替换成桩，绝不真的覆盖自身。
-# /waitpid 让安装器等本进程退出后再切换版本，/runafter 让它装完自启新版；
+# /waitpid、/waitpid2 与 /waitpid3 让安装器显式等待 EngineHost、lifetime launcher
+# 和 GUI 三个进程退出后再切换版本；即使宿主异常先退，也不会遗漏仍锁目录的 GUI。
 # SHA256 与大小同时传入，安装器在提权后重新从文件句柄校验，封闭下载后的替换窗口。
 function Invoke-BoosterSetupRun([string]$SetupFile, [string]$TargetDir, [string]$LogFile,
                                 [string]$Sha256, [long]$Size) {
   # Do not pass the product root as the setup process CWD: a process cannot rename its own CWD.
   # The installer also resets this itself so updates launched by older GUIs receive the same fix.
-  Start-Process -FilePath $SetupFile -WorkingDirectory ([Environment]::SystemDirectory) -PassThru -ArgumentList @(
-    '/silent', "/dir=`"$TargetDir`"", "/waitpid=$PID", '/runafter', "/log=`"$LogFile`"",
-    "/sha256=$Sha256", "/size=$Size")
+  $approvalIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $approvalSid = $(if ($approvalIdentity.User) { $approvalIdentity.User.Value } else { '' })
+  # OTS（标准用户输入另一管理员凭据）时，提权安装器经 explorer 自启仍可能落到批准账户。
+  # 此时明确不传 /runafter；更新照常完成，由原登录用户从现有快捷方式手动打开新版。
+  $script:UpdateRunAfterAllowed = $approvalSid -ieq $script:OriginalUserSid
+  $setupArgs = [Collections.Generic.List[string]]::new()
+  foreach ($arg in @(
+    '/silent', "/dir=`"$TargetDir`"", "/waitpid=$script:EngineHostPid", "/waitpid2=$script:LauncherPid", "/waitpid3=$PID",
+    "/log=`"$LogFile`"", "/sha256=$Sha256", "/size=$Size")) { $setupArgs.Add($arg) }
+  if ($script:UpdateRunAfterAllowed) { $setupArgs.Add('/runafter') }
+  Start-Process -FilePath $SetupFile -WorkingDirectory ([Environment]::SystemDirectory) -PassThru -ArgumentList $setupArgs.ToArray()
 }
 
 # 安装阶段的不确定进度：安装在另一个进程里跑，拿不到百分比，只能转圈
@@ -4635,7 +4854,15 @@ function Show-UpdateDialog($UpdInfo) {
         $proc = Invoke-BoosterSetupRun $st.File $script:RootDir $script:SetupLogPath `
                   "$($script:UpdDlgInfo.Sha256)" ([long]$script:UpdDlgInfo.Size)
         if (-not $proc) { throw '安装程序未能启动' }
-        Write-Log "安装程序已启动（PID $($proc.Id)），本程序即将退出，安装完成后新版本会自动打开。"
+        if ($script:UpdateRunAfterAllowed) {
+          Write-Log "安装程序已启动（PID $($proc.Id)），本程序即将退出，安装完成后新版本会自动打开。"
+        } else {
+          Write-Log "安装程序已启动（PID $($proc.Id)）。本次使用了另一管理员账户授权，安装完成后请由原登录用户手动打开新版。"
+          [Windows.MessageBox]::Show(
+            '更新安装已经开始。由于本次管理员授权使用了另一账户，为避免用错账户，安装完成后不会自动启动。请稍后从桌面或开始菜单手动打开新版。',
+            '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::OK,
+            [Windows.MessageBoxImage]::Information) | Out-Null
+        }
         # 交棒完成，放行关窗：拦截关窗的守卫是拦用户的，别把自己也拦在里面。
         # 这里用 Close() 而不是设 DialogResult——非模态时后者会抛，且返回值此刻已无意义
         $script:UpdInstalling = $false
@@ -4710,8 +4937,9 @@ function Show-UpdateDialog($UpdInfo) {
   $script:UpdUi.GoBtn.Add_Click({
     # 只允许 http/https：清单被篡改成本地路径/其他协议时拒绝打开，防止借更新入口执行文件
     $u = "$($script:UpdDlgInfo.Url)"
-    if ($u -match '^https?://') {
-      Start-Process $u
+    if ($u -match '^https://') {
+      try { Invoke-EngineHostUserAction -Action OpenUrl -Payload $u | Out-Null }
+      catch { Write-Log "更新网页打开失败：$($_.Exception.Message)"; return }
       if ($script:UpdDlgInfo.Mandatory) {
         $script:AllowMandatoryDialogClose = $true
         $script:UpdDlg.DialogResult = $true
@@ -4920,7 +5148,7 @@ $window.Add_ContentRendered({
       if ($script:PresetList[$fi].Id -eq 'main') { $ui.PresetBox.SelectedIndex = $fi; break }
     }
     $ui.ScanState.Text = '检测完成'
-    Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」。可还原修改会为受保护备份请求一次管理员权限；带 * 的项目标本身也需要管理员权限。'
+    Write-Log '检测完成。已默认选中「主推全套」方案，可改选其他方案或手动勾选后点「执行优化」。本次软件会话已在启动时完成管理员确认，执行优化、还原和自动调优不会再次弹出权限确认。'
     Send-AnonymousTelemetry 'launch' $hw
     # tuning 事件使用独立的持久 outbox。启动先恢复历史队列，运行中定时唤醒到期重试；
     # 普通 launch/apply/restore 遥测仍保持原来的即时异步发送路径。
@@ -5213,16 +5441,15 @@ $ui.ApplyBtn.Add_Click({
     $elevatedIds = @($selectedItems | Where-Object { $_.Kind -notin 'cache','check' } | ForEach-Object { $_.Id })
     $localResults = @()
     if ($elevatedIds.Count -gt 0) {
-      # 先完成 UAC 批次，再做不可回滚的本地缓存清理。这样用户取消 UAC 时，本轮不会
-      # 已经悄悄删掉缓存，却收到「没有执行任何系统修改」的误导提示。
-      # GUI 保持普通权限；只有真正修改系统/受保护设置的项目才显示 UAC。
+      # 先完成受保护系统批次，再做不可回滚的本地缓存清理，避免留下
+      # “系统项没改、缓存却已经清了”的半执行状态。当前会话已完成唯一一次 UAC。
       # AllowRisky 只在用户刚通过高风险二次确认时才为真，绝不默认放行。
-      $ui.ProgText.Text = '等待管理员授权…'
+      $ui.ProgText.Text = '正在执行系统优化…'
       $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
       $r = Invoke-ElevatedEngineAction -Action Apply -ItemIds $elevatedIds -GamePath $script:TargetExe `
            -AllowRisky ($riskyIds.Count -gt 0) -GpuSpoofModel $script:SelectedGpuSpoofModel
       $adminBatchReturned = $true
-      # 系统批次与受保护备份已经完成，先记日志再进入普通权限收尾。后续检测、缓存、
+      # 系统批次与受保护备份已经完成，先记日志再进入本地收尾。后续检测、缓存、
       # 遥测或界面刷新即使异常，用户仍能从日志和诊断报告里找到本轮备份。
       if ($r.Backup) {
         Write-Log "备份已保存：$($r.Backup)"
@@ -5233,7 +5460,7 @@ $ui.ApplyBtn.Add_Click({
                               UnrecordedNames = @(); EngineExitCode = 0 }
     }
     if ($localItems.Count -gt 0) {
-      $ui.ProgText.Text = '正在执行普通权限检测 / 缓存清理…'
+      $ui.ProgText.Text = '正在执行检测 / 缓存清理…'
       $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
       $localResults = @(Invoke-LocalNoBackupItems $localItems)
       $r.Results = @($r.Results) + @($localResults)
@@ -5313,7 +5540,7 @@ $ui.ApplyBtn.Add_Click({
       }
       Write-Log '！！系统批次可能已执行，请不要重复点击「执行优化」；请优先点击「还原设置」，若没有可用备份则点击「重新检测」确认当前状态。'
     } else {
-      # UAC 取消、路径无效、参数校验等前置失败仍把原始错误原文直接给用户。
+      # 会话异常、路径无效、参数校验等前置失败仍把原始错误原文直接给用户。
       Write-Log "执行失败：$($failure.ErrorMessage)"
     }
     Write-Log "异常类型：$($failure.ExceptionType)"
@@ -5336,7 +5563,7 @@ $ui.RestoreBtn.Add_Click({
     # 现在和执行优化共用进度面板，逐项推进 + 结束弹明确的完成提示
     $ui.ProgressPanel.Visibility = 'Visible'
     $ui.ProgFill.Width = 0
-    $ui.ProgText.Text = '等待管理员授权…'
+    $ui.ProgText.Text = '正在还原系统设置…'
     $ui.ProgCount.Text = ''
     $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
     $r = Invoke-ElevatedEngineAction -Action Restore

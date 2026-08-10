@@ -85,13 +85,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   - `main` 主推全套（界面显示为「★ 主推全套」且启动默认选中）：按依赖顺序排列——
     ①电源深度定制 → ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层。
     代价要如实告知：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高、
-    笔记本更耗电；其中唯一的 risky 项是「显卡型号伪装」，GUI 会单独二次确认，CLI 套用
-    `main` 必须显式加 `-Risky`；不含关引导虚拟化，WSL/模拟器不受影响。
+    笔记本更耗电；其中唯一的 risky 项是「显卡型号伪装」，只对 NVIDIA 主显卡显示，AMD / Intel
+    主显卡自动禁用。GUI 会单独二次确认，CLI 套用 `main` 必须显式加 `-Risky`；不含关引导虚拟化，
+    WSL/模拟器不受影响。
   - `balanced` 均衡推荐（20 项，副作用小）：不改桌面外观和鼠标手感、不禁用服务、不动休眠。
-  - `safe-only` 保守：只改当前用户设置、通常不需重启；为了先写受保护备份，图形界面仍会
-    为这一轮请求一次管理员权限，CLI 也应在管理员 PowerShell 中执行。
-- 用户想保留自己的搭配：`-SavePreset "方案名" -Items id1,id2`（存到
-  `%LocalAppData%\DeltaForceBooster\profiles\`），
+  - `safe-only` 保守：只改当前用户设置、通常不需重启；图形界面沿用软件启动时已确认的管理员
+    会话，CLI 仍应在管理员 PowerShell 中执行。
+- 用户想保留自己的搭配：`-SavePreset "方案名" -Items id1,id2`。图形界面保存在受保护的
+  `%ProgramData%\DeltaForceBooster\users\<SID>\profiles\`；直接使用 CLI 时保存在当前用户的
+  `%LocalAppData%\DeltaForceBooster\profiles\`。
 之后可 `-Apply -Preset 方案名`；`-DeletePreset 方案名` 删除（内置方案删不掉）。
 - 若检测未找到游戏路径，追加 `-GamePath "游戏主程序完整路径"`（主程序通常是
   `DeltaForceClient-Win64-Shipping.exe`；找不到时向用户询问安装位置）。
@@ -106,7 +108,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   失败消息内含 powercfg 等命令的原始报错，直接转述给用户即可。
 - **电源计划命名行为**：系统没有可直接激活的卓越性能方案时（e9a42b02 在多数版本上只是
   不可激活的模板），脚本会实例化一份并命名为「三角洲优化 · 卓越性能」，GUID 记在
-  `%LocalAppData%\DeltaForceBooster\config\power-scheme.json`，重复执行只复用不堆积。`-Restore` 会切回原方案但
+  图形界面的受保护 per-SID `config\power-scheme.json`（CLI 使用当前用户 `%LocalAppData%`），重复执行只复用不堆积。`-Restore` 会切回原方案但
   **保留**该自建方案（输出的 Notes 字段里有说明，请一并念给用户）。
 - 优化后某项仍「未达标」时，让用户以管理员运行只读诊断并回传输出：
   `powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\diagnose.ps1"`。

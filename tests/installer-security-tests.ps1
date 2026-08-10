@@ -124,6 +124,11 @@ function Set-TestProductVersion([string]$Path, [string]$GuiVersion, [string]$Lau
 function Convert-ToLegacyInstallFixture([string]$Path, [string]$GuiVersion = '0.19.3', [string]$LauncherVersion = $GuiVersion) {
   Remove-Item -LiteralPath (Join-Path $Path 'install.identity') -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath (Join-Path $Path 'scripts\tuning-experiment.ps1') -Force -ErrorAction SilentlyContinue
+  # Current packages route the .bat through EngineHost.exe.  A real v0.18/v0.19 root instead
+  # contained the historical PowerShell GUI fallback that the migration identity check expects.
+  [IO.File]::WriteAllText((Join-Path $Path '启动优化工具.bat'),
+    "@echo off`r`nrem DeltaForceBooster launcher`r`nrem gui\DeltaForceBooster-GUI.ps1`r`n",
+    [Text.Encoding]::ASCII)
   Set-TestProductVersion $Path $GuiVersion $LauncherVersion
 }
 
@@ -137,6 +142,66 @@ function Convert-ToHistoricalIdentityFixture([string]$Path, [string]$Version = '
 
 try {
   Test-UpdaterHandleSharing
+  # TestBuild 用临时目录模拟一个固定 NTFS 卷边界；正式构建没有该钩子，只接受真实卷根。
+  # 其他盘布局必须恰好是 <volume>\<anchor>\app，任意中间层都 fail closed。
+  $setupAssembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($setup))
+  $installerType = $setupAssembly.GetType('DfbSetup.Installer', $true)
+  $checkSecure = $installerType.GetMethod('CheckSecureInstallLocation', [Reflection.BindingFlags]'Static,Public')
+  $checkDesktopOrigin = $installerType.GetMethod('CheckDesktopShellOrigin', [Reflection.BindingFlags]'Static,Public')
+  $volumeReplaceRights = $installerType.GetMethod('HasVolumeRootReplacementRights', [Reflection.BindingFlags]'Static,NonPublic')
+  $invokeSecure = {
+    param([string]$Path)
+    [string]$checkSecure.Invoke($null, [object[]]@($Path))
+  }
+  $invokeVolumeReplaceRights = {
+    param([int64]$Mask)
+    $rights = [Enum]::ToObject([Security.AccessControl.FileSystemRights], [int]$Mask)
+    [bool]$volumeReplaceRights.Invoke($null, [object[]]@($rights))
+  }
+  Assert-True (-not (& $invokeVolumeReplaceRights 0x1301bf)) 'ordinary data-volume root Modify mask was treated as DeleteChild'
+  Assert-True (-not (& $invokeVolumeReplaceRights 0x10000)) 'DELETE on the volume root object was treated as child replacement'
+  foreach ($dangerousMask in 0x40,0x40000,0x80000,0x10000000) {
+    Assert-True (& $invokeVolumeReplaceRights $dangerousMask) ("dangerous volume-root mask was accepted: 0x{0:x}" -f $dangerousMask)
+  }
+  $currentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $env:DFB_TEST_SHELL_SID = $currentUserSid
+  $originArgs = New-Object 'object[]' 1; $originArgs[0] = $currentUserSid
+  Assert-True ($null -eq $checkDesktopOrigin.Invoke($null, $originArgs)) 'matching original/medium-shell SID was rejected'
+  $originArgs[0] = 'S-1-5-21-1-2-3-1001'
+  Assert-True ([string]$checkDesktopOrigin.Invoke($null, $originArgs) -like '*不一致*') 'OTS shell/user SID mismatch was accepted'
+  $originArgs[0] = 'not-a-sid'
+  Assert-True ([string]$checkDesktopOrigin.Invoke($null, $originArgs) -like '*缺失或格式无效*') 'invalid origin SID was accepted'
+  $customVolume = Join-Path $testBase 'custom-volume'
+  [void][IO.Directory]::CreateDirectory($customVolume)
+  $env:DFB_TEST_CUSTOM_DRIVE_ROOT = $customVolume
+  $env:DFB_TEST_ALLOW_WRITABLE_INSTALL = '1'
+  $env:DFB_TEST_SKIP_ACL = '1'
+  $customProtected = Join-Path $customVolume 'DeltaForceBooster'
+  Assert-True ((& $invokeSecure $customProtected) -eq '') 'new root-level fixed-NTFS anchor was rejected'
+  Assert-True ((& $invokeSecure ($customProtected + ':foreign')) -ne '') 'custom anchor ADS path was accepted'
+  Assert-True ((& $invokeSecure $customVolume) -like '*不能是磁盘根目录*') 'custom volume root was accepted as the anchor'
+  Assert-True ((& $invokeSecure '\\localhost\share\DeltaForceBooster') -like '*UNC*') 'UNC path was accepted'
+  [void][IO.Directory]::CreateDirectory((Join-Path $customVolume 'Games'))
+  Assert-True ((& $invokeSecure (Join-Path $customVolume 'Games\DeltaForceBooster')) -like '*一级受保护安装目录*') 'nested custom anchor was accepted'
+  [void][IO.Directory]::CreateDirectory((Join-Path $customVolume 'ExistingEmpty'))
+  Assert-True ((& $invokeSecure (Join-Path $customVolume 'ExistingEmpty')) -like '*anchor.identity*') 'unverified existing empty anchor was accepted'
+  Assert-True ((& $invokeSecure (Join-Path $customVolume 'Missing\app')) -ne '') 'physical app path without a verified anchor was accepted'
+  $env:DFB_TEST_DRIVE_TYPE = 'Removable'
+  Assert-True ((& $invokeSecure (Join-Path $testBase 'removable\DeltaForceBooster')) -like '*固定磁盘*') 'removable-volume fixture was accepted'
+  Remove-Item Env:DFB_TEST_DRIVE_TYPE
+  $env:DFB_TEST_DRIVE_FORMAT = 'FAT32'
+  Assert-True ((& $invokeSecure (Join-Path $testBase 'fat32\DeltaForceBooster')) -like '*NTFS*') 'non-NTFS fixture was accepted'
+  Remove-Item Env:DFB_TEST_DRIVE_FORMAT
+  $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
+  Assert-True ($setupSource -match 'users,\s*FileSystemRights\.ReadAndExecute' -and $setupSource -match 'admins,\s*FileSystemRights\.FullControl' -and $setupSource -match 'system,\s*FileSystemRights\.FullControl') 'installed-tree ACL policy no longer grants Admin/SYSTEM full and Users read/execute'
+  Assert-True ($setupSource -match 'Layout=PermanentAnchor' -and $setupSource -match 'LABEL_SECURITY_INFORMATION' -and
+    $setupSource -match 'AnchorNeverDelete=1') 'permanent-anchor identity/MIC verification is missing'
+  Assert-True ($setupSource -match 'Directory\.CreateDirectory\(anchor, acl\)' -and
+    $setupSource -match 'pre-create race') 'custom anchor is no longer created with atomic ACL plus post-create race validation'
+  Assert-True ($setupSource -match '/originsid=' -and $setupSource -match 'GetShellWindow' -and
+    $setupSource -match 'TokenIntegrityLevel' -and $setupSource -match 'SECURITY_MANDATORY_MEDIUM_RID') `
+    'setup no longer binds automatic launch to the original user and current medium desktop shell'
+
   $case = Join-Path $testBase 'transaction'
   $pf = Join-Path $case 'PF'
   [string]$dest = Join-Path $pf 'DeltaForceBooster'
@@ -149,8 +214,8 @@ try {
   Assert-True (Test-Path -LiteralPath $identity) 'identity missing'
   $expectedPayload = @(
     'DISCLAIMER.md','LICENSE','NOTICE.md','README.md','SKILL.md','install.identity',
-    'data\streamer-settings.json','gui\app.ico','gui\DeltaForceBooster-GUI.ps1',
-    'scripts\delta-booster.ps1','scripts\diagnose.ps1','scripts\telemetry-client.ps1','scripts\tuning-experiment.ps1','scripts\updater.ps1',
+    'data\streamer-settings.json','EngineHost.exe','UninstallHost.exe','gui\app.ico','gui\DeltaForceBooster-GUI.ps1',
+    'scripts\delta-booster.ps1','scripts\diagnose.ps1','scripts\telemetry-client.ps1','scripts\tuning-experiment.ps1','scripts\updater.ps1','scripts\user-context-worker.ps1',
     'tools\DeltaForce-Recommended.nip','tools\PresentMon-LICENSE.txt','tools\PresentMon.exe',
     '启动优化工具.bat','启动优化工具.exe','卸载.bat','卸载.exe','uninstall.ps1'
   ) | Sort-Object
@@ -166,9 +231,30 @@ try {
   Assert-True ($uninstallText -notmatch '\$backupDeleteFailed|已按选择清理 ProgramData') 'obsolete protected-backup deletion branch remains'
   Assert-True ($uninstallText -match '普通卸载始终保留受保护备份' -and
     $uninstallText -match '重新安装本工具后仍可点击「还原设置」') 'uninstall does not explain retained-backup recovery'
+  Assert-True ($uninstallText -match 'Test-CustomAnchor' -and $uninstallText -match 'Dfb\.AnchorLabel' -and
+    $uninstallText -match 'AnchorNeverDelete=1') 'uninstall does not revalidate permanent custom anchor/MIC'
+  Assert-True ($uninstallText -notmatch 'Remove-TreeNoFollow\s+\$customAnchor' -and
+    $uninstallText -match '已保留其他盘永久安装锚点') 'uninstall can delete or fails to retain custom anchor'
+  Assert-True ($uninstallText -notmatch '-Verb\s+RunAs' -and $uninstallText -match 'Wait-VerifiedProcessExit' -and
+    $uninstallText -match '\[Parameter\(Mandatory\)\]\[string\]\$InstallRoot') `
+    'uninstall script still creates a PowerShell UAC boundary or runs from the product root'
+  $uninstallHostInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $dest 'UninstallHost.exe'))
+  Assert-True ($uninstallHostInfo.FileDescription -eq '三角洲行动优化助手 卸载助手') `
+    'UninstallHost FileDescription is not the UAC-facing product name'
   $lines = [IO.File]::ReadAllLines($identity)
   $sha = (Get-FileHash (Join-Path $dest '启动优化工具.exe') -Algorithm SHA256).Hash
-  Assert-True ($lines.Count -eq 3 -and $lines[2] -eq "LauncherSha256=$sha") 'identity/launcher hash mismatch'
+  $hostSha = (Get-FileHash (Join-Path $dest 'EngineHost.exe') -Algorithm SHA256).Hash
+  Assert-True ($lines.Count -eq 4 -and $lines[0] -ceq 'SchemaVersion=2' -and
+    $lines[2] -eq "LauncherSha256=$sha" -and $lines[3] -eq "EngineHostSha256=$hostSha") `
+    'identity/launcher/EngineHost hash mismatch'
+
+  $otsLog = Join-Path $case 'ots-runafter.log'
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", '/runafter',
+    '/originsid=S-1-5-21-1-2-3-1001', "/log=`"$otsLog`"")
+  Assert-True ($code -eq 0) "OTS run-after install exit=$code"
+  $otsText = [IO.File]::ReadAllText($otsLog)
+  Assert-True ($otsText -like '*已跳过自动启动*' -and $otsText -like '*请由原用户从公共快捷方式手动打开*') `
+    'OTS /runafter did not install fail-closed without launching into the wrong account'
 
   $launcherBytes = [IO.File]::ReadAllBytes((Join-Path $dest '启动优化工具.exe'))
   $launcherAssembly = [Reflection.Assembly]::Load($launcherBytes)
@@ -321,6 +407,80 @@ try {
   Assert-True (-not (Test-Path $staleRollback)) 'completed-install rollback was not cleaned'
   Assert-True (-not (Test-Path $staleStage)) 'completed staging was not cleaned'
 
+  # Other-drive layout: the user-facing install root is a permanent first-level anchor; code and
+  # every transaction live under anchor\app.  A GUI update passes the physical app path back.
+  $customCase = Join-Path $testBase 'custom-anchor'
+  $customPf = Join-Path $customCase 'PF'
+  $customVolume = Join-Path $customCase 'volume'
+  [void][IO.Directory]::CreateDirectory($customVolume)
+  Set-TestPaths $customCase $customPf
+  $env:DFB_TEST_CUSTOM_DRIVE_ROOT = $customVolume
+  $anchor = Join-Path $customVolume 'DeltaForceBooster'
+  $appRoot = Join-Path $anchor 'app'
+  $customLog = Join-Path $customCase 'install.log'
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$anchor`"", "/log=`"$customLog`"")
+  Assert-True ($code -eq 0) "custom-anchor fresh install exit=$code"
+  Assert-True (Test-Path -LiteralPath (Join-Path $anchor 'anchor.identity') -PathType Leaf) 'custom anchor identity missing'
+  Assert-True (Test-Path -LiteralPath (Join-Path $appRoot '启动优化工具.exe') -PathType Leaf) 'custom physical app root missing'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $anchor '启动优化工具.exe'))) 'payload leaked into logical anchor root'
+  $anchorLines = [IO.File]::ReadAllLines((Join-Path $anchor 'anchor.identity'))
+  Assert-True ($anchorLines.Count -eq 6 -and $anchorLines[0] -ceq 'SchemaVersion=1' -and
+    $anchorLines[2] -ceq 'Layout=PermanentAnchor' -and $anchorLines[3] -ceq 'CodeDirectory=app' -and
+    $anchorLines[4] -cmatch '^AnchorId=[0-9a-f]{32}$' -and $anchorLines[5] -ceq 'AnchorNeverDelete=1') 'custom anchor identity format mismatch'
+  $codeRootMethod = $installerType.GetMethod('CodeRootForInstall', [Reflection.BindingFlags]'Static,Public')
+  $displayRootMethod = $installerType.GetMethod('InstallRootForDisplay', [Reflection.BindingFlags]'Static,Public')
+  $layoutArgs = New-Object 'object[]' 1; $layoutArgs[0] = [string]$anchor
+  Assert-True ([string]$codeRootMethod.Invoke($null, $layoutArgs) -eq $appRoot) 'logical anchor did not resolve to app root'
+  $layoutArgs[0] = [string]$appRoot
+  Assert-True ([string]$codeRootMethod.Invoke($null, $layoutArgs) -eq $appRoot) 'physical app /dir was not normalized'
+  Assert-True ([string]$displayRootMethod.Invoke($null, $layoutArgs) -eq $anchor) 'physical app /dir was not normalized back to its logical anchor'
+
+  [void][IO.Directory]::CreateDirectory((Join-Path $appRoot 'config'))
+  $customMarker = Join-Path $appRoot 'config\custom-marker.json'
+  [IO.File]::WriteAllText($customMarker, '{"keep":true}')
+  $unknownSibling = Join-Path $anchor 'administrator-note.txt'
+  [IO.File]::WriteAllText($unknownSibling, 'keep-anchor')
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", "/log=`"$(Join-Path $customCase 'physical-update.log')`"")
+  Assert-True ($code -eq 0) "custom physical-app update exit=$code"
+  Assert-True ((Test-Path -LiteralPath $customMarker) -and ([IO.File]::ReadAllText($customMarker) -eq '{"keep":true}')) 'custom app update lost user data'
+  Assert-True ([IO.File]::ReadAllText($unknownSibling) -eq 'keep-anchor') 'custom update deleted an unknown anchor sibling'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $customPf 'DeltaForceBooster'))) 'verified custom app was migrated back to Program Files'
+
+  $customBefore = (Get-FileHash -LiteralPath (Join-Path $appRoot '启动优化工具.exe')).Hash
+  foreach ($point in 'after-extract','after-old-move') {
+    $env:DFB_TEST_INSTALL_FAIL_AT = $point
+    $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", "/log=`"$(Join-Path $customCase "$point.log")`"")
+    Assert-True ($code -eq 1) "custom $point exit=$code"
+    Assert-True (Test-Path -LiteralPath $anchor -PathType Container) "custom $point removed permanent anchor"
+    Assert-True ((Get-FileHash -LiteralPath (Join-Path $appRoot '启动优化工具.exe')).Hash -eq $customBefore) "custom $point changed old launcher"
+    Assert-True (@(Get-ChildItem -LiteralPath $anchor -Force | Where-Object Name -Like '.app.dfb-*').Count -eq 0) "custom $point left transaction directory"
+    Assert-True (@(Get-ChildItem -LiteralPath $customVolume -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-*').Count -eq 0) "custom $point created a volume-root transaction"
+  }
+  Remove-Item Env:DFB_TEST_INSTALL_FAIL_AT -ErrorAction SilentlyContinue
+
+  $customRollbackId = [guid]::NewGuid().ToString('N')
+  $customRollback = Join-Path $anchor ".app.dfb-rollback-$customRollbackId"
+  Move-Item -LiteralPath $appRoot -Destination $customRollback
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$anchor`"", "/log=`"$(Join-Path $customCase 'recovery.log')`"")
+  Assert-True ($code -eq 0) "custom rollback recovery exit=$code"
+  Assert-True ((Test-Path -LiteralPath $customMarker) -and -not (Test-Path -LiteralPath $customRollback)) 'custom rollback recovery failed'
+
+  $anchorIdentity = Join-Path $anchor 'anchor.identity'
+  $anchorIdentityBytes = [IO.File]::ReadAllBytes($anchorIdentity)
+  try {
+    [IO.File]::WriteAllText($anchorIdentity, 'not-an-anchor')
+    $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", "/log=`"$(Join-Path $customCase 'bad-anchor.log')`"")
+    Assert-True ($code -ne 0) "corrupt anchor identity was accepted (exit=$code)"
+    Assert-True ((Get-FileHash -LiteralPath (Join-Path $appRoot '启动优化工具.exe')).Hash -eq $customBefore) 'corrupt anchor identity changed app tree'
+  } finally { [IO.File]::WriteAllBytes($anchorIdentity, $anchorIdentityBytes) }
+
+  $unrelated = Join-Path $customVolume 'Important'
+  [void][IO.Directory]::CreateDirectory($unrelated)
+  [IO.File]::WriteAllText((Join-Path $unrelated 'secret.txt'), 'keep')
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$unrelated`"", "/log=`"$(Join-Path $customCase 'unrelated.log')`"")
+  Assert-True ($code -ne 0) "unrelated nonempty root became an anchor (exit=$code)"
+  Assert-True ([IO.File]::ReadAllText((Join-Path $unrelated 'secret.txt')) -eq 'keep') 'unrelated custom root changed'
+
   $case2 = Join-Path $testBase 'migration'
   $pf2 = Join-Path $case2 'PF'
   $downloads = Join-Path $case2 'Downloads'
@@ -366,7 +526,10 @@ try {
     foreach ($folder in 'config','profiles') { [void][IO.Directory]::CreateDirectory((Join-Path $legacy $folder)) }
     [IO.File]::WriteAllText((Join-Path $legacy 'config\telemetry.json'), ('{"source":' + $n + '}'))
     [IO.File]::WriteAllText((Join-Path $legacy "profiles\profile$n.json"), ('{"name":"p' + $n + '"}'))
-    $env:DFB_TEST_INSECURE_PREFIX = $legacy
+    # 最后一项不靠“不安全路径”钩子：父链位置本身可接受时，也必须根据旧版产品身份
+    # 识别普通用户可写 legacy 树并迁往默认受保护目录。
+    if ($n -eq $legacyMatrices.Count) { Remove-Item Env:DFB_TEST_INSECURE_PREFIX -ErrorAction SilentlyContinue }
+    else { $env:DFB_TEST_INSECURE_PREFIX = $legacy }
     $migrationLog = Join-Path $case2 "migration$n.log"
     $migrationArgs = @('/silent', "/dir=`"$legacy`"", "/log=`"$migrationLog`"")
     if ($n -eq 1) { $migrationArgs += '/runafter' }

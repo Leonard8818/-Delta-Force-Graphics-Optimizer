@@ -140,6 +140,10 @@ try {
   Assert-True ($mainPreset.Items -notcontains 'nvidia-profile') 'NPI 不得进入主推方案'
   Assert-True ($mainPreset.Items -notcontains 'nv-autoopt-off') '用户可写 NVIDIA 配置文件不得进入提权主推方案'
   Assert-True ($mainPreset.Items -contains 'gpu-name-spoof') '主推方案应包含显卡型号伪装，执行仍由 -Risky 契约拦截'
+  Assert-True (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='NVIDIA' })) 'NVIDIA 主显卡应启用显卡型号伪装'
+  Assert-True (-not (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='AMD' }))) 'AMD 主显卡必须禁用显卡型号伪装'
+  Assert-True (-not (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='Intel' }))) 'Intel 主显卡必须禁用显卡型号伪装'
+  Assert-True (-not (Test-GpuNameSpoofSupported $null)) '显卡未识别时必须禁用显卡型号伪装'
   $spoofModels = @(Get-GpuSpoofModels)
   Assert-True ($spoofModels.Count -eq 2 -and
     $spoofModels[0] -eq 'NVIDIA GeForce GTX 750 Ti' -and

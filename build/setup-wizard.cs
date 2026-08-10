@@ -4,8 +4,9 @@
 // make-launcher.ps1 已验证「系统 csc 编译 + 内嵌图标/清单」这条零第三方依赖路线可行，这里沿用。
 // 为什么 payload 内嵌为程序集资源（/resource:）：真正单文件分发，运行时直接从自身程序集解流，
 // 不经过 IExpress 那种落盘自解压临时目录。
-// 清单保持 asInvoker：向导先显示，真正写入默认 %ProgramFiles%\DeltaForceBooster 时才按需
-// 提权重启（/dir= 回传已选路径）。主程序启动器同样是 asInvoker，不让整个 GUI 常驻管理员。
+// 清单保持 asInvoker：向导先显示，真正写入受保护程序目录时才按需提权重启
+//（/dir= 回传已选路径）。默认路径仍是 %ProgramFiles%\DeltaForceBooster；其他固定 NTFS
+// 盘只接受卷根一级 permanent anchor，代码位于 anchor\app，anchor 使用封闭 ACL + High MIC。
 // 为什么快捷方式走 IShellLinkW COM：本机实测 ACP=1252 时 WScript.Shell 会把中文转成 "?"
 // 导致快捷方式保存失败，必须用原生 Unicode 接口。
 // 快捷方式落点（真机踩过「装完找不到入口」）：提权态一律写公共开始菜单/公共桌面——
@@ -20,14 +21,17 @@
 // 命令行（全部供自动化验证，普通用户双击即图形向导）：
 //   /dir=<路径>        预填安装位置（提权重启时回传用）
 //   /silent /log=<文件> 静默安装；非提权阶段可写调用者日志，提权阶段忽略任意日志路径
-//   /waitpid=<进程Id>  静默安装前先等该进程退出（主程序占着自己的文件；等待超时视为
+//   /waitpid=<Id> /waitpid2=<Id> /waitpid3=<Id>  静默安装前依次等待 EngineHost、
+//                      lifetime launcher 与 high GUI 退出（它们占着自己的文件；等待超时视为
 //                      「可能正在执行优化」，直接取消本次更新，绝不带伤覆盖）
 //   /runafter          静默安装完成后启动新版主程序；失败时弹框报错，绝不假装成功
+//   /originsid=<SID>   提权前的交互用户 SID；只用于阻止 OTS 凭据下把程序启动给错误账户
 //   /sha256=<64 hex> /size=<字节>  内置更新传入的安装器预期完整性；启动第一时间复验自身
 //   /checkdir=<路径>   仅 DFB_TESTING 构建：跑写入权限预检，结果写测试临时根
 //   /render=<目录>     仅 DFB_TESTING 构建：离屏渲染页面并导出界面字符串
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -71,12 +75,13 @@ static class Program {
         // directory before doing anything that can hand off/elevate or switch the install tree.
         try { Environment.CurrentDirectory = Environment.SystemDirectory; }
         catch (Exception) { }
-        string dir = null, logFile = null, renderDir = null, checkDir = null;
+        string dir = null, logFile = null, renderDir = null, checkDir = null, originSid = null;
         bool silent = false, runAfter = false;
         bool migrationPrepared = false;
+        bool originSidSeen = false, originSidInvalid = false;
         string expectedSha256 = null;
         long expectedSize = -1;
-        int waitPid = 0;
+        int waitPid = 0, waitPid2 = 0, waitPid3 = 0;
         foreach (string a in args) {
             if (a.Equals("/silent", StringComparison.OrdinalIgnoreCase)) silent = true;
             else if (a.Equals("/runafter", StringComparison.OrdinalIgnoreCase)) runAfter = true;
@@ -84,11 +89,22 @@ static class Program {
             else if (a.StartsWith("/dir=", StringComparison.OrdinalIgnoreCase)) dir = a.Substring(5).Trim('"');
             else if (a.StartsWith("/log=", StringComparison.OrdinalIgnoreCase)) logFile = a.Substring(5).Trim('"');
             else if (a.StartsWith("/waitpid=", StringComparison.OrdinalIgnoreCase)) int.TryParse(a.Substring(9).Trim('"'), out waitPid);
+            else if (a.StartsWith("/waitpid2=", StringComparison.OrdinalIgnoreCase)) int.TryParse(a.Substring(10).Trim('"'), out waitPid2);
+            else if (a.StartsWith("/waitpid3=", StringComparison.OrdinalIgnoreCase)) int.TryParse(a.Substring(10).Trim('"'), out waitPid3);
             else if (a.StartsWith("/render=", StringComparison.OrdinalIgnoreCase)) renderDir = a.Substring(8).Trim('"');
             else if (a.StartsWith("/checkdir=", StringComparison.OrdinalIgnoreCase)) checkDir = a.Substring(10).Trim('"');
             else if (a.StartsWith("/sha256=", StringComparison.OrdinalIgnoreCase)) expectedSha256 = a.Substring(8).Trim('"');
             else if (a.StartsWith("/size=", StringComparison.OrdinalIgnoreCase)) long.TryParse(a.Substring(6).Trim('"'), out expectedSize);
+            else if (a.StartsWith("/originsid=", StringComparison.OrdinalIgnoreCase)) {
+                if (originSidSeen) originSidInvalid = true;
+                originSidSeen = true;
+                if (!originSidInvalid) originSid = a.Substring(11).Trim('"');
+            }
         }
+        // 无参数表示这是本次启动的第一阶段，当前 token SID 就是原始调用账户。提权重启会
+        // 显式回传规范 SID；重复/非法参数一律变成 null，只会关闭自动启动，不影响安装。
+        originSid = originSidInvalid ? null :
+            (originSidSeen ? Installer.NormalizeSid(originSid) : Installer.CurrentTokenSid());
         // /log、/render、/checkdir 都能造成文件写入。提权进程绝不使用调用者传入的
         // 任意路径；自动化入口只存在于单独的 DFB_TESTING 构建且被限制在测试临时根。
         if (Installer.IsElevated()) logFile = null;
@@ -101,10 +117,10 @@ static class Program {
             Environment.Exit(5); return;
         }
         if (checkDir != null) { Environment.Exit(RunCheck(checkDir, logFile)); return; }
-        if (silent)           { Environment.Exit(RunSilent(dir, logFile, waitPid, runAfter, migrationPrepared, args)); return; }
+        if (silent)           { Environment.Exit(RunSilent(dir, logFile, waitPid, waitPid2, waitPid3, runAfter, migrationPrepared, originSid, args)); return; }
         if (renderDir != null) { RunRender(renderDir); return; }
         var app = new Application();
-        app.Run(new SetupWindow(dir));
+        app.Run(new SetupWindow(dir, originSid));
     }
 
     // 更新器把同名 .integrity 放在已封闭 ACL 的 staging 目录中。这样旧 GUI 即使还没有传
@@ -148,7 +164,7 @@ static class Program {
     // 静默安装：一键更新与沙箱验证共用。日志落文件（winexe 没有控制台，这是唯一输出通道）。
     // /runafter 时属于用户点了「立即更新」的链路——主程序此刻已退出，失败必须弹框，
     // 否则用户看着窗口关掉、新版没起来，完全不知道发生了什么
-    static int RunSilent(string dir, string logFile, int waitPid, bool runAfter, bool migrationPrepared, string[] rawArgs) {
+    static int RunSilent(string dir, string logFile, int waitPid, int waitPid2, int waitPid3, bool runAfter, bool migrationPrepared, string originSid, string[] rawArgs) {
         string dest = null;
         string migrationSource = null;
         bool installStarted = false;
@@ -156,10 +172,17 @@ static class Program {
             if (migrationPrepared && !Installer.IsElevated()) migrationPrepared = false;
             dest = string.IsNullOrEmpty(dir) ? Installer.DefaultDir() : dir;
             Log(logFile, "安装目标: " + dest);
-            if (waitPid > 0) {
+            int[] waitPids = new int[] { waitPid, waitPid2, waitPid3 };
+            for (int waitIndex = 0; waitIndex < waitPids.Length; waitIndex++) {
+                int pid = waitPids[waitIndex];
+                if (pid <= 0) continue;
+                // 参数可能因旧客户端接线而暂时相同；同一 PID 只等待一次。
+                bool duplicate = false;
+                for (int prior = 0; prior < waitIndex; prior++) if (waitPids[prior] == pid) duplicate = true;
+                if (duplicate) continue;
                 string waitDetail;
-                bool exited = WaitForPid(waitPid, out waitDetail);
-                Log(logFile, "等待旧进程退出(" + waitPid + "): " + waitDetail);
+                bool exited = WaitForPid(pid, out waitDetail);
+                Log(logFile, "等待旧进程退出(" + pid + "): " + waitDetail);
                 // 超时 = 旧版可能正在执行优化：此时覆盖文件等于打断一次系统级改动，
                 // 宁可取消本次更新——原版本一个字节都没动，用户随时可以重来
                 if (!exited) {
@@ -175,8 +198,8 @@ static class Program {
                 if (runAfter) WarnBox("检测到另一个旧版窗口仍在执行优化或还原。\r\n\r\n本次更新已取消，原来的版本没有被改动。请等待所有旧版窗口完成并关闭后，再重新检查更新。");
                 return 3;
             }
-            // 兼容旧客户端：它会把当前 Downloads 安装位置通过 /dir 传回来。继续原地更新会
-            // 保留可写代码目录，所以把该路径当迁移源，实际安装到 Program Files。
+            // 兼容旧客户端：它会把当前 Downloads 等可写安装位置通过 /dir 传回来。继续
+            // 原地更新会保留可写代码目录，所以把该路径当迁移源，实际安装到默认受保护目录。
             string insecure = Installer.CheckSecureInstallLocation(dest);
             if (insecure != null && !string.IsNullOrEmpty(dir)) {
                 migrationSource = Path.GetFullPath(dest);
@@ -203,7 +226,7 @@ static class Program {
             if (err != null) {
                 if (err == Installer.NeedAdmin && !Installer.IsElevated()) {
                     Log(logFile, "目标目录需要管理员权限，正在按需提权重启安装器");
-                    if (RelaunchElevated(rawArgs, migrationPrepared)) return 0;
+                    if (RelaunchElevated(rawArgs, migrationPrepared, originSid)) return 0;
                     Log(logFile, "用户取消或提权重启失败");
                     return 2;
                 }
@@ -215,12 +238,13 @@ static class Program {
             Installer.Install(dest, delegate(int i, int n, string name) {
                 if (i == 1 || i == n || i % 20 == 0) Log(logFile, string.Format("  {0}/{1} {2}", i, n, name));
             }, migrationSource);
+            string codeRoot = Installer.CodeRootForInstall(dest);
             // 静默模式与向导完成页的默认勾选保持一致：开始菜单与桌面快捷方式都建
-            Log(logFile, "开始菜单快捷方式: " + Installer.CreateShortcuts(dest));
-            Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(dest));
-            Log(logFile, "安装完成: " + dest);
+            Log(logFile, "开始菜单快捷方式: " + Installer.CreateShortcuts(codeRoot));
+            Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(codeRoot));
+            Log(logFile, "安装完成: " + codeRoot);
             if (!string.IsNullOrEmpty(Installer.LastMigrationNote)) Log(logFile, Installer.LastMigrationNote);
-            if (runAfter) Log(logFile, "启动新版: " + LaunchInstalled(dest));
+            if (runAfter) Log(logFile, "启动新版: " + LaunchInstalled(codeRoot, originSid));
             return 0;
         } catch (Exception ex) {
             Log(logFile, "安装失败: " + ex);
@@ -229,11 +253,16 @@ static class Program {
         }
     }
 
-    static bool RelaunchElevated(string[] args, bool migrationPrepared) {
+    static bool RelaunchElevated(string[] args, bool migrationPrepared, string originSid) {
         try {
-            var forwarded = new List<string>(args);
+            var forwarded = new List<string>();
+            foreach (string arg in args) {
+                if (!arg.StartsWith("/originsid=", StringComparison.OrdinalIgnoreCase)) forwarded.Add(arg);
+            }
             if (migrationPrepared && !forwarded.Exists(delegate(string a) { return a.Equals("/migrationprepared", StringComparison.OrdinalIgnoreCase); }))
                 forwarded.Add("/migrationprepared");
+            // null 也必须显式传空值，防止非法/重复 SID 在 elevated 阶段退化成“当前管理员”。
+            forwarded.Add("/originsid=" + (originSid ?? ""));
             var quoted = new string[forwarded.Count];
             for (int i = 0; i < forwarded.Count; i++) quoted[i] = QuoteArgument(forwarded[i]);
             Process.Start(new ProcessStartInfo {
@@ -277,10 +306,12 @@ static class Program {
         } catch (Exception ex) { detail = "等待异常: " + ex.Message; return true; }
     }
 
-    static string LaunchInstalled(string dest) {
+    static string LaunchInstalled(string dest, string originSid) {
         try {
             string exe = Path.Combine(dest, "启动优化工具.exe");
             if (!File.Exists(exe)) return "未找到 " + exe;
+            string identityError = Installer.CheckDesktopShellOrigin(originSid);
+            if (identityError != null) throw new UnauthorizedAccessException(identityError);
             // 沙箱验证钩子（与 DFB_TEST_DESKTOP / DFB_TEST_DOWNLOADS 同类）：验证要走完
             // 参数解析与时序，但绝不能真把主程序拉起来——它会自提权弹 UAC 打断验证
             if (Installer.TestNoLaunch(dest))
@@ -291,7 +322,18 @@ static class Program {
                 WarnBox("新版本已安装完成，但检测到旧版程序仍在运行（可能正在执行优化或还原）。\r\n\r\n已跳过自动启动。请等待旧版完成并关闭后，再手动打开新版本。");
                 return "旧版程序仍在运行（可能正在执行优化），已跳过自动启动";
             }
-            return Installer.StartInstalledApplication(dest);
+            return Installer.StartInstalledApplication(dest, originSid);
+        } catch (UnauthorizedAccessException ex) {
+            if (!Installer.TestNoLaunch(dest)) {
+                try {
+                    WinForms.MessageBox.Show(
+                        "新版本已安装完成，但已跳过自动启动。\r\n\r\n" + ex.Message +
+                        "\r\n\r\n请关闭安装器，由原用户从公共桌面或开始菜单快捷方式手动打开。",
+                        "三角洲行动优化助手 · 已跳过自动启动",
+                        WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                } catch (Exception) { }
+            }
+            return "已跳过自动启动：" + ex.Message + "；请由原用户从公共快捷方式手动打开";
         } catch (Exception ex) { return "启动失败: " + ex.Message; }
     }
 
@@ -330,7 +372,7 @@ static class Program {
     // 根 Grid 自带渐变背景（而不是靠 Window.Background），导出的 PNG 才不会透明。
     static void RunRender(string outDir) {
         Directory.CreateDirectory(outDir);
-        var win = new SetupWindow(null);
+        var win = new SetupWindow(null, Installer.CurrentTokenSid());
         win.WindowStartupLocation = WindowStartupLocation.Manual;
         win.Left = -4000; win.Top = -4000; win.ShowActivated = false;
         win.Show();
@@ -356,6 +398,11 @@ static class Program {
 static class Installer {
     public const string NeedAdmin = "NEED_ADMIN";
     static long _requiredBytes = -1;
+    sealed class InstallLayout {
+        public string InstallRoot;
+        public string CodeRoot;
+        public bool IsCustomAnchor;
+    }
     sealed class PayloadFile {
         public string RelativePath;
         public string Sha256;
@@ -367,6 +414,8 @@ static class Installer {
     };
     const string InstallIdentityName = "install.identity";
     const string InstallProductId = "DeltaForceBooster";
+    const string AnchorIdentityName = "anchor.identity";
+    const string AnchorCodeDirectory = "app";
     public static string LastMigrationNote;
 
     static string TestRoot() {
@@ -435,6 +484,26 @@ static class Installer {
         return null;
 #endif
     }
+    static string TestDriveType(string scope) {
+#if DFB_TESTING
+        if (TestAutomationPath(scope)) return Environment.GetEnvironmentVariable("DFB_TEST_DRIVE_TYPE");
+#endif
+        return null;
+    }
+    static string TestDriveFormat(string scope) {
+#if DFB_TESTING
+        if (TestAutomationPath(scope)) return Environment.GetEnvironmentVariable("DFB_TEST_DRIVE_FORMAT");
+#endif
+        return null;
+    }
+    static string TestCustomDriveRoot(string scope) {
+#if DFB_TESTING
+        string root = TestPathValue("DFB_TEST_CUSTOM_DRIVE_ROOT");
+        if (!string.IsNullOrEmpty(root) && TestAutomationPath(scope) && IsInside(root, scope))
+            return Path.GetFullPath(root).TrimEnd('\\') + "\\";
+#endif
+        return null;
+    }
     static bool TestAllowWritable(string scope) {
 #if DFB_TESTING
         return TestFlagEnabled("DFB_TEST_ALLOW_WRITABLE_INSTALL", scope);
@@ -483,6 +552,13 @@ static class Installer {
 #else
         return null;
 #endif
+    }
+
+    static string TestDesktopShellSid() {
+#if DFB_TESTING
+        if (TestRoot() != null) return Environment.GetEnvironmentVariable("DFB_TEST_SHELL_SID");
+#endif
+        return null;
     }
 
     public static bool IsSha256(string value) {
@@ -565,7 +641,7 @@ static class Installer {
         return null;
     }
 
-    // 程序代码默认进入 Program Files，避免普通权限进程替换同目录脚本后等待用户下次运行。
+    // 程序代码默认进入 Program Files；其他盘使用卷根一级 permanent anchor\app。
     // DFB_TEST_PROGRAMFILES 只用于安装回归测试重定向，不影响正式用户路径。
     public static string DefaultDir() {
         string pf = TestProgramFilesPath();
@@ -591,6 +667,111 @@ static class Installer {
         return p.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
     }
 
+    [DllImport("user32.dll")]
+    static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass,
+        IntPtr tokenInformation, int tokenInformationLength, out int returnLength);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern IntPtr GetSidSubAuthority(IntPtr sid, uint subAuthority);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CloseHandle(IntPtr handle);
+
+    public static string NormalizeSid(string value) {
+        try {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            return new SecurityIdentifier(value.Trim()).Value;
+        } catch (Exception) { return null; }
+    }
+
+    public static string CurrentTokenSid() {
+        try {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) {
+                return identity.User == null ? null : identity.User.Value;
+            }
+        } catch (Exception) { return null; }
+    }
+
+    static bool TryGetMediumDesktopShellSid(out string sid, out string reason) {
+        sid = null; reason = null;
+        string testSid = NormalizeSid(TestDesktopShellSid());
+        if (testSid != null) { sid = testSid; return true; }
+        IntPtr processHandle = IntPtr.Zero, tokenHandle = IntPtr.Zero, integrity = IntPtr.Zero;
+        try {
+            IntPtr shellWindow = GetShellWindow();
+            if (shellWindow == IntPtr.Zero) { reason = "未找到当前桌面的 Windows shell"; return false; }
+            uint shellPid;
+            GetWindowThreadProcessId(shellWindow, out shellPid);
+            if (shellPid == 0) { reason = "无法识别当前桌面的 Windows shell 进程"; return false; }
+            using (Process shell = Process.GetProcessById((int)shellPid)) {
+                if (shell.SessionId != Process.GetCurrentProcess().SessionId) {
+                    reason = "Windows shell 不属于当前交互会话"; return false;
+                }
+            }
+            const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+            const uint TOKEN_QUERY = 0x0008;
+            processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, shellPid);
+            if (processHandle == IntPtr.Zero) { reason = "无法打开当前桌面的 Windows shell"; return false; }
+            if (!OpenProcessToken(processHandle, TOKEN_QUERY, out tokenHandle) || tokenHandle == IntPtr.Zero) {
+                reason = "无法读取当前桌面的 Windows shell token"; return false;
+            }
+            using (var shellIdentity = new WindowsIdentity(tokenHandle)) {
+                sid = shellIdentity.User == null ? null : shellIdentity.User.Value;
+            }
+            if (NormalizeSid(sid) == null) { reason = "当前桌面的 Windows shell SID 无效"; return false; }
+
+            const int TokenIntegrityLevel = 25;
+            const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
+            int size;
+            GetTokenInformation(tokenHandle, TokenIntegrityLevel, IntPtr.Zero, 0, out size);
+            if (size <= IntPtr.Size) { reason = "无法读取当前桌面的 Windows shell 完整性级别"; return false; }
+            integrity = Marshal.AllocHGlobal(size);
+            if (!GetTokenInformation(tokenHandle, TokenIntegrityLevel, integrity, size, out size)) {
+                reason = "无法读取当前桌面的 Windows shell 完整性级别"; return false;
+            }
+            // TOKEN_MANDATORY_LABEL 的首字段是 SID_AND_ATTRIBUTES，其首字段又是 SID 指针。
+            IntPtr integritySid = Marshal.ReadIntPtr(integrity);
+            if (integritySid == IntPtr.Zero) { reason = "Windows shell 完整性 SID 无效"; return false; }
+            IntPtr countPointer = GetSidSubAuthorityCount(integritySid);
+            if (countPointer == IntPtr.Zero) {
+                reason = "Windows shell 完整性 SID 无效"; return false;
+            }
+            byte count = Marshal.ReadByte(countPointer);
+            if (count == 0) { reason = "Windows shell 完整性 SID 为空"; return false; }
+            IntPtr ridPointer = GetSidSubAuthority(integritySid, (uint)(count - 1));
+            if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID) {
+                reason = "当前桌面的 Windows shell 不是 medium token"; return false;
+            }
+            return true;
+        } catch (Exception ex) { reason = "当前桌面用户身份复验失败：" + ex.Message; return false; }
+        finally {
+            if (integrity != IntPtr.Zero) Marshal.FreeHGlobal(integrity);
+            if (tokenHandle != IntPtr.Zero) CloseHandle(tokenHandle);
+            if (processHandle != IntPtr.Zero) CloseHandle(processHandle);
+        }
+    }
+
+    public static string CheckDesktopShellOrigin(string originSid) {
+        string origin = NormalizeSid(originSid);
+        if (origin == null) return "安装前的原用户身份缺失或格式无效";
+        string shellSid, reason;
+        if (!TryGetMediumDesktopShellSid(out shellSid, out reason)) return reason;
+        if (!string.Equals(origin, shellSid, StringComparison.OrdinalIgnoreCase))
+            return "当前桌面普通用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）";
+        return null;
+    }
+
     // 解包后所需字节数由嵌入的发布清单求和，避免未知 ZIP 条目影响显示或被误安装。
     public static long RequiredBytes() {
         if (_requiredBytes >= 0) return _requiredBytes;
@@ -600,9 +781,11 @@ static class Installer {
         return sum;
     }
 
-    // 安装器写 Program Files 时处于 elevated token；asInvoker 启动器若直接继承该 token，
+    // 安装器写受保护程序目录时处于 elevated token；asInvoker 启动器若直接继承该 token，
     // 非提权 GUI 会按安全策略拒绝启动。交给当前桌面的 explorer shell 可回到交互用户 token。
-    public static string StartInstalledApplication(string dest) {
+    public static string StartInstalledApplication(string dest, string originSid) {
+        string identityError = CheckDesktopShellOrigin(originSid);
+        if (identityError != null) throw new UnauthorizedAccessException(identityError);
         string exe = Path.Combine(dest, "启动优化工具.exe");
         if (!File.Exists(exe)) return "未找到 " + exe;
         if (TestNoLaunch(dest))
@@ -639,10 +822,28 @@ static class Installer {
         return IsTrustedInstallWriter(sid) || sid.Value == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
     }
 
+    static bool HasVolumeRootReplacementRights(FileSystemRights rights) {
+        // A common data-volume root grants Authenticated Users Modify, whose 0x1301bf mask
+        // includes DELETE on the root object but not FILE_DELETE_CHILD.  DELETE on D:\ itself
+        // does not authorize deleting D:\Product; rejecting it would lock custom installs back
+        // to C:.  Replacement of a child is possible through DELETE_CHILD, WRITE_DAC,
+        // WRITE_OWNER or GENERIC_ALL, so those are the only dangerous root-parent bits here.
+        const FileSystemRights replaceChild = FileSystemRights.DeleteSubdirectoriesAndFiles |
+            FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        long raw = (long)rights;
+        return (rights & replaceChild) != 0 || (raw & 0x10000000L) != 0;
+    }
+
     static string ProgramFilesBoundary(string full) {
+        var roots = new List<string>();
+        string test = TestProgramFilesPath();
+        if (!string.IsNullOrEmpty(test)) roots.Add(test);
         foreach (Environment.SpecialFolder folder in new Environment.SpecialFolder[] {
             Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }) {
-            string root = Environment.GetFolderPath(folder);
+            string systemRoot = Environment.GetFolderPath(folder);
+            if (!string.IsNullOrEmpty(systemRoot)) roots.Add(systemRoot);
+        }
+        foreach (string root in roots) {
             if (string.IsNullOrEmpty(root)) continue;
             string prefix = Path.GetFullPath(root).TrimEnd('\\') + "\\";
             if ((full.TrimEnd('\\') + "\\").StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return prefix.TrimEnd('\\');
@@ -674,6 +875,110 @@ static class Installer {
         }
     }
 
+    static void EnsureSafeCustomVolumeRoot(string driveRoot, string scope) {
+        if (TestAllowWritable(scope)) return;
+        string root = Path.GetFullPath(driveRoot);
+        if (!Directory.Exists(root)) throw new DirectoryNotFoundException("目标磁盘根目录不存在：" + root);
+        if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("目标磁盘根目录是 junction/symlink/reparse point：" + root);
+        var security = Directory.GetAccessControl(root, AccessControlSections.Owner | AccessControlSections.Access);
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (!IsTrustedProgramFilesWriter(owner)) throw new UnauthorizedAccessException("目标磁盘根目录 owner 不可信：" + root);
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+            if (rule.AccessControlType != AccessControlType.Allow ||
+                (rule.PropagationFlags & PropagationFlags.InheritOnly) != 0 ||
+                !HasVolumeRootReplacementRights(rule.FileSystemRights)) continue;
+            if (!IsTrustedProgramFilesWriter(rule.IdentityReference as SecurityIdentifier))
+                throw new UnauthorizedAccessException("目标磁盘根目录允许普通账户删除/替换一级子目录：" + root);
+        }
+    }
+
+    static string ValidateInstallVolume(string dest, out string full, out string driveRoot, out string parent) {
+        full = null; driveRoot = null; parent = null;
+        try {
+            string candidate = (dest ?? "").Trim();
+            if (candidate.Length == 0) return "路径为空";
+            if (candidate.StartsWith("\\\\", StringComparison.Ordinal)) return "不支持 UNC、网络共享或设备命名空间";
+            if (candidate.Length < 3 || candidate[1] != ':' || (candidate[2] != '\\' && candidate[2] != '/'))
+                return "请输入带本地盘符的完整路径";
+            full = Path.GetFullPath(candidate);
+            if (full.IndexOf(':', 2) >= 0) return "安装路径不能包含备用数据流";
+            driveRoot = Path.GetPathRoot(full);
+            if (string.IsNullOrEmpty(driveRoot) || driveRoot.Length != 3 || driveRoot[1] != ':')
+                return "安装路径必须位于带盘符的本地磁盘";
+            var drive = new DriveInfo(driveRoot);
+            DriveType driveType = drive.DriveType;
+            string forcedType = TestDriveType(full);
+            DriveType parsedType;
+            if (!string.IsNullOrEmpty(forcedType) && Enum.TryParse<DriveType>(forcedType, true, out parsedType)) driveType = parsedType;
+            if (driveType != DriveType.Fixed) return "只支持本地固定磁盘，不支持可移动盘或网络盘";
+            if (!drive.IsReady) return "目标磁盘尚未就绪";
+            string format = TestDriveFormat(full);
+            if (string.IsNullOrEmpty(format)) format = drive.DriveFormat;
+            if (!string.Equals(format, "NTFS", StringComparison.OrdinalIgnoreCase)) return "目标磁盘必须使用 NTFS 文件系统";
+            string testRoot = TestCustomDriveRoot(full);
+            if (!string.IsNullOrEmpty(testRoot)) driveRoot = testRoot;
+            if (string.Equals(full.TrimEnd('\\'), driveRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                return "安装目标不能是磁盘根目录";
+            parent = Path.GetDirectoryName(full.TrimEnd('\\'));
+            if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
+                return "安装目标的父目录必须已经存在；请先通过“浏览…”选择现有目录";
+            return null;
+        } catch (Exception ex) { return "目标磁盘检查失败：" + ex.Message; }
+    }
+
+    static InstallLayout ResolveInstallLayout(string dest, bool validateExistingAnchor) {
+        string full, driveRoot, parent;
+        string volumeError = ValidateInstallVolume(dest, out full, out driveRoot, out parent);
+        if (volumeError != null) throw new IOException(volumeError);
+        string programFiles = ProgramFilesBoundary(full);
+        if (programFiles != null) {
+            return new InstallLayout { InstallRoot = full, CodeRoot = full, IsCustomAnchor = false };
+        }
+
+        string boundary = Path.GetFullPath(driveRoot).TrimEnd('\\');
+        string leaf = Path.GetFileName(full.TrimEnd('\\'));
+        string anchor = full.TrimEnd('\\');
+        bool physicalAppInput = false;
+        if (string.Equals(leaf, AnchorCodeDirectory, StringComparison.OrdinalIgnoreCase)) {
+            string possibleAnchor = Path.GetDirectoryName(full.TrimEnd('\\'));
+            string possibleParent = string.IsNullOrEmpty(possibleAnchor) ? null : Path.GetDirectoryName(possibleAnchor.TrimEnd('\\'));
+            if (!string.IsNullOrEmpty(possibleParent) &&
+                string.Equals(possibleParent.TrimEnd('\\'), boundary, StringComparison.OrdinalIgnoreCase)) {
+                anchor = possibleAnchor.TrimEnd('\\');
+                physicalAppInput = true;
+            }
+        }
+        if (!physicalAppInput) {
+            string anchorParent = Path.GetDirectoryName(anchor);
+            if (string.IsNullOrEmpty(anchorParent) ||
+                !string.Equals(anchorParent.TrimEnd('\\'), boundary, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("其他盘仅支持磁盘根目录下的一级受保护安装目录，例如 D:\\DeltaForceBooster");
+        }
+
+        EnsureSafeCustomVolumeRoot(driveRoot, full);
+        EnsureNoReparseExistingPath(anchor);
+        if (File.Exists(anchor)) throw new IOException("安装目录已被同名文件占用：" + anchor);
+        if (Directory.Exists(anchor)) {
+            if (validateExistingAnchor) ValidateCustomAnchor(anchor);
+        } else if (physicalAppInput) {
+            throw new IOException("/dir 指向 app，但对应的受保护安装锚点不存在：" + anchor);
+        }
+        return new InstallLayout {
+            InstallRoot = anchor,
+            CodeRoot = Path.Combine(anchor, AnchorCodeDirectory),
+            IsCustomAnchor = true
+        };
+    }
+
+    public static string CodeRootForInstall(string dest) {
+        return ResolveInstallLayout(dest, true).CodeRoot;
+    }
+
+    public static string InstallRootForDisplay(string dest) {
+        return ResolveInstallLayout(dest, true).InstallRoot;
+    }
+
     static string NearestExistingDirectory(string full) {
         string probe = full;
         while (!Directory.Exists(probe)) {
@@ -684,23 +989,25 @@ static class Installer {
         return probe;
     }
 
-    // 正式安装只允许 System Known Folder 返回的 Program Files / Program Files (x86)。
-    // 对从边界到目标的每个既有目录，拒绝除 Admin/SYSTEM/TrustedInstaller 之外的任意
-    // 写/DeleteChild ACE；不能只检查“当前用户”，否则另一个本地用户仍可替换程序根。
+    // Program Files 保持原布局。其他盘只接受卷根一级 permanent anchor；用户选择的是
+    // D:\Name，实际代码始终位于 D:\Name\app。anchor 自身永不参与更新目录改名，所有
+    // stage/rollback 都在 anchor 内完成，因此卷根常见的 Users Modify 不会形成替换窗口。
     public static string CheckSecureInstallLocation(string dest) {
         try {
-            string full = Path.GetFullPath(dest.Trim());
+            InstallLayout layout = ResolveInstallLayout(dest, true);
+            string full = layout.CodeRoot;
             string forced = TestInsecurePrefix();
             if (!string.IsNullOrEmpty(forced)) {
                 string prefix = Path.GetFullPath(forced).TrimEnd('\\') + "\\";
-                if ((full.TrimEnd('\\') + "\\").StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                string requested = Path.GetFullPath(dest).TrimEnd('\\') + "\\";
+                if (requested.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                     return "测试模式标记为旧版可写目录";
             }
             EnsureNoReparseExistingPath(full);
-            if (TestAllowWritable(full)) return null;
-            string boundary = ProgramFilesBoundary(full);
-            if (boundary == null) return "程序文件只允许安装到系统 Program Files 目录";
-            EnsureTrustedProgramFilesChain(boundary, full);
+            if (!layout.IsCustomAnchor && !TestAllowWritable(full)) {
+                string boundary = ProgramFilesBoundary(full);
+                EnsureTrustedProgramFilesChain(boundary, full);
+            }
             return null;
         } catch (Exception ex) { return "目标目录安全检查失败：" + ex.Message; }
     }
@@ -715,8 +1022,14 @@ static class Installer {
         } catch (Exception) { return "路径格式无效"; }
         string secure = CheckSecureInstallLocation(full);
         if (secure != null) return secure;
-        try { ValidateExistingInstallTarget(full); }
+        try {
+            full = CodeRootForInstall(full);
+            ValidateExistingInstallTarget(full);
+        }
         catch (Exception ex) { return ex.Message; }
+        // 即使自选盘根允许当前用户创建兄弟目录，最终代码树也必须由 elevated 安装器
+        // 原子创建并封闭 ACL；普通 token 不能走一条“碰巧可写”但未 Harden 的旁路。
+        if (!IsElevated() && !TestSkipAcl(full)) return NeedAdmin;
         string probe = NearestExistingDirectory(full);
         if (probe == null) return "目标磁盘或根目录不存在";
         try {
@@ -801,6 +1114,165 @@ static class Installer {
         if (!adminFull || !systemFull) throw new UnauthorizedAccessException("受保护存储缺少 Admin/SYSTEM FullControl：" + path);
     }
 
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "GetNamedSecurityInfoW")]
+    static extern uint GetNamedSecurityInfo(string objectName, int objectType, uint securityInformation,
+        out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "ConvertSecurityDescriptorToStringSecurityDescriptorW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr securityDescriptor,
+        uint requestedRevision, uint securityInformation, out IntPtr stringSecurityDescriptor, out uint stringLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr LocalFree(IntPtr memory);
+
+    static string ReadIntegrityLabelSddl(string path) {
+        const int SE_FILE_OBJECT = 1;
+        const uint LABEL_SECURITY_INFORMATION = 0x00000010;
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint result = GetNamedSecurityInfo(path, SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION,
+            out owner, out group, out dacl, out sacl, out descriptor);
+        if (result != 0) throw new Win32Exception((int)result, "读取完整性标签失败：" + path);
+        try {
+            IntPtr sddl;
+            uint length;
+            if (!ConvertSecurityDescriptorToStringSecurityDescriptor(descriptor, 1,
+                LABEL_SECURITY_INFORMATION, out sddl, out length))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "转换完整性标签失败：" + path);
+            try { return Marshal.PtrToStringUni(sddl) ?? ""; }
+            finally { if (sddl != IntPtr.Zero) LocalFree(sddl); }
+        } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); }
+    }
+
+    static void EnsureHighIntegrityAnchor(string anchor) {
+        if (TestSkipAcl(anchor)) return;
+        string sddl = ReadIntegrityLabelSddl(anchor);
+        var labels = System.Text.RegularExpressions.Regex.Matches(sddl,
+            @"\(ML;([^;]*);([^;]*);;;HI\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (labels.Count != 1) throw new UnauthorizedAccessException("安装锚点缺少唯一 High mandatory label：" + anchor);
+        string flags = labels[0].Groups[1].Value.ToUpperInvariant();
+        string policy = labels[0].Groups[2].Value.ToUpperInvariant();
+        if (!flags.Contains("OI") || !flags.Contains("CI") || !policy.Contains("NW"))
+            throw new UnauthorizedAccessException("安装锚点 High mandatory label 未包含 OI/CI/NoWriteUp：" + anchor);
+    }
+
+    static void SetHighIntegrityAnchor(string anchor) {
+        if (TestSkipAcl(anchor)) return;
+        string icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
+        if (!File.Exists(icacls)) throw new FileNotFoundException("系统缺少 icacls.exe", icacls);
+        using (var process = Process.Start(new ProcessStartInfo {
+            FileName = icacls,
+            Arguments = "\"" + anchor + "\" /setintegritylevel (OI)(CI)H",
+            UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+        })) {
+            if (process == null || !process.WaitForExit(15000) || process.ExitCode != 0)
+                throw new IOException("无法给其他盘安装锚点设置高完整性标签");
+        }
+        EnsureHighIntegrityAnchor(anchor);
+    }
+
+    static void EnsureExactAnchorDirectory(string anchor) {
+        if (TestSkipAcl(anchor)) return;
+        var security = Directory.GetAccessControl(anchor, AccessControlSections.Owner | AccessControlSections.Access);
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (!IsTrustedInstallWriter(owner) || !security.AreAccessRulesProtected)
+            throw new UnauthorizedAccessException("安装锚点 owner/DACL 继承状态不可信：" + anchor);
+        string adminSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null).Value;
+        string systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null).Value;
+        string usersSid = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null).Value;
+        bool adminFull = false, systemFull = false, usersRead = false;
+        int count = 0;
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+            count++;
+            var sid = rule.IdentityReference as SecurityIdentifier;
+            if (sid == null || rule.AccessControlType != AccessControlType.Allow || rule.IsInherited ||
+                rule.InheritanceFlags != (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) ||
+                rule.PropagationFlags != PropagationFlags.None)
+                throw new UnauthorizedAccessException("安装锚点含非预期 ACL：" + anchor);
+            if (sid.Value == adminSid && rule.FileSystemRights == FileSystemRights.FullControl) adminFull = true;
+            else if (sid.Value == systemSid && rule.FileSystemRights == FileSystemRights.FullControl) systemFull = true;
+            else if (sid.Value == usersSid &&
+                rule.FileSystemRights == (FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize)) usersRead = true;
+            else throw new UnauthorizedAccessException("安装锚点含非 Admin/System Full 或 Users RX 的 ACL：" + anchor);
+        }
+        if (count != 3 || !adminFull || !systemFull || !usersRead)
+            throw new UnauthorizedAccessException("安装锚点 ACL 必须恰好为 Admin/System Full + Users RX：" + anchor);
+    }
+
+    static void HardenAnchorIdentity(string identity) {
+        if (TestSkipAcl(identity)) return;
+        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+        var acl = new FileSecurity();
+        acl.SetAccessRuleProtection(true, false); acl.SetOwner(admins);
+        acl.AddAccessRule(new FileSystemAccessRule(system, FileSystemRights.FullControl, AccessControlType.Allow));
+        acl.AddAccessRule(new FileSystemAccessRule(admins, FileSystemRights.FullControl, AccessControlType.Allow));
+        acl.AddAccessRule(new FileSystemAccessRule(users, FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+        File.SetAccessControl(identity, acl);
+        EnsureProtectedEntry(identity, false);
+    }
+
+    static void ValidateAnchorIdentity(string anchor) {
+        string identity = Path.Combine(anchor, AnchorIdentityName);
+        EnsureNoReparseExistingPath(identity);
+        if (!File.Exists(identity)) throw new IOException("现有一级目录不是已验证的 DeltaForceBooster 安装锚点（缺少 anchor.identity）：" + anchor);
+        if (!TestSkipAcl(identity)) EnsureProtectedEntry(identity, false);
+        var info = new FileInfo(identity);
+        if (info.Length <= 0 || info.Length > 512) throw new InvalidDataException("anchor.identity 大小无效");
+        string text;
+        using (var fs = new FileStream(identity, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var reader = new StreamReader(fs, new UTF8Encoding(false, true), false)) text = reader.ReadToEnd();
+        string[] lines = text.Replace("\r\n", "\n").Split('\n');
+        if (lines.Length != 7 || lines[6].Length != 0 || lines[0] != "SchemaVersion=1" ||
+            lines[1] != "ProductId=" + InstallProductId || lines[2] != "Layout=PermanentAnchor" ||
+            lines[3] != "CodeDirectory=" + AnchorCodeDirectory ||
+            !lines[4].StartsWith("AnchorId=", StringComparison.Ordinal) ||
+            !System.Text.RegularExpressions.Regex.IsMatch(lines[4].Substring("AnchorId=".Length), "^[0-9a-f]{32}$") ||
+            lines[5] != "AnchorNeverDelete=1")
+            throw new InvalidDataException("anchor.identity 格式无效");
+    }
+
+    static void ValidateCustomAnchor(string anchor) {
+        EnsureNoReparseExistingPath(anchor);
+        if (!Directory.Exists(anchor)) throw new DirectoryNotFoundException("安装锚点不存在：" + anchor);
+        EnsureExactAnchorDirectory(anchor);
+        EnsureHighIntegrityAnchor(anchor);
+        ValidateAnchorIdentity(anchor);
+    }
+
+    static void CreateOrValidateCustomAnchor(InstallLayout layout) {
+        if (!layout.IsCustomAnchor) return;
+        string anchor = layout.InstallRoot;
+        if (Directory.Exists(anchor)) { ValidateCustomAnchor(anchor); return; }
+        if (!IsElevated() && !TestSkipAcl(anchor))
+            throw new UnauthorizedAccessException("创建其他盘受保护安装锚点需要管理员权限");
+        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+        var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+        var acl = new DirectorySecurity();
+        acl.SetAccessRuleProtection(true, false); acl.SetOwner(admins);
+        acl.AddAccessRule(new FileSystemAccessRule(system, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+        acl.AddAccessRule(new FileSystemAccessRule(admins, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+        acl.AddAccessRule(new FileSystemAccessRule(users, FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+        if (TestSkipAcl(anchor)) Directory.CreateDirectory(anchor); else Directory.CreateDirectory(anchor, acl);
+        EnsureNoReparseExistingPath(anchor);
+        EnsureExactAnchorDirectory(anchor); // also catches a pre-create race with an attacker-owned directory
+        SetHighIntegrityAnchor(anchor);
+        string identity = Path.Combine(anchor, AnchorIdentityName);
+        if (File.Exists(identity) || Directory.Exists(identity)) throw new IOException("anchor.identity 已被占用");
+        string text = "SchemaVersion=1\nProductId=" + InstallProductId +
+            "\nLayout=PermanentAnchor\nCodeDirectory=" + AnchorCodeDirectory +
+            "\nAnchorId=" + Guid.NewGuid().ToString("N") + "\nAnchorNeverDelete=1\n";
+        byte[] bytes = new UTF8Encoding(false).GetBytes(text);
+        using (var fs = new FileStream(identity, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough)) {
+            fs.Write(bytes, 0, bytes.Length); fs.Flush(true);
+        }
+        HardenAnchorIdentity(identity);
+        ValidateCustomAnchor(anchor);
+    }
+
     static void EnsureProtectedInstallTree(string root) {
         EnsureTreeHasNoReparsePoints(root);
         if (TestSkipAcl(root)) return;
@@ -816,10 +1288,11 @@ static class Installer {
         try {
             string identity = Path.Combine(root, InstallIdentityName);
             string launcher = Path.Combine(root, "启动优化工具.exe");
+            string engineHost = Path.Combine(root, "EngineHost.exe");
             string gui = Path.Combine(root, "gui", "DeltaForceBooster-GUI.ps1");
             string engine = Path.Combine(root, "scripts", "delta-booster.ps1");
             // install.identity 先于自动调优模块存在。身份文件已绑定启动器哈希，随后还会
-            // 校验整棵 Program Files ACL；不能把后来新增的 tuning 模块当历史身份的一部分。
+            // 校验整棵受保护安装树 ACL；不能把后来新增的 tuning 模块当历史身份的一部分。
             foreach (string required in new string[] { identity, launcher, gui, engine }) {
                 EnsureNoReparseExistingPath(required);
                 if (!File.Exists(required)) { reason = "缺少产品身份文件：" + required; return false; }
@@ -830,13 +1303,26 @@ static class Installer {
             using (var fs = new FileStream(identity, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (var reader = new StreamReader(fs, new UTF8Encoding(false, true), false)) text = reader.ReadToEnd();
             string[] lines = text.Replace("\r\n", "\n").Split('\n');
-            if (lines.Length != 4 || lines[3].Length != 0 || lines[0] != "SchemaVersion=1" ||
-                lines[1] != "ProductId=" + InstallProductId || !lines[2].StartsWith("LauncherSha256=", StringComparison.Ordinal)) {
+            bool schema1 = lines.Length == 4 && lines[3].Length == 0 && lines[0] == "SchemaVersion=1";
+            bool schema2 = lines.Length == 5 && lines[4].Length == 0 && lines[0] == "SchemaVersion=2";
+            if ((!schema1 && !schema2) || lines[1] != "ProductId=" + InstallProductId ||
+                !lines[2].StartsWith("LauncherSha256=", StringComparison.Ordinal)) {
                 reason = "产品身份文件格式无效"; return false;
             }
             launcherSha256 = lines[2].Substring("LauncherSha256=".Length);
             if (!IsSha256(launcherSha256) || !string.Equals(FileSha256(launcher), launcherSha256, StringComparison.OrdinalIgnoreCase)) {
                 reason = "启动器与产品身份文件不匹配"; return false;
+            }
+            if (schema2) {
+                if (!lines[3].StartsWith("EngineHostSha256=", StringComparison.Ordinal)) {
+                    reason = "产品身份文件缺少 EngineHost 哈希"; return false;
+                }
+                string engineHostSha256 = lines[3].Substring("EngineHostSha256=".Length);
+                EnsureNoReparseExistingPath(engineHost);
+                if (!File.Exists(engineHost) || !IsSha256(engineHostSha256) ||
+                    !string.Equals(FileSha256(engineHost), engineHostSha256, StringComparison.OrdinalIgnoreCase)) {
+                    reason = "EngineHost 与产品身份文件不匹配"; return false;
+                }
             }
             FileVersionInfo vi = FileVersionInfo.GetVersionInfo(launcher);
             Version launcherVersion, setupVersion, guiVersion;
@@ -1317,7 +1803,7 @@ static class Installer {
             if (!Directory.Exists(source)) return;
             string identityReason;
             if (!LooksLikeLegacyProductRoot(source, out identityReason)) {
-                LastMigrationNote = "新版本已迁入 Program Files；旧目录身份复验失败，已原样保留：" + identityReason;
+                LastMigrationNote = "新版本已迁入受保护目录；旧目录身份复验失败，已原样保留：" + identityReason;
                 return;
             }
             string parent = Path.GetDirectoryName(source.TrimEnd('\\'));
@@ -1331,7 +1817,7 @@ static class Installer {
                 LastMigrationNote = "旧版目录已停用并保留在：" + quarantine + "；备份位置登记失败，请保留安装日志。原因：" + ex.Message;
             }
         } catch (Exception ex) {
-            LastMigrationNote = "新版本已迁入 Program Files；旧目录未自动清理，请勿继续从旧目录启动。原因：" + ex.Message;
+            LastMigrationNote = "新版本已迁入受保护目录；旧目录未自动清理，请勿继续从旧目录启动。原因：" + ex.Message;
         }
     }
 
@@ -1443,9 +1929,12 @@ static class Installer {
     }
 
     public static void Install(string dest, Action<int, int, string> onProgress, string migrationSource) {
-        string full = Path.GetFullPath(dest.Trim());
-        string secure = CheckSecureInstallLocation(full);
+        string requested = Path.GetFullPath(dest.Trim());
+        string secure = CheckSecureInstallLocation(requested);
         if (secure != null) throw new UnauthorizedAccessException(secure);
+        InstallLayout layout = ResolveInstallLayout(requested, true);
+        CreateOrValidateCustomAnchor(layout);
+        string full = layout.CodeRoot;
         if (File.Exists(full)) throw new IOException("安装目标已被同名文件占用：" + full);
         EnsureNoReparseExistingPath(full);
         ValidateExistingInstallTarget(full);
@@ -1500,6 +1989,7 @@ static class Installer {
             if (injectedFailure == "after-old-move") throw new IOException("测试注入：after-old-move");
             MoveDirectoryWithRetry(stage, full);
             newMoved = true;
+            if (layout.IsCustomAnchor) ValidateCustomAnchor(layout.InstallRoot);
 
             if (oldMoved) {
                 try { ValidateRollbackBeforeUse(rollback, parent, leaf, id); SafeDeleteTree(rollback); }
@@ -1683,17 +2173,22 @@ class SetupWindow : Window {
     TextBlock[] _stepNums, _stepLabels;
     TextBox _pathBox;
     TextBlock _spaceText, _warnText, _dlWarnText, _pctText, _cntText, _fileText, _destText, _hintText;
+    TextBlock _runLabel, _runHelpText;
     Border _barFill, _closeBtn;
     Grid _btnNext, _btnBack, _btnInstall, _btnFinish, _btnCancel;
+    StackPanel _runRow;
     TextBlock _checkMark, _deskMark, _menuMark;
     bool _runChecked = true;
     bool _deskChecked = true;   // 桌面快捷方式默认勾选：真机反馈「装完找不到入口」的直接解药
     bool _menuChecked = true;   // 开始菜单快捷方式默认勾选（原先无条件创建，现交给用户）
     bool _installing;
     string _installedDir;
+    string _autoLaunchBlockedReason;
+    readonly string _originSid;
     int _curStep;
 
-    public SetupWindow(string presetDir) {
+    public SetupWindow(string presetDir, string originSid) {
+        _originSid = originSid;
         Title = "三角洲行动优化助手 · 安装向导";
         Width = 700; Height = 600;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -1707,7 +2202,11 @@ class SetupWindow : Window {
         ShowStep(0);
         _pathBox.Text = Installer.DefaultDir();
         // 提权重启回传路径时直接落到位置页，别让用户从头再点一遍
-        if (!string.IsNullOrEmpty(presetDir)) { _pathBox.Text = presetDir; ShowStep(1); }
+        if (!string.IsNullOrEmpty(presetDir)) {
+            try { _pathBox.Text = Installer.InstallRootForDisplay(presetDir); }
+            catch (Exception) { _pathBox.Text = presetDir; }
+            ShowStep(1);
+        }
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e) {
@@ -1980,13 +2479,13 @@ class SetupWindow : Window {
             Margin = new Thickness(0, 14, 0, 0)
         });
         sp.Children.Add(new TextBlock {
-            Text = "默认安装到 Program Files，真正写入时才按需请求管理员权限；程序文件不会留在普通进程可修改的目录。",
+            Text = "默认安装到 Program Files。其他固定 NTFS 盘请直接选择磁盘根目录：安装器会创建一级永久保护目录，程序代码放在它的 app 子目录。",
             Foreground = Theme.TextFaint, FontSize = 11, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 10, 0, 0)
         });
         // 下载目录对普通用户可写，不能再作为程序代码安装位置。
         _dlWarnText = new TextBlock {
-            Text = "当前位置在「下载」文件夹内，普通进程可以替换程序脚本。为保护系统操作，本安装器会拒绝该位置；请使用默认的 Program Files。",
+            Text = "当前位置在「下载」文件夹内，普通进程可以替换程序脚本，本安装器会拒绝该位置。可使用默认路径，或直接选择其他固定 NTFS 盘的根目录。",
             Foreground = Theme.Gold, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
             Margin = new Thickness(0, 12, 0, 0), Visibility = Visibility.Collapsed
         };
@@ -2087,23 +2586,27 @@ class SetupWindow : Window {
             _deskMark.Visibility = _deskChecked ? Visibility.Visible : Visibility.Collapsed;
         };
         sp.Children.Add(deskRow);
-        var runRow = new StackPanel {
+        _runRow = new StackPanel {
             Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0), Cursor = Cursors.Hand
         };
-        runRow.Children.Add(box);
-        runRow.Children.Add(new TextBlock {
+        _runRow.Children.Add(box);
+        _runLabel = new TextBlock {
             Text = "立即运行 三角洲行动优化助手", Foreground = Theme.TextMain,
             VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0)
-        });
-        runRow.MouseLeftButtonUp += delegate {
+        };
+        _runRow.Children.Add(_runLabel);
+        _runRow.MouseLeftButtonUp += delegate {
+            if (_autoLaunchBlockedReason != null) return;
             _runChecked = !_runChecked;
             _checkMark.Visibility = _runChecked ? Visibility.Visible : Visibility.Collapsed;
         };
-        sp.Children.Add(runRow);
-        sp.Children.Add(new TextBlock {
+        sp.Children.Add(_runRow);
+        _runHelpText = new TextBlock {
             Text = "主界面始终以普通权限运行；只有执行或还原需要修改系统的项目时，才会单独弹出 UAC 确认。",
-            Foreground = Theme.TextFaint, FontSize = 11, Margin = new Thickness(0, 8, 0, 0)
-        });
+            Foreground = Theme.TextFaint, FontSize = 11, Margin = new Thickness(0, 8, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+        sp.Children.Add(_runHelpText);
         page.Children.Add(sp);
         return page;
     }
@@ -2149,7 +2652,7 @@ class SetupWindow : Window {
         _closeBtn.Visibility   = (s == 2) ? Visibility.Hidden : Visibility.Visible;
         switch (s) {
             case 0: _hintText.Text = "安装过程只复制文件，不修改任何系统设置"; break;
-            case 1: _hintText.Text = "默认安装到 Program Files，写入时按需提权"; break;
+            case 1: _hintText.Text = "其他盘仅用卷根一级永久保护目录；代码位于其 app 子目录"; break;
             case 2: _hintText.Text = "正在安装，请稍候…"; break;
             default: _hintText.Text = "遇到问题可通过开始菜单或安装目录里的「卸载.bat」卸载"; break;
         }
@@ -2178,13 +2681,20 @@ class SetupWindow : Window {
 
     void OnBrowseClick() {
         var dlg = new WinForms.FolderBrowserDialog();
-        dlg.Description = "选择安装位置（将自动创建 DeltaForceBooster 子目录）";
+        dlg.Description = "选择磁盘根目录（将创建 DeltaForceBooster 受保护目录）或已有受保护安装目录";
         try { if (Directory.Exists(_pathBox.Text.Trim())) dlg.SelectedPath = _pathBox.Text.Trim(); } catch (Exception) { }
         if (dlg.ShowDialog() == WinForms.DialogResult.OK) {
             string p = dlg.SelectedPath;
             string leaf = Path.GetFileName(p.TrimEnd('\\'));
-            if (!string.Equals(leaf, "DeltaForceBooster", StringComparison.OrdinalIgnoreCase))
+            string root = Path.GetPathRoot(p);
+            string parent = Path.GetDirectoryName(p.TrimEnd('\\'));
+            if (string.Equals(p.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                 p = Path.Combine(p, "DeltaForceBooster");
+            else if (!string.IsNullOrEmpty(parent) &&
+                !string.Equals(parent.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(leaf, "DeltaForceBooster", StringComparison.OrdinalIgnoreCase))
+                p = Path.Combine(p, "DeltaForceBooster");
+            try { p = Installer.InstallRootForDisplay(p); } catch (Exception) { }
             _pathBox.Text = p;
         }
     }
@@ -2204,22 +2714,24 @@ class SetupWindow : Window {
             return;
         }
         if (err == Installer.NeedAdmin && !Installer.IsElevated()) {
-            // 默认 Program Files 需要一次 UAC；安装器本身仍是 asInvoker，显示向导时不提权。
-            ShowWarn("默认 Program Files 需要管理员权限。确认后将以管理员身份重新启动安装向导。", false);
+            // 所有正式安装都要以 elevated token 创建并复验封闭 ACL；向导本身仍以
+            // asInvoker 显示，用户确定路径后才请求一次 UAC。
+            ShowWarn("所选位置需要管理员权限。确认后将以管理员身份重新启动安装向导并保护程序目录。", false);
             var r = MessageBox.Show(this,
                 "目标位置需要管理员权限：\n" + dest +
                 "\n\n是否以管理员身份重新启动安装向导？",
                 "需要管理员权限", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (r == MessageBoxResult.Yes) RelaunchElevated(dest);
         } else {
-            ShowWarn("该位置不符合安全安装要求（" + err + "），请使用默认的 Program Files。", true);
+            ShowWarn("该位置不符合安全安装要求（" + err + "）。其他盘请直接选择固定 NTFS 磁盘根目录；程序会安装到一级受保护目录的 app 子目录。", true);
         }
     }
 
     void RelaunchElevated(string dest) {
         var psi = new ProcessStartInfo {
             FileName = Assembly.GetExecutingAssembly().Location,
-            Arguments = "/dir=\"" + dest + "\"",
+            // 空 origin SID 也显式回传；elevated 阶段据此 fail closed，绝不默认成审批管理员。
+            Arguments = "/dir=\"" + dest + "\" /originsid=" + (_originSid ?? ""),
             UseShellExecute = true,
             Verb = "runas"
         };
@@ -2240,8 +2752,9 @@ class SetupWindow : Window {
                 });
                 Dispatcher.Invoke(new Action(delegate {
                     _installing = false;
-                    _installedDir = Path.GetFullPath(dest);
-                    _destText.Text = "安装位置：" + _installedDir;
+                    _installedDir = Installer.CodeRootForInstall(dest);
+                    _destText.Text = "安装位置：" + Installer.InstallRootForDisplay(dest);
+                    ApplyAutoLaunchPolicy();
                     ShowStep(3);
                 }));
             } catch (Exception ex) {
@@ -2255,6 +2768,26 @@ class SetupWindow : Window {
         });
         th.IsBackground = true;
         th.Start();
+    }
+
+    void ApplyAutoLaunchPolicy() {
+        _autoLaunchBlockedReason = Installer.CheckDesktopShellOrigin(_originSid);
+        if (_autoLaunchBlockedReason == null) return;
+        _runChecked = false;
+        _checkMark.Visibility = Visibility.Collapsed;
+        _runRow.IsHitTestVisible = false;
+        _runRow.Opacity = 0.72;
+        _runLabel.Text = "已取消立即运行（当前桌面用户身份未通过复验）";
+        _runLabel.Foreground = Theme.Gold;
+        _runHelpText.Text = "安装已完成。请关闭向导，由原用户从公共桌面或开始菜单快捷方式手动打开。";
+        _runHelpText.Foreground = Theme.Gold;
+    }
+
+    void ShowManualLaunchNotice(string reason) {
+        MessageBox.Show(this,
+            "程序已经安装完成，但已跳过自动启动。\n\n" + reason +
+            "\n\n请关闭安装向导，由原用户从公共桌面或开始菜单快捷方式手动打开。",
+            "已跳过自动启动", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     void SetProgress(int i, int n, string name) {
@@ -2273,7 +2806,14 @@ class SetupWindow : Window {
         if (_deskChecked && _installedDir != null) {
             try { Installer.CreateDesktopShortcut(_installedDir); } catch (Exception) { }
         }
+        if (_autoLaunchBlockedReason != null) ShowManualLaunchNotice(_autoLaunchBlockedReason);
         if (_runChecked && _installedDir != null) {
+            string identityError = Installer.CheckDesktopShellOrigin(_originSid);
+            if (identityError != null) {
+                ShowManualLaunchNotice(identityError);
+                Close();
+                return;
+            }
             // 覆盖更新时旧版主程序可能还开着：礼貌请求旧实例关闭再启动，避免新旧窗口并存
             // （只按主窗口标题精确匹配，不动用户其他 powershell 进程）。拒绝退出多半是
             // 正在执行优化——绝不强杀，跳过自动启动并明示用户，安装本身已完成
@@ -2283,7 +2823,9 @@ class SetupWindow : Window {
                     "安装向导", MessageBoxButton.OK, MessageBoxImage.Warning);
             } else {
                 try {
-                    Installer.StartInstalledApplication(_installedDir);
+                    Installer.StartInstalledApplication(_installedDir, _originSid);
+                } catch (UnauthorizedAccessException ex) {
+                    ShowManualLaunchNotice(ex.Message);
                 } catch (Exception) {
                     // 自动启动失败不影响安装；开始菜单/桌面快捷方式仍可用普通用户 token 打开
                 }
@@ -2313,7 +2855,7 @@ class SetupWindow : Window {
                 ShowStep(1);
                 _pathBox.Text = "C:\\Program Files\\DeltaForceBooster";
                 UpdateSpaceInfo();
-                ShowWarn("默认 Program Files 需要管理员权限，开始安装时会按需提权。", false);
+                ShowWarn("所选位置需要管理员权限，开始安装时会提权并保护程序目录。", false);
                 break;
         }
     }

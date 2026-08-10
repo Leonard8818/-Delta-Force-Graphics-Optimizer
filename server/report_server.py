@@ -50,9 +50,10 @@ MAINTENANCE_INTERVAL = 6 * 60 * 60
 REGISTRATION_DAILY_LIMIT = 200
 MAX_RATE_BUCKETS = 20000
 TOKEN_REQUIRED_VERSION = (0, 19, 4)
-WEEKLY_SCHEMA_VERSION = 2
+WEEKLY_SCHEMA_VERSION = 3
 WEEKLY_FILTER_LIMITS = {"version": 24, "gpu": 160, "deviceType": 24}
 CUSTOM_PERIOD_MAX_DAYS = 92
+REPORTING_EPOCH_WEEK = dt.date(2026, 8, 3)
 CONFIG_TIERS = ("baseline", "light", "balanced", "full")
 CONFIG_TIER_LABELS = {
     "baseline": "未使用本工具优化",
@@ -144,7 +145,10 @@ class WeeklySnapshotError(RuntimeError):
     pass
 
 
-CustomPeriod = namedtuple("CustomPeriod", ("start", "end"))
+CustomPeriod = namedtuple(
+    "CustomPeriod", ("start", "end", "comparison_start", "comparison_end"),
+    defaults=(None, None),
+)
 
 
 def _rate_ok(bucket, maximum, window=RATE_WINDOW):
@@ -1736,9 +1740,13 @@ def _metric_delta(optimized, baseline, key):
 
 def _build_stats(now=None, days=30):
     now = int(time.time() if now is None else now)
-    today = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+    now_utc = dt.datetime.fromtimestamp(now, dt.timezone.utc)
+    today = now_utc.date()
     start_day = today - dt.timedelta(days=days - 1)
     midnight = int(dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc).timestamp())
+    current_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+    hourly_start = current_hour - dt.timedelta(hours=23)
+    hourly_start_ts = int(hourly_start.timestamp())
     conn = _connect()
     try:
         total_users = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
@@ -1769,6 +1777,20 @@ def _build_stats(now=None, days=30):
             """SELECT date(first_seen, 'unixepoch') day, COUNT(*) new_users
                  FROM clients WHERE first_seen>=? GROUP BY day""",
             (int(dt.datetime.combine(start_day, dt.time.min, tzinfo=dt.timezone.utc).timestamp()),),
+        )}
+        hourly_active_rows = {row["hour"]: row["active"] for row in conn.execute(
+            """SELECT strftime('%Y-%m-%dT%H:00Z', seen_at, 'unixepoch') hour,
+                      COUNT(DISTINCT client_hash) active
+                 FROM telemetry_replays
+                WHERE seen_at>=? AND seen_at<=? GROUP BY hour""",
+            (hourly_start_ts, now),
+        )}
+        hourly_new_rows = {row["hour"]: row["new_users"] for row in conn.execute(
+            """SELECT strftime('%Y-%m-%dT%H:00Z', first_seen, 'unixepoch') hour,
+                      COUNT(*) new_users
+                 FROM clients
+                WHERE first_seen>=? AND first_seen<=? GROUP BY hour""",
+            (hourly_start_ts, now),
         )}
         weight_sql = "CASE WHEN authenticated_last_seen>0 THEN 1.0 ELSE 0.25 END"
         versions = _rows(conn, "SELECT app_version label, ROUND(SUM(%s),1) value FROM clients WHERE app_version<>'' GROUP BY app_version ORDER BY value DESC, label DESC LIMIT 12" % weight_sql)
@@ -1833,6 +1855,15 @@ def _build_stats(now=None, days=30):
             "applies": int(row.get("applies") or 0),
             "restores": int(row.get("restores") or 0),
         })
+    hourly = []
+    for offset in range(24):
+        hour = hourly_start + dt.timedelta(hours=offset)
+        hour_key = hour.strftime("%Y-%m-%dT%H:00Z")
+        hourly.append({
+            "hour": hour_key,
+            "active": int(hourly_active_rows.get(hour_key, 0)),
+            "newUsers": int(hourly_new_rows.get(hour_key, 0)),
+        })
     return {
         "generatedAt": now,
         "periodDays": days,
@@ -1849,6 +1880,7 @@ def _build_stats(now=None, days=30):
         },
         "period": {key: int(value) for key, value in sums.items()},
         "daily": daily,
+        "hourly": hourly,
         "versions": versions,
         "gpus": gpus,
         "gpuVendors": vendors,
@@ -1877,6 +1909,8 @@ def _build_stats(now=None, days=30):
                 1,
             ),
             "telemetryRetentionDays": TELEMETRY_KEEP_DAYS,
+            "hourlyActivitySource": "authenticated_event_receipts",
+            "hourlyWindowHours": 24,
         },
         "diagnosticReports": _report_summary(),
     }
@@ -1896,6 +1930,13 @@ def _taipei_today(now=None):
     now = int(time.time() if now is None else now)
     report_timezone = dt.timezone(dt.timedelta(hours=8))
     return dt.datetime.fromtimestamp(now, report_timezone).date()
+
+
+def _report_number(week_start):
+    """Return the stable product-report number; the 2026-08-03 week is report 1."""
+    if week_start < REPORTING_EPOCH_WEEK:
+        return None
+    return ((week_start - REPORTING_EPOCH_WEEK).days // 7) + 1
 
 
 def _parse_week_start(value=None, now=None):
@@ -1926,7 +1967,10 @@ def _parse_period_date(name, value):
     return result
 
 
-def _parse_custom_period(start_value, end_value, now=None):
+def _parse_custom_period(
+    start_value, end_value, now=None,
+    comparison_start_value=None, comparison_end_value=None,
+):
     if start_value in (None, "") or end_value in (None, ""):
         raise ValueError("startDate and endDate must be provided together")
     start = _parse_period_date("startDate", start_value)
@@ -1942,7 +1986,20 @@ def _parse_custom_period(start_value, end_value, now=None):
         start - dt.timedelta(days=days * 7)
     except OverflowError:
         raise ValueError("startDate is too early")
-    return CustomPeriod(start, end)
+    has_comparison = comparison_start_value not in (None, "") or comparison_end_value not in (None, "")
+    comparison_start = None
+    comparison_end = None
+    if has_comparison:
+        if comparison_start_value in (None, "") or comparison_end_value in (None, ""):
+            raise ValueError("compareStartDate and compareEndDate must be provided together")
+        comparison_start = _parse_period_date("compareStartDate", comparison_start_value)
+        comparison_end = _parse_period_date("compareEndDate", comparison_end_value)
+        comparison_days = (comparison_end - comparison_start).days + 1
+        if comparison_days != days:
+            raise ValueError("comparison period must have the same number of days")
+        if comparison_end > _taipei_today(now):
+            raise ValueError("compareEndDate must not be in the future")
+    return CustomPeriod(start, end, comparison_start, comparison_end)
 
 
 def _parse_weekly_query(raw_path, now=None):
@@ -1951,7 +2008,8 @@ def _parse_weekly_query(raw_path, now=None):
         raise ValueError("query too long")
     pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     allowed = {
-        "weekStart", "startDate", "endDate", "version", "gpu", "deviceType",
+        "weekStart", "startDate", "endDate", "compareStartDate", "compareEndDate",
+        "version", "gpu", "deviceType",
         "validOnly", "live",
     }
     values = {}
@@ -1978,8 +2036,13 @@ def _parse_weekly_query(raw_path, now=None):
     if has_custom_dates:
         if "weekStart" in values:
             raise ValueError("weekStart cannot be combined with startDate or endDate")
-        period = _parse_custom_period(values.get("startDate"), values.get("endDate"), now)
+        period = _parse_custom_period(
+            values.get("startDate"), values.get("endDate"), now,
+            values.get("compareStartDate"), values.get("compareEndDate"),
+        )
     else:
+        if "compareStartDate" in values or "compareEndDate" in values:
+            raise ValueError("comparison dates require startDate and endDate")
         period = _parse_week_start(values.get("weekStart"), now)
     return period, filters, live_text == "1"
 
@@ -2069,6 +2132,32 @@ def _weekly_performance_rows(conn, start, end, filters):
             WHERE ps.day>=? AND ps.day<? AND ps.authenticated=1""" + where,
         [start.isoformat(), end.isoformat()] + args,
     )
+
+
+def _weekly_performance_counts(conn, start, end, filters):
+    """Expose collection, trust and device counts without mixing their meanings."""
+    raw_filters = dict(filters)
+    raw_filters["validOnly"] = False
+    raw_where, raw_args = _client_filter_sql(raw_filters)
+    raw_sessions = conn.execute(
+        """SELECT COUNT(*)
+             FROM performance_sessions ps JOIN clients c ON c.client_hash=ps.client_hash
+            WHERE ps.day>=? AND ps.day<?""" + raw_where,
+        [start.isoformat(), end.isoformat()] + raw_args,
+    ).fetchone()[0]
+    trusted_where, trusted_args = _client_filter_sql(filters)
+    trusted = conn.execute(
+        """SELECT COUNT(*) trusted_sessions,
+                  COUNT(DISTINCT ps.client_hash) trusted_clients
+             FROM performance_sessions ps JOIN clients c ON c.client_hash=ps.client_hash
+            WHERE ps.day>=? AND ps.day<? AND ps.authenticated=1""" + trusted_where,
+        [start.isoformat(), end.isoformat()] + trusted_args,
+    ).fetchone()
+    return {
+        "rawSessions": int(raw_sessions or 0),
+        "trustedSessions": int(trusted["trusted_sessions"] or 0),
+        "trustedClients": int(trusted["trusted_clients"] or 0),
+    }
 
 
 def _median_positive(rows, key):
@@ -2251,6 +2340,7 @@ def _weekly_performance_summary(rows, pairs):
 
 def _period_bundle(conn, start, end, filters):
     rows = _weekly_performance_rows(conn, start, end, filters)
+    counts = _weekly_performance_counts(conn, start, end, filters)
     pairs = _weekly_performance_pairs(rows)
     overall, comparisons = _weekly_performance_summary(rows, pairs)
     return {
@@ -2258,6 +2348,7 @@ def _period_bundle(conn, start, end, filters):
         "end": end,
         "usage": _period_usage(conn, start, end, filters),
         "performanceRows": rows,
+        "performanceCounts": counts,
         "pairs": pairs,
         "performanceOverall": overall,
         "performanceComparison": comparisons,
@@ -2615,9 +2706,9 @@ def _tuning_group_ranking(conn, start, end, filters):
     return summaries
 
 
-def _weekly_tuning(conn, current_start, current_end, previous_start, filters):
+def _weekly_tuning(conn, current_start, current_end, previous_start, previous_end, filters):
     current = _tuning_period_counts(conn, current_start, current_end, filters)
-    previous = _tuning_period_counts(conn, previous_start, current_start, filters)
+    previous = _tuning_period_counts(conn, previous_start, previous_end, filters)
     validity, invalid_reasons = _tuning_run_distributions(
         conn, current_start, current_end, filters
     )
@@ -2811,30 +2902,45 @@ def _build_weekly_report(week_start=None, filters=None, now=None):
     )
 
 
-def _build_custom_period_report(start, end, filters=None, now=None):
+def _build_custom_period_report(
+    start, end, filters=None, now=None,
+    comparison_start=None, comparison_end=None,
+):
     now = int(time.time() if now is None else now)
-    period = _parse_custom_period(start, end, now)
+    period = _parse_custom_period(start, end, now, comparison_start, comparison_end)
     return _build_period_report(
-        period.start, period.end + dt.timedelta(days=1), filters, now, "custom"
+        period.start, period.end + dt.timedelta(days=1), filters, now, "custom",
+        comparison_start=period.comparison_start,
+        comparison_end=(period.comparison_end + dt.timedelta(days=1)) if period.comparison_end else None,
     )
 
 
-def _build_period_report(period_start, current_end, filters, now, period_mode):
+def _build_period_report(
+    period_start, current_end, filters, now, period_mode,
+    comparison_start=None, comparison_end=None,
+):
     filters = dict(_default_weekly_filters() if filters is None else filters)
     period_days = (current_end - period_start).days
-    previous_start = period_start - dt.timedelta(days=period_days)
+    if (comparison_start is None) != (comparison_end is None):
+        raise ValueError("comparison period boundaries must be provided together")
+    previous_start = comparison_start or (period_start - dt.timedelta(days=period_days))
+    previous_end = comparison_end or period_start
+    if (previous_end - previous_start).days != period_days:
+        raise ValueError("comparison period must have the same number of days")
     conn = _connect()
     try:
         # Keep all database-derived sections on one WAL snapshot while uploads continue.
         conn.execute("BEGIN")
         current = _period_bundle(conn, period_start, current_end, filters)
-        previous = _period_bundle(conn, previous_start, period_start, filters)
+        previous = _period_bundle(conn, previous_start, previous_end, filters)
         filter_options = _weekly_filter_options(conn)
         versions = _active_distribution(conn, period_start, current_end, filters, "app_version")
         devices = _active_distribution(conn, period_start, current_end, filters, "device_type")
         version_adoption = _weekly_version_adoption(conn, period_start, current_end, filters)
         gpu_ranking = _weekly_gpu_ranking(conn, current, filters)
-        tuning = _weekly_tuning(conn, period_start, current_end, previous_start, filters)
+        tuning = _weekly_tuning(
+            conn, period_start, current_end, previous_start, previous_end, filters
+        )
         trends = []
         for offset in range(7, -1, -1):
             start = period_start - dt.timedelta(days=offset * period_days)
@@ -2869,6 +2975,8 @@ def _build_period_report(period_start, current_end, filters, now, period_mode):
     previous_usage = previous["usage"]
     current_performance = current["performanceOverall"]
     previous_performance = previous["performanceOverall"]
+    current_sampling = current["performanceCounts"]
+    previous_sampling = previous["performanceCounts"]
     current_pairs = current["performanceComparison"]["overall"]
     previous_pairs = previous["performanceComparison"]["overall"]
     core = {
@@ -2882,6 +2990,9 @@ def _build_period_report(period_start, current_end, filters, now, period_mode):
             previousClients=previous_performance["clients"],
             clientsChangePct=_change_pct(current_performance["clients"], previous_performance["clients"]),
             clients=_metric_comparison(current_performance["clients"], previous_performance["clients"]),
+        ),
+        "rawPerformanceSessions": _metric_comparison(
+            current_sampling["rawSessions"], previous_sampling["rawSessions"],
         ),
         "fps1LowDelta": _metric_comparison(
             current_pairs["fps1LowDeltaMedian"], previous_pairs["fps1LowDeltaMedian"],
@@ -2902,7 +3013,7 @@ def _build_period_report(period_start, current_end, filters, now, period_mode):
         **_metric_comparison(current_usage[key], previous_usage[key]),
     } for key, label in comparison_keys]
     diagnostic_current = _diagnostic_reports_in_period(period_start, current_end)
-    diagnostic_previous = _diagnostic_reports_in_period(previous_start, period_start)
+    diagnostic_previous = _diagnostic_reports_in_period(previous_start, previous_end)
     issues = {
         "applyFailures": _metric_comparison(current_usage["applyFailures"], previous_usage["applyFailures"]),
         "restoreFailures": _metric_comparison(current_usage["restoreFailures"], previous_usage["restoreFailures"]),
@@ -2919,14 +3030,31 @@ def _build_period_report(period_start, current_end, filters, now, period_mode):
         "version": filters.get("version"), "gpu": filters.get("gpu"),
         "deviceType": filters.get("deviceType"), "validOnly": bool(filters.get("validOnly")),
     }
+    performance_sampling = {
+        "rawSessions": _metric_comparison(
+            current_sampling["rawSessions"], previous_sampling["rawSessions"],
+        ),
+        "trustedSessions": _metric_comparison(
+            current_sampling["trustedSessions"], previous_sampling["trustedSessions"],
+        ),
+        "trustedClients": _metric_comparison(
+            current_sampling["trustedClients"], previous_sampling["trustedClients"],
+        ),
+        "validPairs": _metric_comparison(current_pairs["pairs"], previous_pairs["pairs"]),
+        "conclusionPublished": bool(current_pairs["published"]),
+        "minimumTrustedDevices": PERFORMANCE_MIN_SAMPLES,
+        "minimumPairedDevices": PERFORMANCE_MIN_COMPARISONS,
+    }
     return {
         "schemaVersion": WEEKLY_SCHEMA_VERSION,
         "generatedAt": now,
         "week": {
             "periodMode": period_mode,
+            "comparisonMode": "selected" if comparison_start is not None else "adjacent",
+            "reportNumber": _report_number(period_start) if period_mode == "week" else None,
             "weekStart": period_start.isoformat(),
             "current": {"start": period_start.isoformat(), "end": (current_end - dt.timedelta(days=1)).isoformat(), "endExclusive": current_end.isoformat()},
-            "previous": {"start": previous_start.isoformat(), "end": (period_start - dt.timedelta(days=1)).isoformat(), "endExclusive": period_start.isoformat()},
+            "previous": {"start": previous_start.isoformat(), "end": (previous_end - dt.timedelta(days=1)).isoformat(), "endExclusive": previous_end.isoformat()},
             "snapshot": _snapshot_metadata(),
         },
         "filters": selected_filters,
@@ -2941,6 +3069,7 @@ def _build_period_report(period_start, current_end, filters, now, period_mode):
         "versions": versions,
         "devices": devices,
         "performanceOverall": current["performanceOverall"],
+        "performanceSampling": performance_sampling,
         "performanceComparison": current["performanceComparison"],
         "gpuRanking": gpu_ranking,
         "versionAdoption": version_adoption,
@@ -3122,7 +3251,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 period, filters, live = _parse_weekly_query(self.path)
                 if isinstance(period, CustomPeriod):
-                    report = _build_custom_period_report(period.start, period.end, filters)
+                    report = _build_custom_period_report(
+                        period.start, period.end, filters,
+                        comparison_start=period.comparison_start,
+                        comparison_end=period.comparison_end,
+                    )
                     return self._reply_json(200, _mark_snapshot(report, False, False))
                 week_start = period
                 if not live and _filters_are_default(filters):

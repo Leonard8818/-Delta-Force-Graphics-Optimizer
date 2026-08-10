@@ -1,9 +1,9 @@
 {
-    "version":  "0.20.4",
+    "version":  "0.21.0",
     "minimumSupportedVersion":  "0.20.4",
     "notes":  "修复了一些已知问题。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "7366ae9b9d0513697a138fecfcc6d77f8d3b8e4741403a697d2bcdf8d0f9448b",
-    "size":  735744
+    "sha256":  "ae3e150e2feddb81c388a5f434c2bdc59bb0dd0455593aba05d7284c5bd27f61",
+    "size":  815104
 }

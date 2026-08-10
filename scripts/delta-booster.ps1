@@ -69,6 +69,7 @@ param(
   [string]$ResultId,
   [string]$UserSid,
   [string]$UserLocalAppData,
+  [string]$UserStateRoot,
   [ValidateSet('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti')]
   [string]$GpuSpoofModel,
   [switch]$Risky,
@@ -143,6 +144,15 @@ function Expand-TrustedProfilePath([string]$RawPath, [string]$ProfilePath) {
   $value
 }
 
+function Get-ProtectedUserStateRoot([string]$SidText) {
+  try { $sid = New-Object Security.Principal.SecurityIdentifier($SidText) }
+  catch { throw '受保护状态的 UserSid 格式无效' }
+  if (-not $sid.IsAccountSid() -or $sid.Value -notmatch '^S-1-[0-9-]{3,184}$') {
+    throw '受保护状态的 UserSid 不是账户 SID'
+  }
+  Join-Path (Join-Path $script:ProgramDataRoot 'users') $sid.Value
+}
+
 function Set-TargetUserContext([string]$SidText, [string]$LocalAppDataPath) {
   if ([bool]$SidText -ne [bool]$LocalAppDataPath) { throw 'UserSid 与 UserLocalAppData 必须同时提供' }
   if (-not $SidText) {
@@ -183,7 +193,14 @@ function Set-TargetUserContext([string]$SidText, [string]$LocalAppDataPath) {
     $script:TargetLocalAppData = $actual
     $script:UseExplicitUserHive = $true
   }
-  $script:UserDataRoot = Join-Path $script:TargetLocalAppData 'DeltaForceBooster'
+  # high token 绝不日常读写原用户可控 LocalAppData。管理员 GUI/CLI 的状态统一
+  # 落到 ProgramData 的 per-SID 受保护分区；medium worker 仍保留 LocalAppData
+  # 语义，仅用于原用户缓存清理与旧状态只读导出。
+  $script:UserDataRoot = $(if (Test-Admin) {
+    Get-ProtectedUserStateRoot $script:TargetUserSid
+  } else {
+    Join-Path $script:TargetLocalAppData 'DeltaForceBooster'
+  })
   $script:ConfigDir = Join-Path $script:UserDataRoot 'config'
   $script:ProfileDir = Join-Path $script:UserDataRoot 'profiles'
 }
@@ -382,8 +399,18 @@ function Get-LegacyBackupDirs {
 }
 
 function Initialize-UserDataStore {
-  # 提权 helper 不得创建/迁移目标用户可写目录；用户数据由原用户的普通权限进程初始化。
-  if (Test-Admin) { return }
+  if (Test-Admin) {
+    $expected = [IO.Path]::GetFullPath((Get-ProtectedUserStateRoot $script:TargetUserSid)).TrimEnd('\')
+    if ([IO.Path]::GetFullPath($script:UserDataRoot).TrimEnd('\') -ine $expected) {
+      throw '管理员进程的用户状态路径不在受保护 per-SID 分区'
+    }
+    $usersRoot = Join-Path $script:ProgramDataRoot 'users'
+    foreach ($d in $script:ProgramDataRoot,$usersRoot,$script:UserDataRoot,$script:ConfigDir,$script:ProfileDir) {
+      New-ProtectedDirectory $d $false
+    }
+    return
+  }
+  # medium worker 只初始化自己的用户目录；它不会写 ProgramData。
   $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $currentLocal = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
   if ($currentSid -ine $script:TargetUserSid -or $currentLocal -ine $script:TargetLocalAppData.TrimEnd('\')) {
@@ -829,6 +856,10 @@ function Get-GpuPanelApps([string]$Vendor) {
   # appx 类走 shell:appsFolder（Store 版控制面板没有可直接执行的 exe 路径）
   $findAppx = {
     param($Name)
+    # high token 可能属于批准 UAC 的另一管理员账户，不能把该账户的 AppX 当成
+    # 原交互用户结果。GUI 通过 medium launcher worker 检测；此函数高权限时
+    # 只返回机器级 exe 结果。
+    if (Test-Admin) { return $null }
     try { @(Get-AppxPackage -Name $Name -ErrorAction SilentlyContinue)[0] } catch { $null }
   }
   switch ($Vendor) {
@@ -1344,9 +1375,12 @@ function Find-GamePath {
   }
 
   # ② 卸载注册表：不管装在哪个盘、哪个目录都登记在册，比猜路径可靠得多
+  # GUI 可能由另一名管理员账户批准 UAC；这里不得让 PowerShell Provider 的 HKCU
+  # 悄悄落到批准账户，显式枚举 EngineHost 已复验的原交互用户 HKEY_USERS hive。
+  $targetUserUninstall = "Registry::HKEY_USERS\$script:TargetUserSid\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
   $unKeys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
             'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+            $targetUserUninstall
   foreach ($e in @(Get-ItemProperty $unKeys -ErrorAction SilentlyContinue |
                    Where-Object { $_.DisplayName -match '三角洲|Delta\s*Force|DeltaForce' })) {
     # InstallLocation 常为空，此时从卸载程序/图标路径倒推安装目录
@@ -1540,6 +1574,12 @@ $script:SubProc = '54533251-82be-4824-96c1-47b60b740d00'
 
 function Get-GpuSpoofModels {
   @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti')
+}
+
+function Test-GpuNameSpoofSupported($Hw) {
+  # DeviceDesc 伪装只实现了 NVIDIA PCI Enum 路径。AMD / Intel 主显卡既没有
+  # 对应的可靠写入与还原契约，也不应在主推方案里出现一个实际不会生效的选项。
+  [bool]($Hw -and "$($Hw.MainGpuVendor)" -eq 'NVIDIA')
 }
 
 function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop) {
@@ -1773,14 +1813,16 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   # 改独显上报的型号名。实测结论（RTX 3070 Laptop / Win11 26200）：该键管理员组有
   # FullControl，直接写即可，无需 takeown 或改 ACL；写入即时生效（WMI 立刻改口径），
   # 写回原字符串后逐字节一致、WMI 同步复原——所以备份/还原走通用 reg 通路就够。
-  $nvEnum = Get-NvidiaGpuEnumPath $hw
-  $spoofModels = @(Get-GpuSpoofModels)
-  $fakeGpu = $(if ($GpuSpoofModel -and $spoofModels -contains $GpuSpoofModel) { $GpuSpoofModel }
-               else { Get-DefaultGpuSpoofModel $(if ($hw) { $hw.MainGpuName } else { '' }) $(if ($hw) { $hw.IsLaptop } else { $false }) })
-  $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = '★ 显卡型号伪装'; SpoofModel = $fakeGpu; Admin = $true; Default = $false; Kind = 'multi'
-               Ops = $(if ($nvEnum) { @(@{ Kind = 'reg'; Path = $nvEnum; Name = 'DeviceDesc'; Value = $fakeGpu
-                                           Kind2 = 'String'; Label = '显卡型号' }) })
-               Note = '让游戏以为你是低端卡从而走低配渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。仅 N 卡可用，备份原值可完整还原。' }
+  if (Test-GpuNameSpoofSupported $hw) {
+    $nvEnum = Get-NvidiaGpuEnumPath $hw
+    $spoofModels = @(Get-GpuSpoofModels)
+    $fakeGpu = $(if ($GpuSpoofModel -and $spoofModels -contains $GpuSpoofModel) { $GpuSpoofModel }
+                 else { Get-DefaultGpuSpoofModel $hw.MainGpuName $hw.IsLaptop })
+    $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = '★ 显卡型号伪装'; SpoofModel = $fakeGpu; Admin = $true; Default = $false; Kind = 'multi'
+                 Ops = $(if ($nvEnum) { @(@{ Kind = 'reg'; Path = $nvEnum; Name = 'DeviceDesc'; Value = $fakeGpu
+                                             Kind2 = 'String'; Label = '显卡型号' }) })
+                 Note = '让游戏以为你是低端卡从而走低配渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。仅 N 卡可用，备份原值可完整还原。' }
+  }
 
   # N 卡进阶：用户自行下载 NVIDIA Profile Inspector 放进 tools\ 后才出现此项
   $npi = Join-Path $script:ToolsDir 'nvidiaProfileInspector.exe'
@@ -1804,7 +1846,7 @@ function Get-BuiltinPresets {
       # Items 顺序刻意按依赖关系排列：
       # ①电源深度定制（一切的前置）→ ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层
       Id = 'main'; Name = '主推全套'; Builtin = $true
-      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行，包含显卡型号伪装（执行前单独二次确认）。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
+      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行；仅 NVIDIA 主显卡显示并包含显卡型号伪装（执行前单独二次确认），AMD / Intel 显卡自动禁用该项。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
       Items = @('power-ultimate','power-tuning','powerplan-lock',
                 'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',
@@ -1823,7 +1865,7 @@ function Get-BuiltinPresets {
     }
     [pscustomobject]@{
       Id = 'safe-only'; Name = '保守（只改当前用户）'; Builtin = $true
-      Note = '只改当前用户设置，不碰系统全局，通常无需重启；执行时仍会为受保护备份请求一次 UAC。适合不想改系统全局设置的人。'
+      Note = '只改当前用户设置，不碰系统全局，通常无需重启；受保护备份沿用软件启动时已确认的管理员会话，不会再次弹窗。适合不想改系统全局设置的人。'
       Items = @('game-mode','dvr-off','wer-off','transparency-off','fso-off','gpu-pref','windowed-opt-off')
     }
   )
@@ -1850,9 +1892,27 @@ function Get-UserPresets {
 
 function Get-Presets { @(Get-BuiltinPresets) + @(Get-UserPresets) }
 
+function Assert-UserPresetWriteContext {
+  $dir = Get-ProfileDir
+  if (Test-Admin) {
+    $expectedRoot = [IO.Path]::GetFullPath((Get-ProtectedUserStateRoot $script:TargetUserSid)).TrimEnd('\')
+    $expected = [IO.Path]::GetFullPath((Join-Path $expectedRoot 'profiles')).TrimEnd('\')
+    if ([IO.Path]::GetFullPath($dir).TrimEnd('\') -ine $expected -or
+        (Test-PathHasReparsePoint $dir) -or -not (Test-ProtectedDirectoryAclExact $dir $false)) {
+      throw '管理员进程只能在受保护 per-SID 方案目录中操作自存方案'
+    }
+  } else {
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $currentLocal = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
+    if ($currentSid -ine $script:TargetUserSid -or $currentLocal -ine $script:TargetLocalAppData.TrimEnd('\')) {
+      throw '普通权限进程只能操作当前用户自己的自存方案'
+    }
+  }
+  $dir
+}
+
 # 文件名要能安全落盘，方案显示名另存字段，不受文件名清洗影响
 function Save-UserPreset([string]$Name, [string[]]$ItemIds) {
-  if (Test-Admin) { throw '自存方案请由当前用户的普通权限进程操作' }
   if (-not $Name) { throw '方案名不能为空' }
   $safe = ($Name -replace '[\\/:*?"<>|]', '_').Trim()
   if (-not $safe) { throw '方案名无效' }
@@ -1864,17 +1924,27 @@ function Save-UserPreset([string]$Name, [string[]]$ItemIds) {
   }
   $ids = @($ItemIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   if ($ids.Count -eq 0) { throw '方案里至少要有一项' }
-  $f = Join-Path (Get-ProfileDir) "$safe.json"
+  $f = Join-Path (Assert-UserPresetWriteContext) "$safe.json"
   $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((@{ Name = $Name; Saved = (Get-Date).ToString('yyyy-MM-dd HH:mm'); Items = $ids } | ConvertTo-Json -Depth 4))
   Write-BytesAtomic $f $bytes
+  if (Test-Admin) {
+    Set-ProtectedFileAcl $f
+    if (-not (Test-ProtectedFileAcl $f)) { throw '自存方案文件 ACL 校验失败' }
+  }
   $f
 }
 
 function Remove-UserPreset([string]$Id) {
-  if (Test-Admin) { throw '删除自存方案请由当前用户的普通权限进程操作' }
+  $profileDir = Assert-UserPresetWriteContext
   $p = @(Get-UserPresets | Where-Object { $_.Id -eq $Id }) | Select-Object -First 1
   if (-not $p) { throw "未找到自存方案：$Id" }
-  Remove-Item -LiteralPath $p.File -Force
+  $full = [IO.Path]::GetFullPath("$($p.File)")
+  $prefix = [IO.Path]::GetFullPath($profileDir).TrimEnd('\') + '\'
+  if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or (Test-PathHasReparsePoint $full)) {
+    throw '自存方案路径越界或包含重解析点'
+  }
+  if ((Test-Admin) -and -not (Test-ProtectedFileAcl $full)) { throw '自存方案文件 ACL 不安全' }
+  Remove-Item -LiteralPath $full -Force
   $p.Name
 }
 
@@ -3054,6 +3124,15 @@ $dispatchAction = $(if ($Apply) { 'Apply' } elseif ($Restore) { 'Restore' } else
 $dispatchData = $null; $dispatchError = $null; $cliExitCode = 0
 try {
   Set-TargetUserContext $UserSid $UserLocalAppData
+  if ($UserStateRoot) {
+    if (-not (Test-Admin) -or -not $UserSid) { throw 'UserStateRoot 仅支持管理员显式用户上下文' }
+    $expectedStateRoot = [IO.Path]::GetFullPath((Get-ProtectedUserStateRoot $script:TargetUserSid)).TrimEnd('\')
+    if ([IO.Path]::GetFullPath($UserStateRoot).TrimEnd('\') -ine $expectedStateRoot -or
+        [IO.Path]::GetFullPath($script:UserDataRoot).TrimEnd('\') -ine $expectedStateRoot) {
+      throw 'UserStateRoot 与受保护 per-SID 状态分区不匹配'
+    }
+    Initialize-UserDataStore
+  }
   if ($ResultId) {
     $rid = [guid]::Empty
     if (-not [guid]::TryParseExact($ResultId, 'D', [ref]$rid)) { throw 'ResultId 必须是标准 D 格式 GUID' }
