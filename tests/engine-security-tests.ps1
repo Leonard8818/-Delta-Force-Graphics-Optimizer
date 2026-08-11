@@ -50,16 +50,21 @@ try {
   $path = Join-Path $script:BackupDir ("backup-$($doc.BackupId).json")
   Write-BackupDocumentAtomic $path $doc
   $read = Read-ValidatedBackup $path
-  Assert-True ($read.Document.BackupId -eq $doc.BackupId) '签名备份应可读'
+  Assert-True ($read.Document.BackupId -eq $doc.BackupId -and $read.Document.SchemaVersion -eq 3 -and
+    $read.Document.ApplyId -eq $doc.ApplyId -and $read.Document.AppVersion -eq $script:AppVersion) `
+    'schema v3 签名备份应可读并记录与 GUI 一致的 AppVersion/ApplyId'
 
-  $idempotentDoc = New-BackupDocument (Get-Date)
-  $idempotentDoc.State = 'complete'
+  # v2 没有项目归属，继续使用整份 .restored 归档，保证旧版显式备份回滚幂等。
+  $idempotentDoc = [pscustomobject][ordered]@{
+    SchemaVersion=2;BackupId=[guid]::NewGuid().ToString('D');CreatedUtc=[DateTime]::UtcNow.ToString('o')
+    UserSid=$script:TargetUserSid;UserLocalAppData=$script:TargetLocalAppData;State='complete';Ops=@();Integrity=$null
+  }
   $idempotentPath = Join-Path $script:BackupDir ("backup-$($idempotentDoc.BackupId).json")
   Write-BackupDocumentAtomic $idempotentPath $idempotentDoc
   $firstRestore = Invoke-Restore $idempotentPath
   $secondRestore = Invoke-Restore $idempotentPath
   Assert-True ((-not (Test-Path -LiteralPath $idempotentPath)) -and
-    (Test-Path -LiteralPath ($idempotentPath + '.restored')) -and $firstRestore.Failed.Count -eq 0) '显式备份还原成功后必须写入 consumed 标记'
+    (Test-Path -LiteralPath ($idempotentPath + '.restored')) -and $firstRestore.Failed.Count -eq 0) 'v2 显式备份还原成功后必须写入 consumed 标记'
   Assert-True ($secondRestore.RestoredOps -eq 0 -and $secondRestore.Failed.Count -eq 0 -and
     "$($secondRestore.Notes)" -like '*此前已完成还原*') '显式备份在 GUI 落盘前崩溃后重试必须幂等成功'
 
@@ -193,6 +198,41 @@ try {
   Assert-True ($asusBoard.Key -eq 'asus' -and (Get-BiosEntryInstruction $asusBoard.Key $false) -like '*Del*') '华硕台式机/主板 BIOS 教程必须提示 Del'
   $brandTutorial = Get-XmpBiosTutorial ([pscustomobject]@{ComputerBrand='惠普';ComputerModel='OMEN 16';ComputerBrandKey='hp';IsLaptop=$true})
   Assert-True ($brandTutorial -like '*检测到电脑：惠普 · OMEN 16*' -and $brandTutorial -like '*Esc*F10*') 'XMP/EXPO 教程必须显示检测品牌和对应 BIOS 进入步骤'
+  $msiTutorial = Get-XmpBiosTutorial ([pscustomobject]@{
+    ComputerBrand='微星';ComputerModel='MS-7B84';ComputerBrandKey='msi';IsLaptop=$false
+    CpuVendor='AMD';CPU='AMD Ryzen 5';MemoryType='DDR4'
+  })
+  Assert-True ($msiTutorial -like '*OC → A-XMP*' -and $msiTutorial -like '*不叫 EXPO 或 DOCP*') `
+    'MSI AMD DDR4 教程必须指向 A-XMP，不能继续让用户寻找 EXPO/DOCP'
+  $rogTutorial = Get-XmpBiosTutorial ([pscustomobject]@{
+    ComputerBrand='华硕 ROG';ComputerModel='ROG Strix G15 / 魔霸';ComputerBrandKey='asus';IsLaptop=$true
+    CpuVendor='AMD';CPU='AMD Ryzen 9';MemoryType='DDR4'
+  })
+  Assert-True ($rogTutorial -like '*包括魔霸系列*' -and $rogTutorial -like '*若没有 Ai Tweaker*' -and
+    $rogTutorial -like '*不需要继续找*') 'ROG 魔霸笔记本教程必须明确许多机型没有可用内存档位菜单'
+
+  # ConfiguredClockSpeed 已达到 SMBIOS Speed 时没有降频证据；旧逻辑仅因为 2667 <=
+  # DDR4 JEDEC 上限就弹“XMP/EXPO 未开启”，会让没有性能档位的整机用户白找 BIOS 菜单。
+  $script:MockMemoryRatedMHz = 2667
+  function Get-CimInstance {
+    [CmdletBinding()] param([Parameter(Position=0)][string]$ClassName)
+    if ($ClassName -eq 'Win32_PhysicalMemory') {
+      return [pscustomobject]@{ ConfiguredClockSpeed=2667;Speed=$script:MockMemoryRatedMHz;SMBIOSMemoryType=26 }
+    }
+    throw "unexpected CIM class: $ClassName"
+  }
+  try {
+    $ratedState = Get-MemoryXmpStatus
+    Assert-True ($ratedState.Ok -eq $true -and $ratedState.Text -like '*已达到 SMBIOS 标称 2667 MHz*' -and
+      $ratedState.Text -like '*找不到相关菜单属于正常情况*') '达到标称频率的 DDR4-2667 不得误报性能档位未开启'
+    $script:MockMemoryRatedMHz = 3200
+    $underclockedState = Get-MemoryXmpStatus
+    Assert-True ($underclockedState.Ok -eq $false -and $underclockedState.Text -like '*低于 SMBIOS 标称 3200 MHz*' -and
+      $underclockedState.Text -like '*A-XMP*') '确实低于标称频率时必须保留多种厂商菜单名与限频原因'
+  } finally {
+    Remove-Item -LiteralPath Function:\Get-CimInstance -Force
+    Remove-Variable MockMemoryRatedMHz -Scope Script -ErrorAction SilentlyContinue
+  }
   Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon RX 7900 XTX') -eq 'high') 'RX 7900 XTX 应归入高性能 A 卡'
   Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon RX 7600') -eq 'mid') 'RX 7600 应归入主流 A 卡'
   Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon RX 6500 XT') -eq 'entry') 'RX 6500 XT 应归入入门 A 卡'

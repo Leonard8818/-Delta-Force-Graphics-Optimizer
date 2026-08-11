@@ -1,9 +1,13 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.21.6
+  DeltaForceBooster 图形界面 — v0.22.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.22.0：①「还原设置」支持按项目单选、多选和全选精确复原，并保护用户后续修改；
+        ②新增「掉帧修复」页及可直接执行的缓存清理、高性能 GPU 和运行库体检入口；
+        ③修复电源计划空操作崩溃、部分电脑首次启动受阻和显卡厂商识别失败；④内存频率
+        体检不再把达到标称频率误报为未开档位，并区分 MSI AMD DDR4 与 ROG 魔霸笔记本。
   v0.21.6：①更新安装器在新版出现可交互窗口前保留旧版本；新版启动失败或安装器在验证
         阶段中断时自动恢复旧版本；②上传完整诊断前新增问题与改善效果多选页；③游戏内
         设置参考新增性能优先方案；④显卡型号伪装新增 RTX 2050/2060/RX560 并恢复 AMD
@@ -277,8 +281,16 @@ $needsUacRepair = $(if ($isBuiltInAdministrator) {
 } else {
   $enableLUA -eq 0
 })
-if ([bool]$needsUacRepair -ne [bool]$script:RepairOnlySession) {
-  Stop-UntrustedGuiStartup 'EngineHost 修复会话与当前 UAC 策略不匹配'
+if ($needsUacRepair -and -not $script:RepairOnlySession) {
+  Stop-UntrustedGuiStartup '当前 UAC 策略需要受限兼容会话'
+}
+if ($script:RepairOnlySession -and -not $needsUacRepair) {
+  # 用户右键“以管理员身份运行”时 medium 原用户令牌已经丢失。核心优化/还原仍由
+  # EngineHost 安全执行；缓存清理、显卡软件探测和外链等用户态 broker 本次关闭。
+  $script:NetCafeCompatibilityMode = $true
+  [Windows.MessageBox]::Show(
+    "检测到本次是以管理员身份直接打开。软件会继续进入兼容模式，核心优化与还原可正常使用；清理用户缓存、显卡软件检测和软件内外链入口本次暂时停用。`n`n下次普通双击「启动优化工具.exe」即可使用全部功能。",
+    '管理员启动 · 兼容模式', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
 }
 if ($needsUacRepair) {
     $repairPrompt = $(if ($isBuiltInAdministrator) {
@@ -450,7 +462,7 @@ catch {
 }
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.21.6'
+$script:GuiVersion = '0.22.0'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -694,6 +706,11 @@ $xaml = @'
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter Property="Foreground" Value="{StaticResource Green}"/>
               </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="#FF56615C"/>
+                <Setter Property="Opacity" Value="0.62"/>
+                <Setter Property="FontWeight" Value="Normal"/>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -824,7 +841,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.21.6 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.22.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -859,12 +876,18 @@ $xaml = @'
       </Grid>
     </Border>
 
-    <!-- 标签页导航：优化 / 自动调优 / 游戏内设置参考 / 运行日志 -->
+    <!-- 标签页导航：优化 / 自动调优 / 掉帧修复 / 游戏内设置参考 / 运行日志 -->
     <Border Grid.Row="1" Background="{StaticResource TopBar}" BorderBrush="{StaticResource Line}"
             BorderThickness="0,0,0,1">
       <StackPanel Orientation="Horizontal" Margin="15,0,0,0">
         <Button x:Name="TabOptBtn" Content="优化" Style="{StaticResource TabBtn}" Tag="on"/>
-        <Button x:Name="TabTuneBtn" Content="自动调优 Beta" Style="{StaticResource TabBtn}" Tag=""/>
+        <Button x:Name="TabTuneBtn" Style="{StaticResource TabBtn}" Tag="" IsEnabled="False" Opacity="1">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="AI定制优化" VerticalAlignment="Center"/>
+            <TextBlock Text="（敬请期待）" Foreground="{StaticResource Gold}" FontWeight="Bold" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
+        <Button x:Name="TabFrameFixBtn" Content="掉帧修复" Style="{StaticResource TabBtn}" Tag=""/>
         <Button x:Name="TabRefBtn" Content="游戏内设置参考" Style="{StaticResource TabBtn}" Tag=""/>
         <Button x:Name="TabLogBtn" Style="{StaticResource TabBtn}" Tag="">
           <StackPanel Orientation="Horizontal">
@@ -1015,14 +1038,14 @@ $xaml = @'
           <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource PanelDeep}">
             <StackPanel>
               <!-- 全选行（实机诉求）：三态仅作展示——部分选中显示第三态，点击只在
-                   全选/全不选之间切换；只圈「可执行」项，已就绪项重复执行只会撑大备份 -->
+                   全选/全不选之间切换；包含单独分组的显卡型号伪装，执行前仍保留二次确认 -->
               <Border Background="#FF0C1915" BorderBrush="{StaticResource LineSoft}"
                       BorderThickness="0,0,0,1" Padding="10,3">
                 <Grid>
                   <CheckBox x:Name="SelAllChk" Style="{StaticResource TacCheck}" VerticalAlignment="Center">
                     <TextBlock Text="全选" Foreground="#FFFFFFFF" FontSize="12" FontWeight="Bold"/>
                   </CheckBox>
-                  <TextBlock Text="只圈可执行项 · 已就绪的不重复执行" FontFamily="Consolas" FontSize="10"
+                  <TextBlock Text="包含 ★ 显卡型号伪装 · 执行前二次确认" FontFamily="Consolas" FontSize="10"
                              Foreground="{StaticResource TextMut}" HorizontalAlignment="Right"
                              VerticalAlignment="Center"/>
                 </Grid>
@@ -1042,6 +1065,65 @@ $xaml = @'
               <StackPanel x:Name="RiskyPanel"/>
             </Border>
           </Expander>
+
+          <!-- 复原直接留在优化页内完成，不再打开第二层窗口。优化勾选与复原勾选分开，
+               避免内置方案默认勾选的优化项被误当成要复原的项目。 -->
+          <Border x:Name="InlineRestorePanel" Visibility="Collapsed" Margin="0,10,0,0"
+                  Background="{StaticResource Panel}" BorderBrush="{StaticResource GreenLine}"
+                  BorderThickness="1" Padding="12,10">
+            <StackPanel>
+              <Grid Margin="0,0,0,7">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                  <TextBlock Text="按项目复原" Foreground="{StaticResource Green}" FontSize="15" FontWeight="Bold"/>
+                  <TextBlock Text="RESTORE MANAGER" Style="{StaticResource Mono}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+                <Button x:Name="InlineRestoreCloseBtn" Grid.Column="1" Content="收起" Style="{StaticResource Ghost}"
+                        Width="70" Height="24" FontSize="10"/>
+              </Grid>
+              <TextBlock Text="直接勾选要复原的项目，可单选、多选或全选；其他项目保持不变。"
+                         Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+              <Border x:Name="InlineRestoreLegacyNotice" Visibility="Collapsed" Background="{StaticResource GoldDark}"
+                      BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="9,6" Margin="0,0,0,8">
+                <TextBlock x:Name="InlineRestoreLegacyText" Foreground="{StaticResource Gold}" TextWrapping="Wrap"/>
+              </Border>
+              <Border Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                <StackPanel>
+                  <DockPanel Margin="9,7">
+                    <TextBlock x:Name="InlineRestoreSelectedText" DockPanel.Dock="Right" Text="已选择 0 项"
+                               Foreground="{StaticResource Gold}" VerticalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                      <Button x:Name="InlineRestoreSelectAllBtn" Content="全选可复原项目" Style="{StaticResource Ghost}"
+                              Height="25" FontSize="10"/>
+                      <Button x:Name="InlineRestoreClearBtn" Content="清空" Style="{StaticResource Ghost}"
+                              Width="64" Height="25" FontSize="10" Margin="7,0,0,0"/>
+                    </StackPanel>
+                  </DockPanel>
+                  <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0"/>
+                  <ScrollViewer MaxHeight="230" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="InlineRestoreItemsPanel" Margin="9,3,9,7"/>
+                  </ScrollViewer>
+                  <TextBlock x:Name="InlineRestoreEmptyText" Visibility="Collapsed"
+                             Text="当前没有支持按项目精确复原的记录。" Foreground="{StaticResource TextMut}" Margin="11,9"/>
+                </StackPanel>
+              </Border>
+              <Button x:Name="InlineRestoreSelectedBtn" Content="复原所选项目" Style="{StaticResource Primary}"
+                      IsEnabled="False" Height="34" Margin="0,9,0,0"/>
+              <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,13,0,10"/>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                  <TextBlock Text="全部复原" Foreground="{StaticResource Gold}" FontSize="13" FontWeight="Bold"/>
+                  <TextBlock x:Name="InlineRestoreAllSummary" Foreground="{StaticResource TextSec}"
+                             TextWrapping="Wrap" Margin="0,3,0,0"/>
+                </StackPanel>
+                <Button x:Name="InlineRestoreAllBtn" Grid.Column="1" Content="确认全部复原"
+                        Style="{StaticResource Ghost}" Width="138" VerticalAlignment="Center"/>
+              </Grid>
+              <TextBlock Text="检测到后续修改的项目不会被选择性覆盖。" Style="{StaticResource Mono}"
+                         Margin="0,9,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
 
           <!-- 官网招牌装饰分隔线：两侧短横段 + 中间拉开字距的中文 -->
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,4">
@@ -1149,6 +1231,83 @@ $xaml = @'
       </ScrollViewer>
     </Grid>
 
+    <!-- 近期版本掉帧排查：只按本机主力显卡给出可能有效的步骤。 -->
+    <Grid Grid.Row="2" x:Name="FrameFixPage" Visibility="Collapsed">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="21,10">
+        <StackPanel>
+          <Grid Margin="0,0,0,9">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+              <TextBlock Text="掉帧修复" Style="{StaticResource HeadCn}"/>
+              <TextBlock Text="FRAME DROP REPAIR" Style="{StaticResource HeadEn}"/>
+              <Border Style="{StaticResource HeadBar}"/>
+            </StackPanel>
+            <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Bottom" Margin="12,0,12,4"/>
+            <Border Grid.Column="2" Background="{StaticResource GoldDark}" BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="7,2" VerticalAlignment="Bottom">
+              <TextBlock Text="POSSIBLE FIXES" Foreground="{StaticResource Gold}" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+            </Border>
+          </Grid>
+
+          <Border Background="#FF0E2A21" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="11,9" Margin="0,0,0,9">
+            <StackPanel>
+              <TextBlock x:Name="FrameFixGpuText" Text="正在识别主力显卡…" Foreground="{StaticResource Green}" FontSize="14" FontWeight="Bold" TextWrapping="Wrap"/>
+              <TextBlock x:Name="FrameFixSummaryText" Text="" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
+            <StackPanel>
+              <TextBlock Text="先做这些 · 全显卡通用" Foreground="{StaticResource TextPri}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock x:Name="FrameFixCommonText" Text="" Foreground="{StaticResource TextSec}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <Border Background="#FF0E2A21" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
+            <StackPanel>
+              <TextBlock Text="工具可直接执行" Foreground="{StaticResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="下面三项会直接调用软件现有的受保护操作；涉及修改的项目仍会先写入可还原备份。"
+                         Foreground="{StaticResource TextSec}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,8"/>
+              <WrapPanel>
+                <Button x:Name="FrameFixCacheBtn" Content="清理着色器缓存" Style="{StaticResource Primary}" Width="170"/>
+                <Button x:Name="FrameFixGpuPrefBtn" Content="设置高性能 GPU" Style="{StaticResource Ghost}" Width="160" Margin="9,0,0,0"/>
+                <Button x:Name="FrameFixVcBtn" Content="检查 VC++ 运行库" Style="{StaticResource Ghost}" Width="160" Margin="9,0,0,0"/>
+              </WrapPanel>
+              <StackPanel x:Name="FrameFixProgressPanel" Visibility="Collapsed" Margin="0,8,0,0">
+                <ProgressBar x:Name="FrameFixProgressBar" Height="6" Minimum="0" Maximum="100" Value="0"
+                             Foreground="{StaticResource Green}" Background="{StaticResource PanelDeep}"
+                             BorderBrush="{StaticResource Line}" BorderThickness="1"/>
+                <TextBlock x:Name="FrameFixProgressText" Text="" Style="{StaticResource Mono}"
+                           Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TextBlock x:Name="FrameFixActionStatus" Text="请选择一项操作。" Foreground="{StaticResource TextSec}"
+                         FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
+            <StackPanel>
+              <TextBlock x:Name="FrameFixVendorTitle" Text="显卡专项排查" Foreground="{StaticResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock x:Name="FrameFixVendorText" Text="" Foreground="{StaticResource TextSec}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <Border Background="#FF2A2008" BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="11,8" Margin="0,0,0,9">
+            <StackPanel>
+              <TextBlock Text="最后再尝试" Foreground="{StaticResource Gold}" FontSize="12" FontWeight="Bold"/>
+              <TextBlock x:Name="FrameFixCautionText" Text="" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <StackPanel Orientation="Horizontal">
+            <Button x:Name="FrameFixOptBtn" Content="前往优化页" Style="{StaticResource Primary}" Width="180"/>
+            <Button x:Name="FrameFixGuideBtn" Content="打开显卡指引" Style="{StaticResource Ghost}" Width="145" Margin="9,0,0,0"/>
+          </StackPanel>
+          <TextBlock Text="以上均为可能有效的排查步骤，不保证适合每台机器；请一次只改一项并在同一场景复测。"
+                     Style="{StaticResource Mono}" TextWrapping="Wrap" Margin="1,9,0,0"/>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+
     <!-- 游戏内设置参考页：纯展示（内容由代码按 data\streamer-settings.json 构建） -->
     <Grid Grid.Row="2" x:Name="RefPage" Visibility="Collapsed">
       <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="21,10">
@@ -1245,7 +1404,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.21.6 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.22.0 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1434,10 +1593,17 @@ $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','ScanState','HwGrid','GameText','BrowseBtn','CountText',
                'SelAllChk',
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn',
+               'InlineRestorePanel','InlineRestoreItemsPanel','InlineRestoreEmptyText',
+               'InlineRestoreLegacyNotice','InlineRestoreLegacyText','InlineRestoreSelectedText','InlineRestoreAllSummary',
+               'InlineRestoreSelectAllBtn','InlineRestoreClearBtn','InlineRestoreSelectedBtn','InlineRestoreAllBtn','InlineRestoreCloseBtn',
                'ReportBtn','DisclaimerBtn','LogBox',
                'PresetBox','SavePresetBtn','DelPresetBtn','PresetNote',
-               'TabOptBtn','TabTuneBtn','TabRefBtn','TabLogBtn','LogBadge','LogBadgeTxt',
-               'OptPage','TunePage','RefPage','LogPage','RefPanel','ActionRow',
+               'TabOptBtn','TabTuneBtn','TabFrameFixBtn','TabRefBtn','TabLogBtn','LogBadge','LogBadgeTxt',
+               'OptPage','TunePage','FrameFixPage','RefPage','LogPage','RefPanel','ActionRow',
+               'FrameFixGpuText','FrameFixSummaryText','FrameFixCommonText','FrameFixVendorTitle','FrameFixVendorText',
+               'FrameFixCautionText','FrameFixCacheBtn','FrameFixGpuPrefBtn','FrameFixVcBtn','FrameFixActionStatus',
+               'FrameFixProgressPanel','FrameFixProgressBar','FrameFixProgressText',
+               'FrameFixOptBtn','FrameFixGuideBtn',
                'TuneSceneBox','TuneTempBox','TunePowerChk','TunePowerBox',
                'TuneStatusText','TuneRoundText','TuneBaselineText','TuneCurrentText',
                'TuneG1Text','TuneG2Text','TuneG3Text','TuneRunPanel','TuneHintText',
@@ -1452,7 +1618,7 @@ $script:C = @{
   Panel = '#FF0E1B17'; Line = '#FF1B2E28'; LineSoft = '#FF16241F'
   TextPri = '#FFFFFFFF'; TextSec = '#FF9AA5A0'; TextMut = '#FF7A8580'
   Green = '#FF00E884'; GreenDark = '#FF04241B'; Gold = '#FFE5C46A'; GoldDark = '#FF3A2C0C'
-  Gray = '#FF7A8580'
+  Gray = '#FF7A8580'; Danger = '#FFFF6B6B'
 }
 function New-Brush([string]$Hex) { (New-Object Windows.Media.BrushConverter).ConvertFromString($Hex) }
 
@@ -1522,7 +1688,7 @@ function New-Pill([string]$Text, [string]$Fg, [string]$Bg, [string]$Bd) {
 }
 
 function Update-Count {
-  $rows = @($ui.ItemPanel.Children)
+  $rows = @(@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children))
   $sel = @($rows | Where-Object { $_.Child.Children[0].IsChecked }).Count
   # 「可执行」= 未处于已就绪/正常态的项（行 Tag 存的是检测到的 Optimized 状态）
   $oper = @($rows | Where-Object { $_.Tag -ne $true })
@@ -1564,7 +1730,9 @@ function New-ItemRow($Item, $State, [bool]$Last) {
   # 已优化的项不再默认勾选，避免重复写入撑大备份
   $cb.IsChecked = ($Item.Default -and $State.Optimized -ne $true)
   $nameColor = $(if ($State.Optimized -eq $true) { $script:C.TextSec } else { $script:C.TextPri })
-  $cb.Content = New-Text "$($Item.Name)$(if ($Item.Admin) { ' *' })" $nameColor 12
+  if ($Item.Id -ne 'xmp-check') {
+    $cb.Content = New-Text "$($Item.Name)$(if ($Item.Admin) { ' *' })" $nameColor 12
+  }
   # 勾选变化时实时刷新计数；手动改动后清掉方案选中态（勾选已不再等于该方案）
   $cb.Add_Click({
     Update-Count
@@ -1575,6 +1743,36 @@ function New-ItemRow($Item, $State, [bool]$Last) {
   })
   [Windows.Controls.Grid]::SetColumn($cb, 0)
   $g.Children.Add($cb) | Out-Null
+
+  # 内存频率属于用户最常问、且需要品牌化 BIOS 教程的体检项：星标突出，并把名称做成
+  # 独立点击入口。勾选框仍只负责是否随“执行优化”复查，点名称则直接复用同一个教程弹窗。
+  if ($Item.Id -eq 'xmp-check') {
+    $memoryLink = New-Object Windows.Controls.TextBlock
+    # TacCheck 的勾选框 13px、内容左间距 8px；这里同样从 21px 开始，和普通项目
+    # 的文字基线完全对齐。星标与名称也沿用普通项目的白色，只用下划线提示可点击。
+    $memoryLink.Margin = New-Object Windows.Thickness 21, 0, 0, 0
+    $memoryLink.VerticalAlignment = 'Center'
+    $memoryLink.Cursor = 'Hand'
+    $memoryLink.ToolTip = '点击查看内存频率检测结果与对应电脑的 BIOS 教程'
+    $starRun = New-Object Windows.Documents.Run
+    $starRun.Text = '★ '
+    $starRun.Foreground = New-Brush $nameColor
+    $starRun.FontWeight = 'Normal'
+    $nameRun = New-Object Windows.Documents.Run
+    $nameRun.Text = "$($Item.Name)"
+    $nameRun.Foreground = New-Brush $nameColor
+    $nameRun.FontWeight = 'Normal'
+    $nameRun.TextDecorations = [Windows.TextDecorations]::Underline
+    [void]$memoryLink.Inlines.Add($starRun)
+    [void]$memoryLink.Inlines.Add($nameRun)
+    $memoryLink.Tag = [pscustomobject]@{ Id = $Item.Id; Name = $Item.Name; Msg = $State.Current }
+    $memoryLink.Add_MouseLeftButtonUp({
+      $_.Handled = $true
+      Show-HealthDialog @($this.Tag)
+    })
+    [Windows.Controls.Grid]::SetColumn($memoryLink, 0)
+    $g.Children.Add($memoryLink) | Out-Null
+  }
 
   $detail = New-Text $State.Current $script:C.TextMut 11 -Mono
   $detail.Margin = New-Object Windows.Thickness 12, 0, 12, 0
@@ -1691,7 +1889,7 @@ $script:CheckHelp = @{
     )
   }
   'xmp-check' = @{
-    Title = '内存 XMP/EXPO 未开启'
+    Title = '内存频率 / 性能档位需要确认'
     Tutorial = $null # Build-HealthDialog 按检测到的品牌实时生成
     Links = @()
   }
@@ -1865,7 +2063,7 @@ function Update-StreamerPage {
   $wt = New-Text '仅供参考 · 本工具不会也无法修改游戏内设置' $script:C.Gold 12
   $wt.FontWeight = 'Bold'
   $wsp.Children.Add($wt) | Out-Null
-  $wd = New-WrapText '第一列是按本次三张截图整理的性能优先推荐方案，其余列是头部主播公开的游戏内画质设置记录。请进入游戏后在「设置 → 视频」页签里手动对照；分辨率、刷新率、显卡与超分辨率选项要按本机硬件调整。' $script:C.TextSec 11
+  $wd = New-WrapText '第一列是性能优先推荐方案，其余列是头部主播公开的游戏内画质设置记录。请进入游戏后在「设置 → 视频」页签里手动对照；分辨率、刷新率、显卡与超分辨率选项要按本机硬件调整。' $script:C.TextSec 11
   $wd.Margin = New-Object Windows.Thickness 0, 4, 0, 0
   $wsp.Children.Add($wd) | Out-Null
   $warn.Child = $wsp
@@ -1914,11 +2112,6 @@ function Update-StreamerPage {
     if (-not $groupNames.Contains($g)) { [void]$groupNames.Add($g) }
   }
   if ($groupNames.Contains('其他')) { [void]$groupNames.Remove('其他'); [void]$groupNames.Add('其他') }
-
-  $meta = New-Text "数据更新：$(if ($data.updated) { $data.updated } else { '未知' })$(if ($data.note) { "　·　$($data.note)" })" $script:C.TextMut 10 -Mono
-  $meta.Margin = New-Object Windows.Thickness 2, 8, 0, 8
-  $meta.TextWrapping = 'Wrap'
-  $ui.RefPanel.Children.Add($meta) | Out-Null
 
   # 分组依据要如实交代：优先用数据文件里的 schema_note（v0.13 起写明依据实机录像
   # 逐帧核对 + 随版本可能变动），老数据没有分组信息时提示这是兜底展示
@@ -2060,15 +2253,11 @@ function Update-StreamerPage {
       $head.Children.Add($lnk) | Out-Null
     }
     $csp.Children.Add($head) | Out-Null
-    $hw2 = New-WrapText "硬件：$(if ($s.hardware) { $s.hardware } else { '未注明' })$(if ($s.captured) { "　·　记录于 $($s.captured)" })" $script:C.TextSec 11
+    # 推荐设置是持续维护的内置方案，不显示一次性采集日期；主播资料仍保留记录时间。
+    $hw2 = New-WrapText "硬件：$(if ($s.hardware) { $s.hardware } else { '未注明' })$(if ($s.captured -and $s.featured -ne $true) { "　·　记录于 $($s.captured)" })" $script:C.TextSec 11
     $hw2.Margin = New-Object Windows.Thickness 0, 4, 0, 0
     $csp.Children.Add($hw2) | Out-Null
-    if ($s.notes) {
-      $nt = New-WrapText "备注：$($s.notes)" $script:C.TextMut 10
-      $nt.Margin = New-Object Windows.Thickness 0, 3, 0, 0
-      $csp.Children.Add($nt) | Out-Null
-    }
-    $tail = New-Text $(if ($s.featured -eq $true) { '按截图整理 · 设备相关项请按本机调整' } else { '设置随版本/硬件而异，仅供参考' }) $script:C.Gold 10
+    $tail = New-Text $(if ($s.featured -eq $true) { '性能优先推荐 · 设备相关项请按本机调整' } else { '设置随版本/硬件而异，仅供参考' }) $script:C.Gold 10
     $tail.Margin = New-Object Windows.Thickness 0, 4, 0, 0
     $csp.Children.Add($tail) | Out-Null
     $card.Child = $csp
@@ -2402,7 +2591,100 @@ function Clear-CompletedTelemetryJobs {
   }
 }
 
-function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed = 0) {
+function Get-TelemetryMainGpuDriver($Hw) {
+  if (-not $Hw) { return '' }
+  $gpu = @($Hw.Gpus | Where-Object { "$($_.Name)" -eq "$($Hw.MainGpuName)" } | Select-Object -First 1)
+  if ($gpu.Count) { return "$($gpu[0].Driver)" }
+  ''
+}
+
+function Get-TelemetryDisplayMode($Hw) {
+  if (-not $Hw) { return '' }
+  $width = [int]$Hw.DisplayWidth; $height = [int]$Hw.DisplayHeight; $refresh = [int]$Hw.DisplayRefreshHz
+  if ($width -le 0 -or $height -le 0) { return '' }
+  "${width}x${height}@$refresh"
+}
+
+function ConvertTo-OptimizationTelemetryIds([object[]]$Values, [switch]$OperationIds) {
+  $pattern = $(if ($OperationIds) { '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' } else { '^[a-z0-9][a-z0-9-]{0,63}$' })
+  @($Values | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ -match $pattern } | Sort-Object -Unique)
+}
+
+function New-OptimizationTelemetryOperation {
+  param(
+    [Parameter(Mandatory)][ValidateSet('apply','restore')][string]$Event,
+    [Parameter(Mandatory)][ValidateSet('manual_selection','frame_fix','restore_manager')][string]$Source,
+    [Parameter(Mandatory)]$Reply,
+    [string[]]$ItemIds = @(),
+    [ValidateSet('not_applicable','selected_items','all')][string]$RestoreMode = 'not_applicable'
+  )
+  $itemIds = @(ConvertTo-OptimizationTelemetryIds $ItemIds)
+  $succeeded = @(); $failed = @(); $skipped = @(); $attention = @(); $changed = @(); $reboot = @()
+  $succeededUnits = 0; $failedUnits = 0; $skippedUnits = 0
+  $backupStatus = 'not_required'; $verificationStatus = 'not_applicable'; $residualCount = 0
+  $related = @(ConvertTo-OptimizationTelemetryIds @($Reply.ApplyIds) -OperationIds)
+  if ($Event -eq 'apply') {
+    if ($Source -eq 'restore_manager' -or $RestoreMode -ne 'not_applicable') { throw '优化操作来源或还原模式无效' }
+    foreach ($row in @($Reply.Results)) {
+      $id = @(ConvertTo-OptimizationTelemetryIds @($row.Id)) | Select-Object -First 1
+      if (-not $id) { continue }
+      if ($itemIds -notcontains $id) { $itemIds += $id; $itemIds = @($itemIds | Sort-Object -Unique) }
+      if ([bool]$row.Attention) { $attention += $id }
+      elseif ([bool]$row.Skipped) { $skipped += $id }
+      elseif (-not [bool]$row.Ok) { $failed += $id }
+      else {
+        $succeeded += $id
+        if ([bool]$row.Changed) { $changed += $id }
+      }
+    }
+    $succeeded = @($succeeded | Sort-Object -Unique); $failed = @($failed | Sort-Object -Unique)
+    $skipped = @($skipped | Sort-Object -Unique); $attention = @($attention | Sort-Object -Unique)
+    $changed = @($changed | Sort-Object -Unique)
+    $succeededUnits = $succeeded.Count; $failedUnits = $failed.Count; $skippedUnits = $skipped.Count
+    if ($changed.Count -gt 0) {
+      if ($Reply.BackupError) { $backupStatus = $(if ($Reply.Backup) { 'partial' } else { 'failed' }) }
+      elseif ($Reply.Backup) { $backupStatus = 'created' }
+      else { $backupStatus = 'not_available' }
+    }
+  } else {
+    if ($Source -ne 'restore_manager' -or $RestoreMode -eq 'not_applicable') { throw '还原操作来源或还原模式无效' }
+    if ($RestoreMode -eq 'selected_items') {
+      foreach ($row in @($Reply.ItemResults)) {
+        $id = @(ConvertTo-OptimizationTelemetryIds @($row.Id)) | Select-Object -First 1
+        if (-not $id) { continue }
+        if ([bool]$row.Ok) { $succeeded += $id; $changed += $id } else { $failed += $id }
+      }
+    } elseif (@($Reply.Failed).Count -eq 0) {
+      $succeeded = @(ConvertTo-OptimizationTelemetryIds @($Reply.RestoredItemIds))
+      $changed = @($succeeded)
+    }
+    $reboot = @(ConvertTo-OptimizationTelemetryIds @($Reply.RebootItemIds))
+    $succeeded = @($succeeded | Sort-Object -Unique); $changed = @($changed | Sort-Object -Unique)
+    $failed = @($failed | Sort-Object -Unique)
+    $succeededUnits = [math]::Max(0, [int]$Reply.RestoredOps)
+    $failedUnits = @($Reply.Failed).Count; $skippedUnits = @($Reply.Skipped).Count
+    $residualCount = $failedUnits + $skippedUnits
+    $verificationStatus = $(if ($failedUnits -gt 0) { 'failed' } elseif ($residualCount -gt 0) { 'residuals_detected' } elseif ($reboot.Count -gt 0) { 'pending_restart' } else { 'immediate_verified' })
+  }
+  $result = $(if ($succeededUnits -gt 0 -and ($failedUnits -gt 0 -or $skippedUnits -gt 0 -or $backupStatus -in 'partial','failed')) { 'partial' }
+    elseif ($succeededUnits -gt 0) { 'succeeded' }
+    elseif ($failedUnits -gt 0 -or $backupStatus -eq 'failed') { 'failed' }
+    else { 'noop' })
+  $operationId = "$($Reply.ApplyId)".Trim().ToLowerInvariant()
+  if ($Event -eq 'restore' -or $operationId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') {
+    $operationId = [guid]::NewGuid().ToString('D').ToLowerInvariant()
+  }
+  [pscustomobject][ordered]@{
+    schemaVersion=1;operationId=$operationId;source=$Source;result=$result;itemIds=@($itemIds)
+    changedItemIds=@($changed);succeededItemIds=@($succeeded);failedItemIds=@($failed)
+    skippedItemIds=@($skipped);attentionItemIds=@($attention);rebootItemIds=@($reboot)
+    relatedOperationIds=@($related);succeededUnitCount=[int]$succeededUnits;failedUnitCount=[int]$failedUnits
+    skippedUnitCount=[int]$skippedUnits;backupStatus=$backupStatus;restoreMode=$RestoreMode
+    verificationStatus=$verificationStatus;residualCount=[int]$residualCount
+  }
+}
+
+function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed = 0, $Operation = $null) {
   try {
     if (-not $Hw -or $Event -notin 'launch','apply','restore') { return }
     $installId = Get-TelemetryInstallId
@@ -2418,13 +2700,17 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
       gpuVendor  = "$($Hw.MainGpuVendor)"
       gpuModel   = "$($Hw.MainGpuName)"
       gpuModelVerified = [bool]$Hw.MainGpuNameVerified
+      driverVersion = Get-TelemetryMainGpuDriver $Hw
+      gpuCount   = [math]::Min(16, @($Hw.Gpus).Count)
+      displayMode = Get-TelemetryDisplayMode $Hw
       ramGb      = [double]$Hw.RamGB
       deviceType = $(if ($Hw.IsLaptop) { 'laptop' } else { 'desktop' })
       ok         = [math]::Max(0, $Ok)
       failed     = [math]::Max(0, $Failed)
     }
+    if ($Operation) { $payload.operation = $Operation }
     if (-not (Get-Command Send-DfbTelemetryEvent -ErrorAction SilentlyContinue)) { return }
-    $body = $payload | ConvertTo-Json -Compress
+    $body = $payload | ConvertTo-Json -Compress -Depth 6
     $configPath = Join-Path $script:UserConfigDir 'telemetry.json'
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript({
@@ -2994,9 +3280,13 @@ function Get-TuningWireItemIds($State,$Candidate) {
 function New-TuningTelemetryPayload {
   param([Parameter(Mandatory)][ValidateSet('experiment_started','variant_applied','run_completed','experiment_completed')][string]$TuningType,
         [Parameter(Mandatory)]$State, $Candidate, $Run, $Result, [string]$InstallId = '00000000-0000-0000-0000-000000000000', $Hw = $script:HardwareInfo)
+  $mainGpu=@($Hw.Gpus|Where-Object{"$($_.Name)" -eq "$($Hw.MainGpuName)"}|Select-Object -First 1)
+  $driverVersion=$(if($mainGpu.Count){"$($mainGpu[0].Driver)"}else{''})
+  $displayMode=$(if([int]$Hw.DisplayWidth -gt 0 -and [int]$Hw.DisplayHeight -gt 0){"$([int]$Hw.DisplayWidth)x$([int]$Hw.DisplayHeight)@$([int]$Hw.DisplayRefreshHz)"}else{''})
   $payload = [ordered]@{
     installId=$InstallId;event='tuning';version="$script:GuiVersion";os="$($Hw.OS)";build="$($Hw.Build)";cpu="$($Hw.CPU)"
     gpuVendor="$($Hw.MainGpuVendor)";gpuModel="$($Hw.MainGpuName)";gpuModelVerified=[bool]$Hw.MainGpuNameVerified
+    driverVersion=$driverVersion;gpuCount=[math]::Min(16,@($Hw.Gpus).Count);displayMode=$displayMode
     ramGb=[double]$Hw.RamGB;deviceType=$(if($Hw.IsLaptop){'laptop'}else{'desktop'})
     tuningType=$TuningType;experimentId="$($State.experimentId)"
   }
@@ -3035,6 +3325,14 @@ function New-TuningTelemetryPayload {
       $payload.avgFps=[double]$Run.avgFps;$payload.fps1Low=[double]$Run.fps1Low;$payload.p99FrameMs=[double]$Run.p99FrameMs
       $payload.stutter50Ms=[int]$Run.stutter50Ms;$payload.stutter100Ms=[int]$Run.stutter100Ms
       $payload.gpuUtilAvg=[double]$Run.gpuUtilAvg;$payload.gpuTempAvg=[double]$Run.gpuTempAvg;$payload.gpuPowerAvg=[double]$Run.gpuPowerAvg
+      if($Run.PSObject.Properties['frameCount']){$payload.frameCount=[int]$Run.frameCount}
+      if($Run.PSObject.Properties['frameTimeMadMs']){$payload.frameTimeMadMs=[double]$Run.frameTimeMadMs}
+      if($Run.PSObject.Properties['stuttersPerMin']){$payload.stuttersPerMin=[double]$Run.stuttersPerMin}
+      if($Run.PSObject.Properties['focusLostSec']){$payload.focusLostSec=[double]$Run.focusLostSec}
+      if($Run.PSObject.Properties['gpuTempMax']){$payload.gpuTempMax=[double]$Run.gpuTempMax}
+      if($Run.PSObject.Properties['gameExitedEarly']){$payload.gameExitedEarly=[bool]$Run.gameExitedEarly}
+      if($Run.PSObject.Properties['captureFailed']){$payload.captureFailed=[bool]$Run.captureFailed}
+      if($Run.PSObject.Properties['presentMonExitCode']){$payload.presentMonExitCode=[int]$Run.presentMonExitCode}
       $payload.settingsHash="$($Run.settingsHash)";$payload.environmentHash="$($Run.environmentHash)";$payload.orderControlled=[bool]$Run.orderControlled
     }
     'experiment_completed'{
@@ -3201,7 +3499,14 @@ function Update-TuningUi {
   $ui.TuneStopBtn.IsEnabled=$active -and -not $script:Busy -and -not $script:TuningSampling
   Update-TuningRunTable
   # 实验活动期间禁止普通系统写入、全量还原、路径变更和更新安装入口。
-  foreach($n in 'ApplyBtn','RestoreBtn','BrowseBtn','UpdateBtn','CheckUpdBtn') { if($ui[$n]){$ui[$n].IsEnabled=(-not $active -and -not $script:Busy)} }
+  foreach($n in 'ApplyBtn','RestoreBtn','BrowseBtn','UpdateBtn','CheckUpdBtn',
+                 'InlineRestoreSelectAllBtn','InlineRestoreClearBtn','InlineRestoreSelectedBtn',
+                 'InlineRestoreAllBtn','InlineRestoreCloseBtn') {
+    if($ui[$n]){$ui[$n].IsEnabled=(-not $active -and -not $script:Busy)}
+  }
+  if ($ui.InlineRestorePanel -and $ui.InlineRestorePanel.Visibility -eq 'Visible') {
+    Update-InlineRestoreSelection
+  }
 }
 
 function Get-ValidatedTuningCandidateRuntime([string]$GroupId) {
@@ -4157,8 +4462,16 @@ function Open-GpuPanel($App) {
 }
 
 function Get-GuiGpuPanelApps([string]$Vendor) {
-  if ($Vendor -notin 'NVIDIA','AMD','Intel') { return @() }
-  try { @((Invoke-EngineHostUserAction -Action GetGpuPanelApps -Payload $Vendor) | ConvertFrom-Json) }
+  # 硬件对象可能来自 JSON/驱动字符串，入口统一去空白并规范大小写；launcher 的
+  # 白名单使用固定 canonical key，避免 “Nvidia” 在 GUI 通过、到 C# 边界却被拒绝。
+  $vendorKey = switch ("$Vendor".Trim().ToUpperInvariant()) {
+    'NVIDIA' { 'NVIDIA' }
+    'AMD'    { 'AMD' }
+    'INTEL'  { 'Intel' }
+    default  { $null }
+  }
+  if (-not $vendorKey) { return @() }
+  try { @((Invoke-EngineHostUserAction -Action GetGpuPanelApps -Payload $vendorKey) | ConvertFrom-Json) }
   catch { Write-Log "显卡软件检测失败：$($_.Exception.Message)"; @() }
 }
 
@@ -4271,12 +4584,213 @@ function Show-GpuGuideDialog($Hw) {
   [void]$script:GgDlg.ShowDialog()
 }
 
+# 近期版本掉帧页只给排查顺序，不自动改驱动、BIOS 或运行库。显卡厂商来自引擎已经完成的
+# 主力 GPU 识别，双显卡机器仍以 MainGpuVendor/MainGpuName（通常为独显）生成推荐。
+function Get-DropFrameRepairPlan($Hw) {
+  $vendor = "$($Hw.MainGpuVendor)"
+  $gpuName = $(if ($Hw.MainGpuName) { "$($Hw.MainGpuName)" } else { '未识别显卡' })
+  $summary = "近期版本掉帧可能由着色器缓存、驱动配置、运行组件或游戏版本共同触发；以下按 $vendor 显卡生成排查顺序。"
+  $common = @(
+    '1. 【可执行】完全退出游戏和启动器，点击下方“清理着色器缓存”；重新进入后先等待着色器预热完成。'
+    '2. 在启动器验证并修复游戏文件；确认游戏主程序已启用“禁用全屏优化”。'
+    '3. 【可执行】点击下方“设置高性能 GPU”，把当前定位的三角洲主程序写入 Windows 高性能显卡首选项。'
+    '4. 虚拟内存优先保持“系统管理大小”，并为系统盘和游戏盘保留足够空间。'
+    '5. 【可检查】点击下方“检查 VC++ 运行库”；缺失时按软件给出的微软官方入口覆盖安装或“修复”，不要批量卸载旧年份组件。'
+  ) -join "`n"
+  $caution = 'DDU 重装驱动、回退驱动、关闭超线程/SMT、改 BIOS 或重装系统都放在最后。只有问题与某次驱动更新时间一致时才考虑驱动回退；关闭超线程/SMT必须做同场景前后对比，AMD 处理器不默认关闭 SMT。'
+
+  switch ($vendor) {
+    'NVIDIA' {
+      $vendorTitle = 'NVIDIA 专项排查'
+      $vendorText = @(
+        '1. NVIDIA 控制面板 → 管理 3D 设置 → 程序设置：电源管理模式设为“最高性能优先”，着色器缓存大小设为“无限制”。'
+        '2. NVIDIA App 的“自动优化”先关闭，避免它重新覆盖游戏画质；RTX 40/50 系的 DLSS 模型预设可保留当前稳定值。'
+        '3. Windows“硬件加速 GPU 计划”分别开、关各测试一局，以 1% Low 和卡顿次数选择，不按平均帧率单独判断。'
+        '4. 若掉帧恰好从显卡驱动更新后开始，优先干净安装当前 Game Ready WHQL；仍异常再回退到此前稳定版本。'
+      ) -join "`n"
+    }
+    'AMD' {
+      $vendorTitle = 'AMD Radeon 专项排查'
+      $vendorText = @(
+        '1. AMD Software → 游戏 → 三角洲行动：Radeon Anti-Lag 开；Radeon Chill、Boost、增强同步先关。'
+        '2. AMD Software 的“重置着色器缓存”与工具清理二选一执行，随后首次进图耐心完成缓存重建。'
+        '3. 纹理过滤质量设为“性能”，表面格式优化开启；不要同时叠加 Chill、帧率上限和游戏内限帧。'
+        '4. 若问题紧跟驱动更新出现，优先安装 AMD 官方 WHQL/Recommended 版本；Optional 版异常时回退此前稳定版。'
+      ) -join "`n"
+    }
+    'Intel' {
+      $vendorTitle = 'Intel 显卡专项排查'
+      $vendorText = @(
+        '1. 更新到 Intel 官方稳定版显卡驱动；若是双显卡笔记本，确认游戏实际运行在独显而不是 Intel 核显。'
+        '2. Intel Graphics Software 中为三角洲关闭垂直同步和额外限帧，只保留游戏内一处帧率上限。'
+        '3. Intel Xe 低延迟只做开/关 A/B 测试；出现新的帧时间尖峰就恢复默认。'
+        '4. Arc 独显确认主板已开启 Resizable BAR；核显机器优先降低纹理、阴影和分辨率比例，避免显存共享压力。'
+      ) -join "`n"
+    }
+    default {
+      $vendorTitle = '未识别厂商 · 通用排查'
+      $vendorText = @(
+        '1. 先完成上方通用步骤，每次只修改一项并在同一地图、相近场景复测。'
+        '2. 从显卡厂商官网下载稳定版驱动，不使用第三方驱动包。'
+        '3. 记录修改前后的平均帧率、1% Low、GPU 占用率和卡顿次数，再决定是否保留。'
+      ) -join "`n"
+    }
+  }
+  [pscustomobject]@{
+    GpuName = $gpuName
+    Summary = $summary
+    Common = $common
+    VendorTitle = $vendorTitle
+    VendorText = $vendorText
+    Caution = $caution
+  }
+}
+
+# 掉帧页的三处直达能力用行内高亮标记；正文仍保持单个 TextBlock，避免为五行说明
+# 搭出额外控件树，同时让“可执行 / 可检查”比普通手动步骤一眼更醒目。
+function Set-DropFrameCommonText([string]$Content) {
+  if (-not $ui.FrameFixCommonText) { return }
+  $ui.FrameFixCommonText.Inlines.Clear()
+  $lines = @("$Content" -split "`r?`n")
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    $line = $lines[$i]
+    if ($line -match '^(.*?)(【可执行】|【可检查】)(.*)$') {
+      foreach ($part in @(
+        @{ Text = $Matches[1]; Highlight = $false },
+        @{ Text = $Matches[2]; Highlight = $true },
+        @{ Text = $Matches[3]; Highlight = $false }
+      )) {
+        if (-not "$($part.Text)") { continue }
+        $run = New-Object Windows.Documents.Run
+        $run.Text = "$($part.Text)"
+        if ($part.Highlight) {
+          $run.Foreground = New-Brush $script:C.Green
+          $run.Background = New-Brush '#3313A66D'
+          $run.FontWeight = 'Bold'
+        }
+        [void]$ui.FrameFixCommonText.Inlines.Add($run)
+      }
+    } else {
+      $run = New-Object Windows.Documents.Run
+      $run.Text = $line
+      [void]$ui.FrameFixCommonText.Inlines.Add($run)
+    }
+    if ($i -lt $lines.Count - 1) {
+      [void]$ui.FrameFixCommonText.Inlines.Add((New-Object Windows.Documents.LineBreak))
+    }
+  }
+}
+
+# NVIDIA 专项正文里的两个产品名本身就是入口：已安装时直接打开对应程序，未安装时
+# 打开 NVIDIA 官方下载页。入口仍只携带 launcher 已允许的固定产品 Key/HTTPS 地址。
+function Set-DropFrameVendorText([string]$Content, [string]$Vendor) {
+  if (-not $ui.FrameFixVendorText) { return }
+  $ui.FrameFixVendorText.Inlines.Clear()
+
+  $vendorKey = "$Vendor".Trim().ToUpperInvariant()
+  $appsByName = @{}
+  if ($vendorKey -eq 'NVIDIA') {
+    foreach ($app in @(Get-GuiGpuPanelApps 'NVIDIA')) {
+      if ($app -and $app.Name) { $appsByName["$($app.Name)"] = $app }
+    }
+  }
+
+  $lines = @("$Content" -split "`r?`n")
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    foreach ($part in @([regex]::Split($lines[$i], '(NVIDIA 控制面板|NVIDIA App)'))) {
+      if (-not $part) { continue }
+      if ($vendorKey -eq 'NVIDIA' -and $part -in 'NVIDIA 控制面板','NVIDIA App') {
+        $app = $appsByName[$part]
+        if (-not $app) {
+          # 检测暂时未返回结果时仍保留固定白名单入口；launcher 会再次验证本机安装状态。
+          $app = [pscustomobject]@{
+            Key = $(if ($part -eq 'NVIDIA 控制面板') { 'nv-cpl' } else { 'nv-app' })
+            Name = $part
+            Installed = $true
+            Download = $(if ($part -eq 'NVIDIA 控制面板') {
+              'https://www.nvidia.cn/geforce/drivers/'
+            } else {
+              'https://www.nvidia.cn/software/nvidia-app/'
+            })
+          }
+        }
+
+        $link = New-Object Windows.Documents.Hyperlink
+        $link.Foreground = New-Brush $script:C.Green
+        $link.Background = New-Brush '#3313A66D'
+        $link.FontWeight = 'Bold'
+        $link.TextDecorations = [Windows.TextDecorations]::Underline
+        $run = New-Object Windows.Documents.Run
+        $run.Text = $part
+        [void]$link.Inlines.Add($run)
+        if ($app.Installed) {
+          $link.ToolTip = "点击打开 $($app.Name)"
+          $link.Tag = [pscustomobject]@{
+            Mode = 'open'
+            Name = "$($app.Name)"
+            App = [pscustomobject]@{ Key = "$($app.Key)"; Name = "$($app.Name)" }
+          }
+        } else {
+          $link.ToolTip = "本机未检测到 $($app.Name)，点击打开 NVIDIA 官网"
+          $link.Tag = [pscustomobject]@{
+            Mode = 'download'
+            Name = "$($app.Name)"
+            Url = "$($app.Download)"
+          }
+        }
+        $link.Add_Click({
+          try {
+            if ($this.Tag.Mode -eq 'open') {
+              Open-GpuPanel $this.Tag.App
+              Write-Log "已打开 $($this.Tag.Name)。"
+            } else {
+              Open-HelpLink "$($this.Tag.Url)"
+              Write-Log "已打开 $($this.Tag.Name) 官方下载页。"
+            }
+          } catch {
+            Write-Log "打开 $($this.Tag.Name) 失败：$($_.Exception.Message)"
+          }
+        })
+        [void]$ui.FrameFixVendorText.Inlines.Add($link)
+      } else {
+        $run = New-Object Windows.Documents.Run
+        $run.Text = $part
+        [void]$ui.FrameFixVendorText.Inlines.Add($run)
+      }
+    }
+    if ($i -lt $lines.Count - 1) {
+      [void]$ui.FrameFixVendorText.Inlines.Add((New-Object Windows.Documents.LineBreak))
+    }
+  }
+}
+
+function Update-DropFrameRepairPage {
+  if (-not $script:HardwareInfo) {
+    $ui.FrameFixGpuText.Text = '正在识别主力显卡…'
+    $ui.FrameFixSummaryText.Text = '硬件检测完成后会自动生成对应方案。'
+    return
+  }
+  $plan = Get-DropFrameRepairPlan $script:HardwareInfo
+  $ui.FrameFixGpuText.Text = "$($plan.GpuName) · 已生成显卡专项方案"
+  $ui.FrameFixSummaryText.Text = "$($plan.Summary)"
+  Set-DropFrameCommonText "$($plan.Common)"
+  $ui.FrameFixVendorTitle.Text = "$($plan.VendorTitle)"
+  Set-DropFrameVendorText "$($plan.VendorText)" "$($script:HardwareInfo.MainGpuVendor)"
+  $ui.FrameFixCautionText.Text = "$($plan.Caution)"
+  $ui.FrameFixCacheBtn.IsEnabled = (-not $script:Busy -and -not $script:NetCafeCompatibilityMode)
+  $ui.FrameFixGpuPrefBtn.IsEnabled = (-not $script:Busy)
+  $ui.FrameFixVcBtn.IsEnabled = (-not $script:Busy)
+  if ($script:NetCafeCompatibilityMode -and $ui.FrameFixActionStatus.Text -eq '请选择一项操作。') {
+    $ui.FrameFixActionStatus.Text = '当前为管理员兼容模式：用户着色器缓存清理停用；高性能 GPU 与 VC++ 检查仍可直接执行。'
+  }
+}
+
 # ---------- 标签页切换与执行态 ----------
 
 $script:Busy = $false
 
 function Select-Tab([string]$Which) {
-  foreach ($t in @(@('opt', 'TabOptBtn', 'OptPage'), @('tune', 'TabTuneBtn', 'TunePage'), @('ref', 'TabRefBtn', 'RefPage'), @('log', 'TabLogBtn', 'LogPage'))) {
+  foreach ($t in @(@('opt', 'TabOptBtn', 'OptPage'), @('tune', 'TabTuneBtn', 'TunePage'), @('framefix', 'TabFrameFixBtn', 'FrameFixPage'), @('ref', 'TabRefBtn', 'RefPage'), @('log', 'TabLogBtn', 'LogPage'))) {
     $on = ($Which -eq $t[0])
     $ui[$t[1]].Tag = $(if ($on) { 'on' } else { '' })
     $ui[$t[2]].Visibility = $(if ($on) { 'Visible' } else { 'Collapsed' })
@@ -4286,6 +4800,7 @@ function Select-Tab([string]$Which) {
   # 每次切入都重建：数据文件可能是界面启动之后才生成的
   if ($Which -eq 'ref') { Update-StreamerPage }
   if ($Which -eq 'tune') { Update-TuningUi }
+  if ($Which -eq 'framefix') { Update-DropFrameRepairPage }
   # 看过就不用再提示了
   if ($Which -eq 'log') { Set-LogBadge 0 }
 }
@@ -4300,7 +4815,10 @@ function Set-BusyState([bool]$On) {
   # 执行期间禁用一切入口防重复点击；窗口关闭由 CloseBtn 与主窗口 Closing 双重拦截
   $script:Busy = $On
   foreach ($n in 'ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn','ReportBtn','BrowseBtn',
-                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabTuneBtn','TabRefBtn','UpdateBtn',
+                 'SavePresetBtn','DelPresetBtn','PresetBox','TabOptBtn','TabFrameFixBtn','TabRefBtn','UpdateBtn',
+                 'FrameFixCacheBtn','FrameFixGpuPrefBtn','FrameFixVcBtn','FrameFixOptBtn','FrameFixGuideBtn',
+                 'InlineRestoreSelectAllBtn','InlineRestoreClearBtn','InlineRestoreSelectedBtn',
+                 'InlineRestoreAllBtn','InlineRestoreCloseBtn',
                  'TuneCreateBtn','TuneNextBtn','TuneStopBtn') {
     if ($ui[$n]) { $ui[$n].IsEnabled = -not $On }
   }
@@ -4378,6 +4896,216 @@ function Invoke-LocalNoBackupItems([object[]]$Items) {
   @($results.ToArray())
 }
 
+function Set-FrameFixActionStatus {
+  param(
+    [string]$Message,
+    [ValidateSet('normal','success','warning','error')][string]$Tone = 'normal'
+  )
+  if (-not $ui.FrameFixActionStatus) { return }
+  $ui.FrameFixActionStatus.Text = $Message
+  $ui.FrameFixActionStatus.Foreground = New-Brush $(switch ($Tone) {
+    'success' { $script:C.Green }
+    'warning' { $script:C.Gold }
+    'error'   { '#FFFF6B6B' }
+    default   { $script:C.TextSec }
+  })
+}
+
+function Set-FrameFixProgress {
+  param(
+    [string]$Message,
+    [ValidateSet('start','success','warning','error')][string]$Mode = 'start'
+  )
+  if (-not $ui.FrameFixProgressPanel -or -not $ui.FrameFixProgressBar -or -not $ui.FrameFixProgressText) { return }
+  $ui.FrameFixProgressPanel.Visibility = 'Visible'
+  $ui.FrameFixProgressText.Text = $Message
+  if ($Mode -eq 'start') {
+    $ui.FrameFixProgressBar.Foreground = New-Brush $script:C.Green
+    $ui.FrameFixProgressText.Foreground = New-Brush $script:C.TextSec
+    $ui.FrameFixProgressBar.Value = 0
+    $ui.FrameFixProgressBar.IsIndeterminate = $true
+  } else {
+    $ui.FrameFixProgressBar.IsIndeterminate = $false
+    $ui.FrameFixProgressBar.Value = 100
+    $color = $(switch ($Mode) {
+      'success' { $script:C.Green }
+      'warning' { $script:C.Gold }
+      'error'   { '#FFFF6B6B' }
+    })
+    $ui.FrameFixProgressBar.Foreground = New-Brush $color
+    $ui.FrameFixProgressText.Foreground = New-Brush $color
+  }
+  # 直接操作同步等待受保护 broker 返回；先泵一次 Render，确保进度条在耗时工作前上屏。
+  $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+}
+
+function Get-FrameFixActionItem([string]$Id) {
+  $matches = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel | Where-Object { $_.Id -eq $Id })
+  if ($matches.Count -ne 1) { throw "掉帧修复操作不存在或不可用：$Id" }
+  $matches[0]
+}
+
+function Invoke-FrameFixCacheCleanup {
+  if ($script:Busy) { return }
+  $busySet = $false
+  try {
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间不能清理缓存，请先停止并回滚实验' }
+    if ($script:NetCafeCompatibilityMode) { throw '管理员兼容模式没有原用户缓存权限；请关闭软件后普通双击启动，再执行缓存清理' }
+    $item = Get-FrameFixActionItem 'shader-cache-clean'
+    $message = "将清理 Windows、DirectX 与显卡驱动的着色器缓存。`n`n请先完全退出游戏、启动器和显卡驱动面板。清理后首次进入游戏需要重新编译着色器，头一两局可能暂时更卡；缓存会自动重建，因此本项不产生还原备份。"
+    if (-not (Show-ConfirmDialog '清理缓存' 'CLEAR SHADER CACHE' $message '确认清理')) {
+      Set-FrameFixActionStatus '已取消着色器缓存清理。' 'normal'
+      return
+    }
+    Set-BusyState $true; $busySet = $true
+    Set-FrameFixActionStatus '正在清理着色器缓存，请稍候…' 'warning'
+    Set-FrameFixProgress '正在清理 Windows、DirectX 与显卡驱动着色器缓存…' 'start'
+    Write-Log '掉帧修复：开始清理着色器缓存…'
+    $row = @(Invoke-LocalNoBackupItems @($item)) | Select-Object -First 1
+    if (-not $row) { throw '缓存清理没有返回结果' }
+    $tag = $(if ($row.Ok -and $row.Skipped) { '[跳过]' } elseif ($row.Ok) { '[成功]' } else { '[失败]' })
+    Write-Log "$tag $($row.Name) — $($row.Msg)"
+    if (-not $row.Ok) {
+      Set-FrameFixActionStatus "缓存清理失败：$($row.Msg)" 'error'
+      Set-FrameFixProgress '着色器缓存清理失败，请查看下方说明。' 'error'
+      Set-LogBadge 1
+      Show-ConfirmDialog '清理失败' 'CACHE CLEAN FAILED' "$($row.Msg)" '知道了' -InfoOnly | Out-Null
+    } elseif ($row.Skipped) {
+      Set-FrameFixActionStatus '本机当前没有可清理的着色器缓存，无需处理。' 'warning'
+      Set-FrameFixProgress '检查完成：本机当前没有可清理的着色器缓存。' 'warning'
+    } else {
+      Set-FrameFixActionStatus '着色器缓存已清理。首次进入游戏请等待缓存重建完成后再判断效果。' 'success'
+      Set-FrameFixProgress '着色器缓存清理完成。' 'success'
+    }
+  } catch {
+    Set-FrameFixActionStatus "缓存清理未完成：$($_.Exception.Message)" 'error'
+    Set-FrameFixProgress '着色器缓存清理未完成，请查看错误说明。' 'error'
+    Write-Log "掉帧修复：缓存清理失败 — $($_.Exception.Message)"
+    Set-LogBadge 1
+    Show-ConfirmDialog '清理未完成' 'CACHE CLEAN NOT COMPLETED' $_.Exception.Message '知道了' -InfoOnly | Out-Null
+  } finally {
+    if ($busySet) { Set-BusyState $false }
+    try { Update-ItemList } catch { Write-Log "缓存清理后刷新状态失败：$($_.Exception.Message)" }
+    Update-DropFrameRepairPage
+  }
+  if ($ui.InlineRestorePanel -and $ui.InlineRestorePanel.Visibility -eq 'Visible') {
+    Update-InlineRestoreSelection
+  }
+}
+
+function Invoke-FrameFixGpuPreference {
+  if ($script:Busy) { return }
+  $busySet = $false
+  try {
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间已锁定配置，请先停止并回滚实验' }
+    if (-not $script:TargetExe -or -not (Test-AllowedGameExecutable $script:TargetExe)) {
+      Set-FrameFixActionStatus '尚未定位有效的三角洲主程序，请先在优化页重新定位游戏。' 'warning'
+      Show-ConfirmDialog '需要游戏路径' 'GAME PATH REQUIRED' '请先到「优化」页点击“重新定位”，选择 DeltaForceClient-Win64-Shipping.exe 或 DeltaForce.exe，然后再回来执行。' '知道了' -InfoOnly | Out-Null
+      return
+    }
+    [void](Get-FrameFixActionItem 'gpu-pref')
+    $message = "将把以下游戏主程序写入 Windows 高性能 GPU 首选项：`n`n$script:TargetExe`n`n修改前会写入受保护备份，可在「还原设置」中单独复原「强制游戏使用高性能 GPU」。"
+    if (-not (Show-ConfirmDialog '设置高性能 GPU' 'HIGH PERFORMANCE GPU' $message '确认设置')) {
+      Set-FrameFixActionStatus '已取消高性能 GPU 设置。' 'normal'
+      return
+    }
+    Set-BusyState $true; $busySet = $true
+    Set-FrameFixActionStatus '正在写入 Windows 高性能 GPU 首选项…' 'warning'
+    Set-FrameFixProgress '正在设置 Windows 高性能 GPU 首选项并保存还原备份…' 'start'
+    Write-Log '掉帧修复：正在为当前游戏设置高性能 GPU…'
+    $reply = Invoke-ElevatedEngineAction -Action Apply -ItemIds @('gpu-pref') -GamePath $script:TargetExe `
+      -GpuSpoofModel $script:SelectedGpuSpoofModel
+    $rows = @($reply.Results | Where-Object { $_.Id -eq 'gpu-pref' })
+    if ($rows.Count -ne 1) { throw '高性能 GPU 操作没有返回唯一结果' }
+    $row = $rows[0]
+    if ($reply.Backup) { Write-Log "备份已保存：$($reply.Backup)" }
+    $changed = [bool]($row.PSObject.Properties['Changed'] -and $row.Changed -eq $true)
+    if ($changed) {
+      $script:TuningConfigGeneration++
+      try { Set-TelemetryConfigTier (Get-SelectedTelemetryConfigTier 1) }
+      catch { Write-Log "高性能 GPU 已设置，但遥测档位保存失败：$($_.Exception.Message)" }
+    }
+    $tag = $(if ($row.Ok -and -not $changed) { '[跳过]' } elseif ($row.Ok) { '[成功]' } else { '[失败]' })
+    Write-Log "$tag $($row.Name) — $($row.Msg)"
+    if ($reply.BackupError) {
+      $lost = @($reply.UnrecordedNames | Where-Object { $_ })
+      $detail = "设置过程发生备份错误：$($reply.BackupError)" +
+        $(if ($lost.Count -gt 0) { "`n`n以下改动可能已生效但没有完整备份：$($lost -join '、')" } else { '' })
+      Set-FrameFixActionStatus $detail 'error'
+      Set-FrameFixProgress '高性能 GPU 设置完成，但还原备份写入异常。' 'error'
+      Write-Log "！！掉帧修复备份错误：$($reply.BackupError)"
+      Set-LogBadge 1
+      Show-ConfirmDialog '备份写入失败' 'BACKUP WRITE FAILED' $detail '我已知晓' -InfoOnly | Out-Null
+    } elseif (-not $row.Ok) {
+      Set-FrameFixActionStatus "高性能 GPU 设置失败：$($row.Msg)" 'error'
+      Set-FrameFixProgress '高性能 GPU 设置失败，请查看下方说明。' 'error'
+      Set-LogBadge 1
+      Show-ConfirmDialog '设置失败' 'GPU PREFERENCE FAILED' "$($row.Msg)" '知道了' -InfoOnly | Out-Null
+    } elseif ($changed) {
+      Set-FrameFixActionStatus '已将当前三角洲主程序设为高性能 GPU，并保存可单独复原的备份。' 'success'
+      Set-FrameFixProgress '高性能 GPU 首选项设置完成。' 'success'
+    } else {
+      Set-FrameFixActionStatus '当前游戏已经使用 Windows 高性能 GPU 首选项，无需重复写入。' 'success'
+      Set-FrameFixProgress '检查完成：当前游戏已经使用高性能 GPU 首选项。' 'success'
+    }
+    try {
+      $operation = New-OptimizationTelemetryOperation -Event apply -Source frame_fix -Reply $reply -ItemIds @('gpu-pref')
+      Send-AnonymousTelemetry 'apply' $script:HardwareInfo $(if ($row.Ok) { 1 } else { 0 }) $(if ($row.Ok) { 0 } else { 1 }) $operation
+    } catch {}
+  } catch {
+    Set-FrameFixActionStatus "高性能 GPU 设置未完成：$($_.Exception.Message)" 'error'
+    Set-FrameFixProgress '高性能 GPU 设置未完成，请查看错误说明。' 'error'
+    Write-Log "掉帧修复：高性能 GPU 设置失败 — $($_.Exception.Message)"
+    Set-LogBadge 1
+    Show-ConfirmDialog '设置未完成' 'GPU PREFERENCE NOT COMPLETED' $_.Exception.Message '知道了' -InfoOnly | Out-Null
+  } finally {
+    if ($busySet) { Set-BusyState $false }
+    try { Update-ItemList } catch { Write-Log "高性能 GPU 设置后刷新状态失败：$($_.Exception.Message)" }
+    Update-DropFrameRepairPage
+  }
+}
+
+function Invoke-FrameFixVcredistCheck {
+  if ($script:Busy) { return }
+  $busySet = $false
+  try {
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间请先完成当前步骤或停止实验' }
+    $item = Get-FrameFixActionItem 'vcredist-check'
+    Set-BusyState $true; $busySet = $true
+    Set-FrameFixActionStatus '正在检查 VC++ 2015–2022 x64 / x86 运行库…' 'warning'
+    Set-FrameFixProgress '正在检查 VC++ 2015–2022 x64 / x86 运行库…' 'start'
+    Write-Log '掉帧修复：开始检查 VC++ 运行库…'
+    $row = @(Invoke-LocalNoBackupItems @($item)) | Select-Object -First 1
+    if (-not $row) { throw 'VC++ 运行库检查没有返回结果' }
+    $tag = $(if ($row.Attention) { '[提示]' } elseif ($row.Ok) { '[正常]' } else { '[失败]' })
+    Write-Log "$tag $($row.Name) — $($row.Msg)"
+    if ($row.Attention) {
+      Set-FrameFixActionStatus '检测到 VC++ 运行库缺失或异常，已打开修复教程与微软官方入口。' 'warning'
+      Set-FrameFixProgress 'VC++ 运行库检查完成：检测到需要处理的项目。' 'warning'
+      Set-LogBadge 1
+      Show-HealthDialog @($row)
+    } elseif ($row.Ok) {
+      Set-FrameFixActionStatus 'VC++ 2015–2022 x64 / x86 运行库检查正常。' 'success'
+      Set-FrameFixProgress 'VC++ 运行库检查完成，结果正常。' 'success'
+    } else {
+      Set-FrameFixActionStatus "VC++ 运行库检查失败：$($row.Msg)" 'error'
+      Set-FrameFixProgress 'VC++ 运行库检查失败，请查看下方说明。' 'error'
+      Set-LogBadge 1
+      Show-ConfirmDialog '检查失败' 'VC++ CHECK FAILED' "$($row.Msg)" '知道了' -InfoOnly | Out-Null
+    }
+  } catch {
+    Set-FrameFixActionStatus "VC++ 运行库检查未完成：$($_.Exception.Message)" 'error'
+    Set-FrameFixProgress 'VC++ 运行库检查未完成，请查看错误说明。' 'error'
+    Write-Log "掉帧修复：VC++ 运行库检查失败 — $($_.Exception.Message)"
+    Set-LogBadge 1
+    Show-ConfirmDialog '检查未完成' 'VC++ CHECK NOT COMPLETED' $_.Exception.Message '知道了' -InfoOnly | Out-Null
+  } finally {
+    if ($busySet) { Set-BusyState $false }
+    try { Update-ItemList } catch { Write-Log "VC++ 检查后刷新状态失败：$($_.Exception.Message)" }
+    Update-DropFrameRepairPage
+  }
+}
+
 # 管理员引擎返回后，GUI 还要执行只读检测、medium worker 缓存清理、遥测和界面刷新。后半段即使
 # 抛异常，系统批次也可能已经完成；把这个状态与会话前置失败分开，避免用户误以为本轮
 # 完全没执行而立刻重复点击。异常类型和脚本堆栈只写运行日志，弹窗继续使用人话提示。
@@ -4449,6 +5177,8 @@ function Invoke-ElevatedEngineAction {
     [bool]$AllowRisky = $false,
     [string]$GpuSpoofModel,
     [string]$BackupFile,
+    [switch]$ListRestoreItems,
+    [string[]]$RestoreItemIds,
     [string]$ResultId
   )
   if (-not $script:EngineHostSessionValidated -or -not $isAdminGui) {
@@ -4485,10 +5215,19 @@ function Invoke-ElevatedEngineAction {
     if ($GamePath) { $parts.Add('-GamePath ' + (ConvertTo-PsSingleQuotedLiteral $GamePath)) }
     if ($GpuSpoofModel) { $parts.Add('-GpuSpoofModel ' + (ConvertTo-PsSingleQuotedLiteral $GpuSpoofModel)) }
     if ($AllowRisky) { $parts.Add('-Risky') }
-  } elseif ($BackupFile) {
-    # Beta 回滚必须指向它自己刚刚生成的备份，绝不退化为“还原全部”。
-    if (-not (Test-TuningBackupReference $BackupFile)) { throw '指定的实验备份路径无效' }
-    $parts.Add('-BackupFile ' + (ConvertTo-PsSingleQuotedLiteral ([IO.Path]::GetFullPath($BackupFile))))
+  } else {
+    if ($ListRestoreItems -and (@($RestoreItemIds).Count -gt 0 -or $BackupFile)) { throw '还原目录查询不能与复原项目或指定备份同时使用' }
+    if (@($RestoreItemIds).Count -gt 0 -and $BackupFile) { throw '按项目复原不能同时指定整份备份' }
+    if ($ListRestoreItems) { $parts.Add('-ListRestoreItems') }
+    elseif (@($RestoreItemIds).Count -gt 0) {
+      foreach ($id in @($RestoreItemIds)) { if ("$id" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') { throw "复原项目 ID 无效：$id" } }
+      $restoreLiterals = @($RestoreItemIds | ForEach-Object { ConvertTo-PsSingleQuotedLiteral "$_" })
+      $parts.Add('-RestoreItems @(' + ($restoreLiterals -join ',') + ')')
+    } elseif ($BackupFile) {
+      # Beta 回滚必须指向它自己刚刚生成的备份，绝不退化为“还原全部”。
+      if (-not (Test-TuningBackupReference $BackupFile)) { throw '指定的实验备份路径无效' }
+      $parts.Add('-BackupFile ' + (ConvertTo-PsSingleQuotedLiteral ([IO.Path]::GetFullPath($BackupFile))))
+    }
   }
   $command = ($parts -join ' ') + '; exit $LASTEXITCODE'
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
@@ -4623,6 +5362,175 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
   $script:CfmDlg.FindName('OkBtn').Add_Click({ $script:CfmDlg.DialogResult = $true })
   $script:CfmDlg.FindName('CancelBtn').Add_Click({ $script:CfmDlg.DialogResult = $false })
   [bool]$script:CfmDlg.ShowDialog()
+}
+
+function Update-InlineRestoreSelection {
+  if (-not $ui.InlineRestorePanel) { return }
+  $checks = $(if ($script:InlineRestoreChecks) { @($script:InlineRestoreChecks.ToArray()) } else { @() })
+  $selectedCount = @($checks | Where-Object IsChecked).Count
+  $selectableCount = @($checks | Where-Object IsEnabled).Count
+  $ready = (-not $script:Busy -and -not (Test-TuningExperimentActive))
+  $ui.InlineRestoreSelectedText.Text = "已选择 $selectedCount 项"
+  $ui.InlineRestoreSelectedBtn.IsEnabled = ($ready -and $selectedCount -gt 0)
+  $ui.InlineRestoreAllBtn.IsEnabled = ($ready -and $script:InlineRestoreCatalog -and
+    [bool]$script:InlineRestoreCatalog.HasActiveChanges)
+  $ui.InlineRestoreSelectAllBtn.IsEnabled = ($ready -and $selectableCount -gt 0)
+  $ui.InlineRestoreClearBtn.IsEnabled = ($ready -and $selectedCount -gt 0)
+  $ui.InlineRestoreCloseBtn.IsEnabled = (-not $script:Busy)
+}
+
+function Hide-InlineRestorePanel {
+  $ui.InlineRestorePanel.Visibility = 'Collapsed'
+  $ui.RestoreBtn.Content = '还原设置'
+  $script:InlineRestoreCatalog = $null
+  $script:InlineRestoreChecks = $null
+}
+
+function Initialize-InlineRestorePanel($Catalog) {
+  $script:InlineRestoreCatalog = $Catalog
+  $script:InlineRestoreChecks = New-Object System.Collections.Generic.List[object]
+  $ui.InlineRestoreItemsPanel.Children.Clear()
+  $ui.InlineRestoreEmptyText.Visibility = 'Collapsed'
+  $ui.InlineRestoreLegacyNotice.Visibility = 'Collapsed'
+  $ui.InlineRestoreLegacyText.Text = ''
+
+  foreach ($item in @($Catalog.Items | Sort-Object Name)) {
+    $row = New-Object Windows.Controls.Border
+    $row.BorderBrush = New-Brush $script:C.LineSoft
+    $row.BorderThickness = New-Object Windows.Thickness 0,0,0,1
+    $row.Padding = New-Object Windows.Thickness 3,7,3,7
+    $cb = New-Object Windows.Controls.CheckBox
+    $cb.Style = $window.FindResource('TacCheck')
+    $cb.Tag = "$($item.Id)"
+    $cb.IsEnabled = [bool]$item.CanRestore
+    $content = New-Object Windows.Controls.StackPanel
+    $title = New-Object Windows.Controls.TextBlock
+    $title.Text = "$($item.Name)"
+    $title.Foreground = New-Brush $(if ($item.CanRestore) { $script:C.TextPri } else { $script:C.TextMut })
+    $title.FontWeight = 'SemiBold'
+    [void]$content.Children.Add($title)
+    $meta = New-Object Windows.Controls.TextBlock
+    $reboot = $(if ($item.RebootRequired) { ' · 需要重启' } else { ' · 即时写回' })
+    $meta.Text = "$($item.SettingCount) 个设置 · $($item.StatusText)$reboot"
+    $meta.Foreground = New-Brush $(if ($item.CanRestore) { $script:C.Green } elseif ($item.Status -eq 'conflict') { $script:C.Danger } else { $script:C.Gold })
+    $meta.FontSize = 10
+    $meta.Margin = New-Object Windows.Thickness 0,3,0,0
+    [void]$content.Children.Add($meta)
+    if ($item.Reason) { $cb.ToolTip = "$($item.Reason)" }
+    $cb.Content = $content
+    $cb.Add_Checked({ Update-InlineRestoreSelection })
+    $cb.Add_Unchecked({ Update-InlineRestoreSelection })
+    $row.Child = $cb
+    [void]$ui.InlineRestoreItemsPanel.Children.Add($row)
+    [void]$script:InlineRestoreChecks.Add($cb)
+  }
+  if ($script:InlineRestoreChecks.Count -eq 0) {
+    $ui.InlineRestoreEmptyText.Visibility = 'Visible'
+  }
+
+  $restoreNotices = @()
+  if ([int]$Catalog.LegacyBackupCount -gt 0) {
+    $restoreNotices += "检测到 $($Catalog.LegacyBackupCount) 份旧版本备份，缺少项目归属信息，仅支持下方「全部复原」。"
+  }
+  if ([int]$Catalog.UnsupportedV3ItemCount -gt 0) {
+    $restoreNotices += "另有 $($Catalog.UnsupportedV3ItemCount) 个尚未开放按项目精确复原的项目，本阶段仅支持「全部复原」。"
+  }
+  if ($restoreNotices.Count -gt 0) {
+    $ui.InlineRestoreLegacyText.Text = $restoreNotices -join "`n"
+    $ui.InlineRestoreLegacyNotice.Visibility = 'Visible'
+  }
+  $ui.InlineRestoreAllSummary.Text = "恢复所有仍由工具管理的改动：$($Catalog.ActiveItemCount) 个新版本项目、$($Catalog.ActiveOpCount) 个底层设置、$($Catalog.ActiveBackupCount) 份活动备份。"
+  $ui.InlineRestorePanel.Visibility = 'Visible'
+  $ui.RestoreBtn.Content = '收起复原'
+  Update-InlineRestoreSelection
+  $ui.InlineRestorePanel.BringIntoView()
+}
+
+function Invoke-InlineRestoreAction([ValidateSet('selected_items','all')][string]$Mode) {
+  if ($script:Busy) { return }
+  $busySet = $false
+  try {
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间禁止普通还原；请使用「停止并回滚」只处理本实验备份' }
+    $catalog = $script:InlineRestoreCatalog
+    if (-not $catalog -or -not $catalog.HasActiveChanges) {
+      Hide-InlineRestorePanel
+      Show-ConfirmDialog '无需还原' 'NO ACTIVE CHANGES' '当前没有仍由工具管理的可还原改动。' '知道了' -InfoOnly | Out-Null
+      return
+    }
+
+    $itemIds = @()
+    if ($Mode -eq 'selected_items') {
+      $itemIds = @($script:InlineRestoreChecks.ToArray() | Where-Object IsChecked | ForEach-Object { "$($_.Tag)" })
+      if ($itemIds.Count -eq 0) { return }
+      $selectedNames = @($catalog.Items | Where-Object { $itemIds -contains "$($_.Id)" } | ForEach-Object Name)
+      $confirmText = "将以下 $($selectedNames.Count) 个项目恢复到第一次被本工具修改前，其他项目保持不变：`n`n· " + ($selectedNames -join "`n· ")
+      if (-not (Show-ConfirmDialog '确认按项目复原' 'CONFIRM SELECTED RESTORE' $confirmText '复原所选项目')) { return }
+    } else {
+      if (-not (Show-ConfirmDialog '确认全部复原' 'CONFIRM FULL RESTORE' '合并所有仍有效的备份，把全部工具管理的设置恢复到第一次优化前的原始状态？' '全部复原')) { return }
+    }
+
+    Set-BusyState $true; $busySet = $true
+    $ui.ProgressPanel.Visibility = 'Visible'
+    $ui.ProgFill.Width = 0
+    $ui.ProgText.Text = $(if ($Mode -eq 'selected_items') { '正在复原所选项目…' } else { '正在全部复原系统设置…' })
+    $ui.ProgCount.Text = ''
+    $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+    $r = $(if ($Mode -eq 'selected_items') {
+      Invoke-ElevatedEngineAction -Action Restore -RestoreItemIds $itemIds
+    } else { Invoke-ElevatedEngineAction -Action Restore })
+    $script:TuningConfigGeneration++
+    $w = $ui.ProgTrack.ActualWidth - 2
+    if ($w -gt 0) { $ui.ProgFill.Width = $w }
+    $failN = @($r.Failed).Count
+    $skipN = @($r.Skipped).Count
+    if ($Mode -eq 'all' -and $failN -eq 0) { Set-TelemetryConfigTier 'baseline' -Force }
+    try {
+      $restoreItemIds = $(if ($Mode -eq 'selected_items') { @($itemIds) } else { @($catalog.ActiveItemIds) })
+      $operation = New-OptimizationTelemetryOperation -Event restore -Source restore_manager -Reply $r -ItemIds $restoreItemIds -RestoreMode $Mode
+      Send-AnonymousTelemetry 'restore' $script:HardwareInfo $r.RestoredOps $failN $operation
+    } catch {}
+    $bakName = $(if ($r.File) { Split-Path -Leaf $r.File } else { '' })
+    if ($Mode -eq 'selected_items') {
+      $ui.ProgText.Text = "按项目复原完成：$($r.RestoredItems) 项成功 / $failN 项失败"
+      $ui.ProgCount.Text = "$($r.RestoredOps) 个底层设置已写回"
+      foreach ($itemResult in @($r.ItemResults)) {
+        Write-Log "$(if ($itemResult.Ok) { '[复原成功]' } else { '[复原失败]' }) $($itemResult.Name) — $($itemResult.Message)"
+      }
+    } else {
+      $ui.ProgText.Text = "全部复原完成：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项跳过（无实际影响）" })"
+      $ui.ProgCount.Text = "备份：$bakName"
+      Write-Log "已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
+    }
+    foreach ($f in $r.Failed) { Write-Log "[还原失败] $f" }
+    foreach ($s in $r.Skipped) { Write-Log "[还原跳过] $s" }
+    foreach ($n in $r.Notes) { Write-Log "[提示] $n" }
+    Update-ItemList
+    Hide-InlineRestorePanel
+
+    if ($Mode -eq 'selected_items') {
+      $sum = "$($r.RestoredItems) 个项目、$($r.RestoredOps) 个底层设置已恢复到第一次被工具修改前。" +
+             $(if ($failN -gt 0) { "`n`n$failN 个项目未复原；发生冲突或执行失败的项目保持原状，明细见运行日志。" } else { "`n`n其他未选项目保持不变。" })
+    } else {
+      $sum = "已按$(if ($r.MergedCount -gt 1) { "合并的 $($r.MergedCount) 份备份" } else { "备份「$bakName」" })还原 $($r.RestoredOps) 项改动。" +
+             $(if ($skipN -gt 0) { "`n`n$skipN 项跳过：工具自建电源方案里的残留设置，该方案已停用，无实际影响。" }) +
+             $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，对应改动仍留在系统中（备份已保留，可排查后重试还原），明细见运行日志。" }
+               elseif ($skipN -gt 0) { "`n`n其余全部还原成功，各项已回到优化前的状态。" }
+               else { "`n`n全部还原成功，各项已回到优化前的状态。" })
+    }
+    Show-ConfirmDialog '还原完成' 'RESTORE DONE' $sum '知道了' -InfoOnly | Out-Null
+    if (@($r.RebootItems).Count -gt 0 -and (Show-RebootDialog @($r.RebootItems))) {
+      if (Show-ConfirmDialog '确认重启' 'CONFIRM REBOOT' '确定现在重启电脑？未保存的工作会丢失。确认后系统将在 5 秒内重启。' '确认重启') {
+        Invoke-SystemReboot
+      }
+    }
+  } catch {
+    $err = $_.Exception.Message
+    Write-Log "还原失败：$err"
+    Show-ConfirmDialog '还原未完成' 'RESTORE NOT COMPLETED' $err '知道了' -InfoOnly | Out-Null
+  } finally {
+    if ($busySet -or $script:Busy) { Set-BusyState $false }
+    Update-InlineRestoreSelection
+  }
 }
 
 # 重启调用单独包一层：验证脚本可整体替换成 mock 走完整个交互链路，
@@ -5392,6 +6300,7 @@ $window.Add_ContentRendered({
     $ui.HwGrid.Children.Add((New-HwCard 'GPU' $gpu.Name "$($gpu.Vendor) · $(if (@($hw.Gpus).Count -gt 1) { '双显卡' } else { '单显卡' })" -Ribbon)) | Out-Null
     $systemName = "$($hw.ComputerBrand) $($hw.ComputerModel)".Trim()
     $ui.HwGrid.Children.Add((New-HwCard 'SYSTEM' $systemName "$($hw.RamGB) GB · $(if ($hw.IsLaptop) { '笔记本' } else { '台式机' }) · Build $($hw.Build)")) | Out-Null
+    Update-DropFrameRepairPage
 
     Write-Log '开始检测硬件与系统状态…'
     $script:TargetExe = Find-GamePath
@@ -5402,6 +6311,7 @@ $window.Add_ContentRendered({
       $ui.GameText.Text = '未定位 — 点「重新定位」手动选择游戏主程序'
       Write-Log '未自动找到游戏，部分优化项需要手动指定路径'
     }
+    Update-DropFrameRepairPage
     # 硬件和默认游戏路径准备好后再恢复实验；状态中的固定路径优先且会严格复验。
     Load-ActiveTuningExperiment
     Update-ItemList
@@ -5470,9 +6380,17 @@ $ui.CloseBtn.Add_Click({
 })
 
 $ui.TabOptBtn.Add_Click({ Select-Tab 'opt' })
-$ui.TabTuneBtn.Add_Click({ Select-Tab 'tune' })
+$ui.TabFrameFixBtn.Add_Click({ Select-Tab 'framefix' })
 $ui.TabRefBtn.Add_Click({ Select-Tab 'ref' })
 $ui.TabLogBtn.Add_Click({ Select-Tab 'log' })
+$ui.FrameFixOptBtn.Add_Click({ Select-Tab 'opt' })
+$ui.FrameFixCacheBtn.Add_Click({ Invoke-FrameFixCacheCleanup })
+$ui.FrameFixGpuPrefBtn.Add_Click({ Invoke-FrameFixGpuPreference })
+$ui.FrameFixVcBtn.Add_Click({ Invoke-FrameFixVcredistCheck })
+$ui.FrameFixGuideBtn.Add_Click({
+  try { Show-GpuGuideDialog $(if ($script:HardwareInfo) { $script:HardwareInfo } else { Get-HardwareInfo }) }
+  catch { Write-Log "显卡指引打开失败：$($_.Exception.Message)" }
+})
 
 $ui.BrowseBtn.Add_Click({
   if (Test-TuningExperimentActive) { Write-Log '自动调优实验期间已锁定游戏路径。'; return }
@@ -5488,6 +6406,7 @@ $ui.BrowseBtn.Add_Click({
     $script:TuningConfigGeneration++
     $ui.GameText.Text = $script:TargetExe
     Update-ItemList
+    Update-DropFrameRepairPage
     Write-Log "目标程序已更新：$script:TargetExe"
   }
 })
@@ -5521,11 +6440,11 @@ $ui.CheckUpdBtn.Add_Click({
   Start-ManualUpdateCheck
 })
 
-# 全选/全不选（实机诉求）：勾选态只圈「可执行」的项——已就绪项重复执行只会撑大备份；
-# 全不选则一视同仁清空。这等同手动改勾选，方案选中态一并清掉（勾选已不再等于该方案）
+# 全选/全不选（实机诉求）：安全区与显卡型号伪装区一起处理；已就绪项不重复圈选，
+# 显卡伪装在执行时仍走独立二次确认。全不选则一视同仁清空。
 $ui.SelAllChk.Add_Click({
   $on = ($ui.SelAllChk.IsChecked -eq $true)
-  foreach ($row in @($ui.ItemPanel.Children)) {
+  foreach ($row in (@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children))) {
     $row.Child.Children[0].IsChecked = $(if ($on) { $row.Tag -ne $true } else { $false })
   }
   Update-Count
@@ -5686,7 +6605,11 @@ $ui.ApplyBtn.Add_Click({
     # 高风险二次确认，确认后才带 AllowRisky 交给引擎
     $riskyIds = @($ui.RiskyPanel.Children | Where-Object { $_.Child.Children[0].IsChecked } |
                   ForEach-Object { $_.Child.Children[0].Tag })
-    if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) { Write-Log '未勾选任何优化项。'; return }
+    if ($ids.Count -eq 0 -and $riskyIds.Count -eq 0) {
+      Write-Log '未勾选任何优化项。'
+      Show-ConfirmDialog '未选择优化项' 'NO ITEMS SELECTED' '请先勾选至少一个优化项目，再点击「执行优化」。' '知道了' -InfoOnly | Out-Null
+      return
+    }
     $optAll = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
     if ($riskyIds.Count -gt 0) {
       $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
@@ -5756,7 +6679,10 @@ $ui.ApplyBtn.Add_Click({
     $changedCount = @($selectedItems | Where-Object { $changedIds -contains $_.Id -and $_.Kind -notin 'check','cache' }).Count
     if ($changedCount -gt 0) { $script:TuningConfigGeneration++ }
     if ($changedCount -gt 0) { Set-TelemetryConfigTier (Get-SelectedTelemetryConfigTier $changedCount) }
-    Send-AnonymousTelemetry 'apply' $script:HardwareInfo $okN $failList.Count
+    try {
+      $operation = New-OptimizationTelemetryOperation -Event apply -Source manual_selection -Reply $r -ItemIds @($selectedItems | ForEach-Object Id)
+      Send-AnonymousTelemetry 'apply' $script:HardwareInfo $okN $failList.Count $operation
+    } catch {}
     # 明确的完成度结论：进度条区和日志各给一份，失败项单独列出让用户一眼看到；
     # 体检发现的问题单列——那是检测项立功了，混进「失败」会让用户误以为工具坏了
     $att = $(if ($attList.Count -gt 0) { " / $($attList.Count) 项体检发现问题" })
@@ -5830,50 +6756,41 @@ $ui.ApplyBtn.Add_Click({
 })
 
 $ui.RestoreBtn.Add_Click({
+  if ($script:Busy) { return }
+  if ($ui.InlineRestorePanel.Visibility -eq 'Visible') {
+    Hide-InlineRestorePanel
+    return
+  }
+  $busySet = $false
   try {
-    if (Test-TuningExperimentActive) { throw '自动调优实验期间禁止普通全量还原；请使用「停止并回滚」只处理本实验备份' }
-    if (-not (Show-ConfirmDialog '确认还原' 'CONFIRM RESTORE' '合并所有尚未还原的备份，把系统设置恢复到第一次优化前的原始状态？' '还原设置')) { return }
-    Set-BusyState $true
-    # 此前同步跑完才刷新，界面「卡一下」就结束，用户不知道还原有没有在干活（实测吐槽）；
-    # 现在和执行优化共用进度面板，逐项推进 + 结束弹明确的完成提示
-    $ui.ProgressPanel.Visibility = 'Visible'
-    $ui.ProgFill.Width = 0
-    $ui.ProgText.Text = '正在还原系统设置…'
-    $ui.ProgCount.Text = ''
-    $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
-    $r = Invoke-ElevatedEngineAction -Action Restore
-    $script:TuningConfigGeneration++
-    $w = $ui.ProgTrack.ActualWidth - 2
-    if ($w -gt 0) { $ui.ProgFill.Width = $w }
-    $failN = @($r.Failed).Count
-    $skipN = @($r.Skipped).Count
-    if ($failN -eq 0) { Set-TelemetryConfigTier 'baseline' -Force }
-    Send-AnonymousTelemetry 'restore' $script:HardwareInfo $r.RestoredOps $failN
-    $bakName = Split-Path -Leaf $r.File
-    $ui.ProgText.Text = "还原完成：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项跳过（无实际影响）" })"
-    $ui.ProgCount.Text = "备份：$bakName"
-    Write-Log "已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
-    foreach ($f in $r.Failed) { Write-Log "[还原失败] $f" }
-    # 跳过与失败必须分开呈现：跳过是「删不掉但不影响任何生效设置」，混在失败里会吓到用户
-    foreach ($s in $r.Skipped) { Write-Log "[还原跳过] $s" }
-    foreach ($n in $r.Notes) { Write-Log "[提示] $n" }
-    Update-ItemList
-    # 成功与否都要有明确收尾：全成给定心丸，有失败的把数量点出来引导看日志。
-    # 引擎已合并还原全部未消费备份，「回到优化前」只在零失败时才是事实，失败时必须如实说
-    $sum = "已按$(if ($r.MergedCount -gt 1) { "合并的 $($r.MergedCount) 份备份" } else { "备份「$bakName」" })还原 $($r.RestoredOps) 项改动。" +
-           $(if ($skipN -gt 0) { "`n`n$skipN 项跳过：工具自建电源方案里的残留设置，该方案已停用，无实际影响。" }) +
-           $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，对应改动仍留在系统中（备份已保留，可排查后重试还原），明细见运行日志。" }
-             elseif ($skipN -gt 0) { "`n`n其余全部还原成功，各项已回到优化前的状态。" }
-             else { "`n`n全部还原成功，各项已回到优化前的状态。" })
-    Show-ConfirmDialog '还原完成' 'RESTORE DONE' $sum '知道了' -InfoOnly | Out-Null
+    if (Test-TuningExperimentActive) { throw '自动调优实验期间禁止普通还原；请使用「停止并回滚」只处理本实验备份' }
+    Set-BusyState $true; $busySet = $true
+    $catalog = Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems
+    Set-BusyState $false; $busySet = $false
+    Initialize-InlineRestorePanel $catalog
   } catch {
     $err = $_.Exception.Message
-    Write-Log "还原失败：$err"
-    Show-ConfirmDialog '还原未完成' 'RESTORE NOT COMPLETED' $err '知道了' -InfoOnly | Out-Null
+    Write-Log "复原项目读取失败：$err"
+    Show-ConfirmDialog '还原记录读取失败' 'RESTORE LIST NOT AVAILABLE' $err '知道了' -InfoOnly | Out-Null
+  } finally {
+    if ($busySet -or $script:Busy) { Set-BusyState $false }
+    Update-InlineRestoreSelection
   }
-  finally { Set-BusyState $false }
 })
 
+$ui.InlineRestoreCloseBtn.Add_Click({ Hide-InlineRestorePanel })
+$ui.InlineRestoreSelectAllBtn.Add_Click({
+  foreach ($box in @($script:InlineRestoreChecks.ToArray())) {
+    if ($box.IsEnabled) { $box.IsChecked = $true }
+  }
+  Update-InlineRestoreSelection
+})
+$ui.InlineRestoreClearBtn.Add_Click({
+  foreach ($box in @($script:InlineRestoreChecks.ToArray())) { $box.IsChecked = $false }
+  Update-InlineRestoreSelection
+})
+$ui.InlineRestoreSelectedBtn.Add_Click({ Invoke-InlineRestoreAction 'selected_items' })
+$ui.InlineRestoreAllBtn.Add_Click({ Invoke-InlineRestoreAction 'all' })
 # 免责声明门控放在主窗口之前：没同意就不该看到任何可点的优化按钮。
 # 读取/写入配置失败一律按「没同意」处理——宁可多问一次，也不能因为磁盘异常就放行
 if (-not (Test-DisclaimerAccepted)) {

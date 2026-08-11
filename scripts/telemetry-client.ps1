@@ -177,7 +177,7 @@ function Get-DfbTuningPayloadInfo($Payload) {
   if ($copy -is [array] -or $copy -is [string] -or $null -eq $copy) { throw 'tuning payload must be an object' }
 
   $common = @('installId','event','version','os','build','cpu','gpuVendor','gpuModel','gpuModelVerified',
-    'ramGb','deviceType','tuningType','experimentId')
+    'ramGb','deviceType','tuningType','experimentId','driverVersion','gpuCount','displayMode')
   $requiredCommon = @('installId','event','version','os','build','cpu','gpuVendor','gpuModel','gpuModelVerified',
     'ramGb','deviceType','tuningType','experimentId')
   $typeFields = @{
@@ -187,7 +187,8 @@ function Get-DfbTuningPayloadInfo($Payload) {
       'source','riskLevel','requiresReboot','applyResult','appliedCount','failedCount','skippedCount')
     run_completed = @('runId','variantId','runNo','sequenceNo','validity','invalidReason','durationSec','avgFps',
       'fps1Low','p99FrameMs','stutter50Ms','stutter100Ms','gpuUtilAvg','gpuTempAvg','gpuPowerAvg',
-      'settingsHash','environmentHash','orderControlled')
+      'settingsHash','environmentHash','orderControlled','frameCount','frameTimeMadMs','stuttersPerMin',
+      'focusLostSec','gpuTempMax','gameExitedEarly','captureFailed','presentMonExitCode')
     experiment_completed = @('status','result','stopReason','winningVariantId','autoRollback')
   }
   $type = "$($copy.tuningType)"
@@ -199,7 +200,14 @@ function Get-DfbTuningPayloadInfo($Payload) {
   foreach ($name in $actual) {
     if ($allowed -cnotcontains $name) { throw "unknown tuning payload field: $name" }
   }
-  foreach ($name in @($requiredCommon + $typeFields[$type])) {
+  $requiredTypeFields = @($typeFields[$type])
+  if ($type -eq 'run_completed') {
+    $requiredTypeFields = @($requiredTypeFields | Where-Object { $_ -notin @(
+      'frameCount','frameTimeMadMs','stuttersPerMin','focusLostSec','gpuTempMax',
+      'gameExitedEarly','captureFailed','presentMonExitCode'
+    ) })
+  }
+  foreach ($name in @($requiredCommon + $requiredTypeFields)) {
     if ($actual -cnotcontains $name) { throw "missing tuning payload field: $name" }
   }
   if ("$($copy.event)" -cne 'tuning') { throw 'outbox accepts tuning events only' }

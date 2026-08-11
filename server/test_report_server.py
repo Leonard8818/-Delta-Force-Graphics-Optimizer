@@ -45,6 +45,9 @@ class TelemetryTests(unittest.TestCase):
             "gpuVendor": "NVIDIA",
             "gpuModel": "NVIDIA GeForce RTX 4070 SUPER",
             "gpuModelVerified": True,
+            "driverVersion": "600.00",
+            "gpuCount": 1,
+            "displayMode": "2560x1440@165",
             "ramGb": 31.8,
             "deviceType": "desktop",
             "ok": 5,
@@ -65,6 +68,42 @@ class TelemetryTests(unittest.TestCase):
             "gpuPowerAvg": 150,
             "gpuPowerMax": 170,
         })
+        return data
+
+    def operation_payload(
+        self, install_id, event="apply", operation_id=None, result="succeeded",
+        item_ids=None, succeeded_ids=None, failed_ids=None, skipped_ids=None,
+        changed_ids=None, reboot_ids=None, failed_units=0, skipped_units=0,
+        residual_count=0, backup_status=None, verification_status=None,
+        restore_mode=None, related_operation_ids=None,
+    ):
+        item_ids = ["gpu-pref"] if item_ids is None else list(item_ids)
+        succeeded_ids = list(item_ids) if succeeded_ids is None else list(succeeded_ids)
+        failed_ids = [] if failed_ids is None else list(failed_ids)
+        skipped_ids = [] if skipped_ids is None else list(skipped_ids)
+        changed_ids = list(succeeded_ids) if changed_ids is None else list(changed_ids)
+        data = self.payload(install_id, event, "0.22.0")
+        data["operation"] = {
+            "schemaVersion": 1,
+            "operationId": operation_id or str(uuid.uuid4()),
+            "source": "restore_manager" if event == "restore" else "manual_selection",
+            "result": result,
+            "itemIds": item_ids,
+            "changedItemIds": changed_ids,
+            "succeededItemIds": succeeded_ids,
+            "failedItemIds": failed_ids,
+            "skippedItemIds": skipped_ids,
+            "attentionItemIds": [],
+            "rebootItemIds": [] if reboot_ids is None else list(reboot_ids),
+            "relatedOperationIds": [] if related_operation_ids is None else list(related_operation_ids),
+            "succeededUnitCount": len(succeeded_ids),
+            "failedUnitCount": failed_units,
+            "skippedUnitCount": skipped_units,
+            "backupStatus": backup_status or ("not_required" if event == "restore" else "created"),
+            "restoreMode": restore_mode or ("selected_items" if event == "restore" else "not_applicable"),
+            "verificationStatus": verification_status or ("immediate_verified" if event == "restore" else "not_applicable"),
+            "residualCount": residual_count,
+        }
         return data
 
     def authenticate(self, payload, now, token=None, event_id=None):
@@ -340,6 +379,114 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(public["totalApplies"], public["trends"]["totalApplies"][-1])
         self.assertEqual(public["totalApplyOk"], public["trends"]["totalApplyOk"][-1])
 
+    def test_structured_optimization_operations_are_persisted_and_aggregated(self):
+        now = 1786248000
+        install_id = "12121212-1212-4121-8121-121212121212"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        apply_id = str(uuid.uuid4())
+        apply = self.authenticate(
+            self.operation_payload(
+                install_id, operation_id=apply_id,
+                item_ids=["gpu-pref", "timer-resolution"],
+                succeeded_ids=["gpu-pref", "timer-resolution"],
+            ),
+            now, token,
+        )
+        result = SERVER._record_telemetry(apply, now)
+        self.assertTrue(result["operationAccepted"])
+
+        restore = self.authenticate(
+            self.operation_payload(
+                install_id, event="restore", result="partial",
+                item_ids=["gpu-pref", "timer-resolution"],
+                succeeded_ids=["gpu-pref"], failed_ids=["timer-resolution"],
+                failed_units=1, residual_count=1, verification_status="failed",
+                related_operation_ids=[apply_id],
+            ),
+            now + 1, token,
+        )
+        SERVER._record_telemetry(restore, now + 1)
+
+        conn = SERVER._connect()
+        try:
+            rows = [dict(row) for row in conn.execute(
+                "SELECT * FROM optimization_operations ORDER BY recorded_at"
+            )]
+            client = dict(conn.execute(
+                "SELECT * FROM clients WHERE client_hash=?",
+                (SERVER._client_hash(install_id),),
+            ).fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(2, len(rows))
+        self.assertEqual(apply_id, rows[0]["operation_id"])
+        self.assertEqual(SERVER._tuning_item_set_hash(["gpu-pref", "timer-resolution"]), rows[0]["item_set_hash"])
+        self.assertEqual(["gpu-pref", "timer-resolution"], json.loads(rows[0]["item_ids_json"]))
+        self.assertEqual("failed", rows[1]["verification_status"])
+        self.assertEqual([apply_id], json.loads(rows[1]["related_operation_ids_json"]))
+        self.assertEqual("600.00", client["driver_version"])
+        self.assertEqual(1, client["gpu_count"])
+        self.assertEqual("2560x1440@165", client["display_mode"])
+
+        experiments = SERVER._build_stats(now + 1)["experiments"]
+        self.assertEqual(2, experiments["dataReadiness"]["operations"])
+        self.assertEqual(1, experiments["dataReadiness"]["operationDevices"])
+        self.assertEqual(2, experiments["dataReadiness"]["exactItemOperations"])
+        self.assertEqual(1, experiments["operationSummary"]["applies"])
+        self.assertEqual(1, experiments["operationSummary"]["restores"])
+        self.assertEqual(1, experiments["operationSummary"]["partial"])
+        self.assertEqual(1, experiments["operationSummary"]["restoreFailed"])
+        self.assertEqual(1, experiments["operationSummary"]["residualUnits"])
+        self.assertEqual(2, experiments["items"][0]["operations"])
+        self.assertNotIn(SERVER._client_hash(install_id), json.dumps(experiments))
+
+    def test_structured_optimization_operation_requires_auth_and_strict_schema(self):
+        now = 1786248000
+        install_id = "13131313-1313-4131-8131-131313131313"
+        with self.assertRaises(SERVER.TelemetryAuthError):
+            SERVER._record_telemetry(self.operation_payload(install_id), now)
+
+        malformed = self.operation_payload(install_id)
+        malformed["operation"]["extra"] = True
+        with self.assertRaises(SERVER.TelemetryOperationError):
+            SERVER._record_telemetry(malformed, now)
+
+        overlap = self.operation_payload(install_id)
+        overlap["operation"]["failedItemIds"] = ["gpu-pref"]
+        overlap["operation"]["failedUnitCount"] = 1
+        overlap["operation"]["result"] = "partial"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        with self.assertRaises(SERVER.TelemetryOperationError):
+            SERVER._record_telemetry(self.authenticate(overlap, now, token), now)
+
+        operation_id = str(uuid.uuid4())
+        first = self.authenticate(self.operation_payload(install_id, operation_id=operation_id), now, token)
+        SERVER._record_telemetry(first, now)
+        changed = self.operation_payload(
+            install_id, operation_id=operation_id, item_ids=["timer-resolution"],
+            succeeded_ids=["timer-resolution"],
+        )
+        with self.assertRaises(SERVER.TelemetryConflictError):
+            SERVER._record_telemetry(self.authenticate(changed, now + 1, token), now + 1)
+
+    def test_structured_optimization_operations_follow_telemetry_retention(self):
+        now = 1786248000
+        old = now - (SERVER.TELEMETRY_KEEP_DAYS + 1) * 86400
+        for install_id, timestamp in (
+            ("15151515-1515-4151-8151-151515151515", old),
+            ("16161616-1616-4161-8161-161616161616", now),
+        ):
+            token = SERVER._issue_device_token(install_id, timestamp)["deviceToken"]
+            event = self.authenticate(self.operation_payload(install_id), timestamp, token)
+            SERVER._record_telemetry(event, timestamp)
+        removed = SERVER._run_maintenance(now)
+        self.assertEqual(1, removed["optimizationOperations"])
+        conn = SERVER._connect()
+        try:
+            self.assertEqual(1, conn.execute("SELECT COUNT(*) FROM optimization_operations").fetchone()[0])
+        finally:
+            conn.close()
+
     def test_token_binding_timestamp_and_replay_protection(self):
         now = 1786248000
         first = "33333333-3333-4333-8333-333333333333"
@@ -562,6 +709,7 @@ class TelemetryTests(unittest.TestCase):
                 "dailyUsage": 1,
                 "clients": 1,
                 "websiteVisits": 1,
+                "optimizationOperations": 0,
             },
             result,
         )
@@ -1451,6 +1599,53 @@ class TelemetryTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=3)
+
+    def test_tuning_persists_environment_and_enriched_run_quality_metrics(self):
+        now = 1786248000
+        install_id = "14141414-1414-4141-8141-141414141414"
+        experiment_id = "exp_enriched_metrics"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        start = self.authenticate(self.tuning_start_payload(install_id, experiment_id), now, token)
+        SERVER._record_telemetry(start, now)
+        run = self.tuning_run_payload(
+            install_id, experiment_id, experiment_id + ".baseline", "run_enriched_metrics"
+        )
+        run.update({
+            "frameCount": 12000,
+            "frameTimeMadMs": 1.75,
+            "stuttersPerMin": 1.0,
+            "focusLostSec": 0.5,
+            "gpuTempMax": 76.0,
+            "gameExitedEarly": False,
+            "captureFailed": False,
+            "presentMonExitCode": 0,
+        })
+        SERVER._record_telemetry(self.authenticate(run, now + 1, token), now + 1)
+        conn = SERVER._connect()
+        try:
+            experiment = dict(conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone())
+            recorded_run = dict(conn.execute(
+                "SELECT * FROM tuning_runs WHERE run_id='run_enriched_metrics'"
+            ).fetchone())
+        finally:
+            conn.close()
+        self.assertEqual("Windows 11 Pro", experiment["os_name"])
+        self.assertEqual("26100", experiment["os_build"])
+        self.assertEqual("600.00", experiment["driver_version"])
+        self.assertEqual(1, experiment["gpu_count"])
+        self.assertEqual("2560x1440@165", experiment["display_mode"])
+        self.assertEqual(12000, recorded_run["frame_count"])
+        self.assertEqual(1.75, recorded_run["frame_time_mad_ms"])
+        self.assertEqual(0, recorded_run["capture_failed"])
+        self.assertEqual(0, recorded_run["presentmon_exit_code"])
+        tuning = SERVER._build_stats(now + 1)["experiments"]["tuning"]
+        self.assertEqual(1, tuning["experiments"])
+        self.assertEqual(1, tuning["runs"])
+        self.assertEqual(1, tuning["enrichedRuns"])
+        self.assertEqual(1.75, tuning["medianFrameTimeMadMs"])
+        self.assertEqual(1.0, tuning["medianStuttersPerMin"])
 
     def test_tuning_primary_keys_are_idempotent_and_cannot_be_taken_over(self):
         now = 1786248000
@@ -2587,7 +2782,12 @@ class TelemetryTests(unittest.TestCase):
         conn = SERVER._connect()
         try:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_experiments)")}
+            run_columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_runs)")}
             self.assertIn("library_version", columns)
+            for name in ("os_name", "os_build", "cpu_model", "gpu_vendor", "ram_gb", "device_type", "gpu_count", "display_mode"):
+                self.assertIn(name, columns)
+            for name in ("frame_count", "frame_time_mad_ms", "stutters_per_min", "focus_lost_sec", "gpu_temp_max", "game_exited_early", "capture_failed", "presentmon_exit_code"):
+                self.assertIn(name, run_columns)
             self.assertEqual(1, conn.execute(
                 "SELECT library_version FROM tuning_experiments WHERE experiment_id='legacy-tuning'"
             ).fetchone()[0])
@@ -2638,11 +2838,15 @@ class TelemetryTests(unittest.TestCase):
             conn.close()
         self.assertIn("gpu_model_verified", client_columns)
         self.assertIn("authenticated_last_seen", client_columns)
+        self.assertIn("driver_version", client_columns)
+        self.assertIn("gpu_count", client_columns)
+        self.assertIn("display_mode", client_columns)
         self.assertIn("config_tier", performance_columns)
         self.assertIn("authenticated", performance_columns)
         self.assertIn("trusted_launches", daily_columns)
         self.assertIn("restore_ok", daily_columns)
         self.assertIn("telemetry_replays", tables)
+        self.assertIn("optimization_operations", tables)
         self.assertIn("weekly_snapshots", tables)
         for table in (
             "tuning_experiments", "tuning_variants", "tuning_runs",

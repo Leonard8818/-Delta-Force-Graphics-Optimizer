@@ -105,9 +105,14 @@ foreach ($needle in 'OpenProcessToken','TokenUser','TokenIntegrityLevel','TokenS
 Assert-True ($hostBuild -match 'launcherToken\.Sid' -and $hostBuild -match 'launcherToken\.SessionId' -and
   $hostBuild -match 'ResolveOriginalLocalAppData' -and $hostBuild -match 'DFB_REPAIR_ONLY') `
   'EngineHost does not bind claimed OTS identity/repair mode to the real launcher token'
-Assert-True ($launcherBuild -match 'FilterAdministratorToken' -and $launcherBuild -match 'EndsWith\("-500"' -and
-  $hostBuild -match 'FilterAdministratorToken' -and $gui -match 'Test-IsBuiltInAdministratorSid \$script:OriginalUserSid') `
-  'RID-500 repair-only path or OTS approved-account isolation is missing'
+Assert-True ($launcherBuild -match '(?s)static bool IsRepairOnlyToken.*IntegrityRid < 0x3000.*return true;' -and
+  $hostBuild -match '(?s)static bool IsRepairOnlyToken.*IntegrityRid < 0x3000.*return true;' -and
+  $gui -match '\$script:RepairOnlySession -and -not \$needsUacRepair' -and
+  $gui -match '管理员启动 · 兼容模式') `
+  'direct elevated launch is not constrained to the broker-disabled compatibility session'
+Assert-True ($gui -match 'FilterAdministratorToken' -and
+  $gui -match 'Test-IsBuiltInAdministratorSid \$script:OriginalUserSid') `
+  'RID-500 UAC repair path or OTS approved-account isolation is missing'
 Assert-True ($gui -match 'DeltaForceBooster\\users\\\$sessionText|DeltaForceBooster\\session-temp' -or
   $gui -match 'ProtectedUserStateRoot') 'GUI protected per-SID state root missing'
 Assert-True ($gui -match 'Initialize-ProtectedUserStateStore' -and $gui -match '\$script:BoosterUserConfigDir = \$configRoot') `
@@ -122,6 +127,10 @@ Assert-True ($updater -match 'BoosterUserConfigDir' -and $updater -match '管理
 # 原用户可写树动作全部留在 medium worker；参数和外部动作均为固定白名单。
 Assert-True ($worker -match 'if \(Test-WorkerAdmin\).*拒绝执行' -and
   $launcherBuild -match 'psi\.CreateNoWindow = true') 'original-user worker can run high or flash a console'
+Assert-True ($launcherBuild -match 'EnvironmentVariables\["SystemDrive"\] = Path\.GetPathRoot\(windows\)' -and
+  $launcherBuild -match 'EnvironmentVariables\["ProgramData"\] = commonAppData' -and
+  $launcherBuild -match 'EnvironmentVariables\["ALLUSERSPROFILE"\] = commonAppData') `
+  'original-user worker clears SystemDrive/CommonApplicationData aliases, causing GetFolderPath to fail'
 foreach ($action in 'MigrateLegacyData','ClearShaderCache','GetGpuPanelApps','GetNvAutoOptStatus','OpenUrl','OpenGpuPanel') {
   Assert-True ($gui.Contains($action) -and $hostBuild.Contains($action) -and $launcherBuild.Contains($action)) `
     "broker allowlist is inconsistent: $action"
@@ -134,6 +143,10 @@ foreach ($key in 'nv-cpl','nv-app','amd-sw','intel-gcc') {
 Assert-True ($gui -match 'Key = \$app\.Key') 'GPU panel button drops the allowlisted key'
 Assert-True ($worker -match 'Get-AppxPackage' -and $gui -match 'Get-GuiGpuPanelApps' -and
   $engine -match 'if \(Test-Admin\) \{ return \$null \}') 'AppX detection can observe the approval administrator instead of the original user'
+Assert-True ($gui -match 'ToUpperInvariant\(\)' -and $worker -match 'ToUpperInvariant\(\)' -and
+  $launcherBuild -match 'StringComparison\.OrdinalIgnoreCase' -and
+  $launcherBuild -match 'payload = \(payload \?\? ""\)\.Trim\(\)') `
+  'GPU vendor key is not normalized consistently across GUI/launcher/worker boundaries'
 Assert-True ($engine -match 'Registry::HKEY_USERS\\\$script:TargetUserSid.*Uninstall') `
   'game discovery does not enumerate the original user HKEY_USERS uninstall hive'
 

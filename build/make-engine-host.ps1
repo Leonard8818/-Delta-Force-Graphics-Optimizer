@@ -321,9 +321,9 @@ $hashRowsText
 
     static bool IsRepairOnlyToken(DfbTokenFacts token) {
         if (token == null || token.IsMedium || !token.Elevated || token.IntegrityRid < 0x3000) return false;
-        if (ReadUacPolicy("EnableLUA", 1) == 0) return true;
-        return token.Sid != null && token.Sid.EndsWith("-500", StringComparison.Ordinal) &&
-            ReadUacPolicy("FilterAdministratorToken", 0) != 1;
+        // 与启动器保持一致：所有已提升的交互令牌只允许进入 repair-only/兼容会话。
+        // 该会话不转发 medium worker 动作，因此不会把 high GUI 变成任意用户态启动边界。
+        return true;
     }
 
     static string ReplaceIgnoreCase(string value, string token, string replacement) {

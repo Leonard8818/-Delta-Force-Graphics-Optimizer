@@ -45,6 +45,7 @@ PERFORMANCE_MIN_DURATION = 60
 PERFORMANCE_MAX_DURATION = 300
 PERFORMANCE_DAILY_LIMIT = 8
 TUNING_DAILY_LIMIT = 80
+OPTIMIZATION_OPERATION_DAILY_LIMIT = 64
 TUNING_GROUP_MIN_DEVICES = 20
 PERFORMANCE_MIN_SAMPLES = 5
 PERFORMANCE_MIN_COMPARISONS = 5
@@ -114,6 +115,10 @@ _hits_lock = threading.Lock()
 _hits_last_sweep = 0.0
 _install_id_re = re.compile(r"^[0-9a-fA-F-]{32,64}$")
 _event_id_re = re.compile(r"^[0-9a-fA-F-]{32,64}$")
+_operation_id_re = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+_optimization_item_id_re = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 class TelemetryAuthError(ValueError):
@@ -133,6 +138,10 @@ class TelemetryPerformanceError(ValueError):
 
 
 class TelemetryTuningError(ValueError):
+    pass
+
+
+class TelemetryOperationError(ValueError):
     pass
 
 
@@ -251,6 +260,7 @@ def _run_maintenance(now=None):
     removed_usage = 0
     removed_clients = 0
     removed_website_visits = 0
+    removed_optimization_operations = 0
     conn = _connect()
     try:
         with conn:
@@ -272,6 +282,11 @@ def _run_maintenance(now=None):
                 "DELETE FROM tuning_experiments WHERE COALESCE(completed_at, created_at)<?",
                 (now - TELEMETRY_KEEP_DAYS * 86400,),
             )
+            cursor = conn.execute(
+                "DELETE FROM optimization_operations WHERE recorded_at<?",
+                (now - TELEMETRY_KEEP_DAYS * 86400,),
+            )
+            removed_optimization_operations = max(0, cursor.rowcount)
             usage_cutoff = dt.datetime.fromtimestamp(
                 now - TELEMETRY_KEEP_DAYS * 86400, dt.timezone.utc
             ).date().isoformat()
@@ -296,6 +311,7 @@ def _run_maintenance(now=None):
         "dailyUsage": removed_usage,
         "clients": removed_clients,
         "websiteVisits": removed_website_visits,
+        "optimizationOperations": removed_optimization_operations,
     }
 
 
@@ -326,6 +342,9 @@ def _init_db():
                 gpu_vendor TEXT NOT NULL DEFAULT '',
                 gpu_model TEXT NOT NULL DEFAULT '',
                 gpu_model_verified INTEGER NOT NULL DEFAULT 0,
+                driver_version TEXT NOT NULL DEFAULT '',
+                gpu_count INTEGER NOT NULL DEFAULT 0,
+                display_mode TEXT NOT NULL DEFAULT '',
                 ram_gb REAL NOT NULL DEFAULT 0,
                 device_type TEXT NOT NULL DEFAULT '',
                 authenticated_last_seen INTEGER NOT NULL DEFAULT 0
@@ -376,6 +395,50 @@ def _init_db():
                 PRIMARY KEY (client_hash, event_id)
             );
             CREATE INDEX IF NOT EXISTS idx_replays_seen_at ON telemetry_replays(seen_at);
+            CREATE TABLE IF NOT EXISTS optimization_operations (
+                operation_id TEXT PRIMARY KEY,
+                client_hash TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                result TEXT NOT NULL,
+                app_version TEXT NOT NULL DEFAULT '',
+                os_name TEXT NOT NULL DEFAULT '',
+                os_build TEXT NOT NULL DEFAULT '',
+                cpu_model TEXT NOT NULL DEFAULT '',
+                gpu_vendor TEXT NOT NULL DEFAULT '',
+                gpu_model TEXT NOT NULL DEFAULT '',
+                gpu_model_verified INTEGER NOT NULL DEFAULT 0,
+                driver_version TEXT NOT NULL DEFAULT '',
+                ram_gb REAL NOT NULL DEFAULT 0,
+                device_type TEXT NOT NULL DEFAULT '',
+                gpu_count INTEGER NOT NULL DEFAULT 0,
+                display_mode TEXT NOT NULL DEFAULT '',
+                item_set_hash TEXT NOT NULL,
+                item_ids_json TEXT NOT NULL,
+                changed_item_ids_json TEXT NOT NULL,
+                succeeded_item_ids_json TEXT NOT NULL,
+                failed_item_ids_json TEXT NOT NULL,
+                skipped_item_ids_json TEXT NOT NULL,
+                attention_item_ids_json TEXT NOT NULL,
+                reboot_item_ids_json TEXT NOT NULL,
+                related_operation_ids_json TEXT NOT NULL,
+                succeeded_unit_count INTEGER NOT NULL DEFAULT 0,
+                failed_unit_count INTEGER NOT NULL DEFAULT 0,
+                skipped_unit_count INTEGER NOT NULL DEFAULT 0,
+                backup_status TEXT NOT NULL,
+                restore_mode TEXT NOT NULL,
+                verification_status TEXT NOT NULL,
+                residual_count INTEGER NOT NULL DEFAULT 0,
+                payload_hash TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_optimization_operations_client
+                ON optimization_operations(client_hash, recorded_at);
+            CREATE INDEX IF NOT EXISTS idx_optimization_operations_action
+                ON optimization_operations(action_type, recorded_at);
+            CREATE INDEX IF NOT EXISTS idx_optimization_operations_item_set
+                ON optimization_operations(item_set_hash, recorded_at);
             CREATE TABLE IF NOT EXISTS website_visits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 seen_at INTEGER NOT NULL,
@@ -402,9 +465,17 @@ def _init_db():
                 max_power_increase REAL,
                 library_version INTEGER NOT NULL DEFAULT 1,
                 app_version TEXT NOT NULL,
+                os_name TEXT NOT NULL DEFAULT '',
+                os_build TEXT NOT NULL DEFAULT '',
+                cpu_model TEXT NOT NULL DEFAULT '',
+                gpu_vendor TEXT NOT NULL DEFAULT '',
                 game_version TEXT NOT NULL DEFAULT '',
                 gpu_model TEXT NOT NULL,
                 driver_version TEXT NOT NULL DEFAULT '',
+                ram_gb REAL NOT NULL DEFAULT 0,
+                device_type TEXT NOT NULL DEFAULT '',
+                gpu_count INTEGER NOT NULL DEFAULT 0,
+                display_mode TEXT NOT NULL DEFAULT '',
                 baseline_variant_id TEXT,
                 winning_variant_id TEXT,
                 result TEXT NOT NULL DEFAULT '',
@@ -451,14 +522,22 @@ def _init_db():
                 validity TEXT NOT NULL,
                 invalid_reason TEXT NOT NULL DEFAULT '',
                 duration_sec INTEGER NOT NULL DEFAULT 0,
+                frame_count INTEGER,
                 avg_fps REAL,
                 fps_1_low REAL,
                 p99_frame_ms REAL,
+                frame_time_mad_ms REAL,
                 stutter_50ms INTEGER,
                 stutter_100ms INTEGER,
+                stutters_per_min REAL,
+                focus_lost_sec REAL,
                 gpu_util_avg REAL,
                 gpu_temp_avg REAL,
+                gpu_temp_max REAL,
                 gpu_power_avg REAL,
+                game_exited_early INTEGER,
+                capture_failed INTEGER,
+                presentmon_exit_code INTEGER,
                 settings_hash TEXT NOT NULL DEFAULT '',
                 environment_hash TEXT NOT NULL DEFAULT '',
                 order_controlled INTEGER NOT NULL DEFAULT 0,
@@ -504,6 +583,13 @@ def _init_db():
                 conn.execute("ALTER TABLE clients ADD COLUMN gpu_model_verified INTEGER NOT NULL DEFAULT 0")
             if "authenticated_last_seen" not in columns:
                 conn.execute("ALTER TABLE clients ADD COLUMN authenticated_last_seen INTEGER NOT NULL DEFAULT 0")
+            for name, definition in (
+                ("driver_version", "TEXT NOT NULL DEFAULT ''"),
+                ("gpu_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("display_mode", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in columns:
+                    conn.execute("ALTER TABLE clients ADD COLUMN %s %s" % (name, definition))
             daily_columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_usage)")}
             if "restore_ok" not in daily_columns:
                 conn.execute("ALTER TABLE daily_usage ADD COLUMN restore_ok INTEGER NOT NULL DEFAULT 0")
@@ -522,6 +608,14 @@ def _init_db():
                 ("library_version", "INTEGER NOT NULL DEFAULT 1"),
                 ("start_payload_hash", "TEXT NOT NULL DEFAULT ''"),
                 ("completion_payload_hash", "TEXT NOT NULL DEFAULT ''"),
+                ("os_name", "TEXT NOT NULL DEFAULT ''"),
+                ("os_build", "TEXT NOT NULL DEFAULT ''"),
+                ("cpu_model", "TEXT NOT NULL DEFAULT ''"),
+                ("gpu_vendor", "TEXT NOT NULL DEFAULT ''"),
+                ("ram_gb", "REAL NOT NULL DEFAULT 0"),
+                ("device_type", "TEXT NOT NULL DEFAULT ''"),
+                ("gpu_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("display_mode", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if name not in experiment_columns:
                     conn.execute("ALTER TABLE tuning_experiments ADD COLUMN %s %s" % (name, definition))
@@ -537,10 +631,20 @@ def _init_db():
                 if name not in variant_columns:
                     conn.execute("ALTER TABLE tuning_variants ADD COLUMN %s %s" % (name, definition))
             run_columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_runs)")}
-            if "order_controlled" not in run_columns:
-                conn.execute("ALTER TABLE tuning_runs ADD COLUMN order_controlled INTEGER NOT NULL DEFAULT 0")
-            if "payload_hash" not in run_columns:
-                conn.execute("ALTER TABLE tuning_runs ADD COLUMN payload_hash TEXT NOT NULL DEFAULT ''")
+            for name, definition in (
+                ("order_controlled", "INTEGER NOT NULL DEFAULT 0"),
+                ("payload_hash", "TEXT NOT NULL DEFAULT ''"),
+                ("frame_count", "INTEGER"),
+                ("frame_time_mad_ms", "REAL"),
+                ("stutters_per_min", "REAL"),
+                ("focus_lost_sec", "REAL"),
+                ("gpu_temp_max", "REAL"),
+                ("game_exited_early", "INTEGER"),
+                ("capture_failed", "INTEGER"),
+                ("presentmon_exit_code", "INTEGER"),
+            ):
+                if name not in run_columns:
+                    conn.execute("ALTER TABLE tuning_runs ADD COLUMN %s %s" % (name, definition))
     finally:
         conn.close()
 
@@ -594,6 +698,166 @@ def _strict_nonnegative_float(value, maximum):
     return round(number, 1)
 
 
+def _operation_text(payload, key, maximum):
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise TelemetryOperationError("%s must be text" % key)
+    value = value.strip()
+    if not value or len(value) > maximum or any(ord(char) < 32 for char in value):
+        raise TelemetryOperationError("invalid %s" % key)
+    return value
+
+
+def _operation_enum(payload, key, allowed):
+    value = _operation_text(payload, key, 48).lower()
+    if value not in allowed:
+        raise TelemetryOperationError("unknown %s" % key)
+    return value
+
+
+def _operation_int(payload, key, maximum):
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+        raise TelemetryOperationError("invalid %s" % key)
+    return value
+
+
+def _operation_ids(payload, key, operation_ids=False):
+    values = payload.get(key)
+    if not isinstance(values, list) or len(values) > 64:
+        raise TelemetryOperationError("invalid %s" % key)
+    pattern = _operation_id_re if operation_ids else _optimization_item_id_re
+    normalized = []
+    for value in values:
+        if not isinstance(value, str):
+            raise TelemetryOperationError("invalid %s" % key)
+        value = value.strip().lower()
+        if not pattern.fullmatch(value):
+            raise TelemetryOperationError("invalid %s" % key)
+        normalized.append(value)
+    if len(set(normalized)) != len(normalized):
+        raise TelemetryOperationError("duplicate %s" % key)
+    return sorted(normalized)
+
+
+def _normalize_optimization_operation(payload, event):
+    operation = payload.get("operation")
+    if operation is None:
+        return None
+    if event not in ("apply", "restore") or not isinstance(operation, dict):
+        raise TelemetryOperationError("operation is only valid for apply or restore")
+    required = {
+        "schemaVersion", "operationId", "source", "result", "itemIds",
+        "changedItemIds", "succeededItemIds", "failedItemIds", "skippedItemIds",
+        "attentionItemIds", "rebootItemIds", "relatedOperationIds",
+        "succeededUnitCount", "failedUnitCount", "skippedUnitCount", "backupStatus",
+        "restoreMode", "verificationStatus", "residualCount",
+    }
+    if set(operation) != required:
+        unknown = sorted(set(operation) - required)
+        missing = sorted(required - set(operation))
+        raise TelemetryOperationError(
+            "unknown operation field: %s" % unknown[0] if unknown
+            else "missing operation field: %s" % missing[0]
+        )
+    if operation.get("schemaVersion") != 1:
+        raise TelemetryOperationError("unknown operation schemaVersion")
+    operation_id = _operation_text(operation, "operationId", 36).lower()
+    if not _operation_id_re.fullmatch(operation_id):
+        raise TelemetryOperationError("invalid operationId")
+    result = {
+        "schema_version": 1,
+        "operation_id": operation_id,
+        "source": _operation_enum(
+            operation, "source", ("manual_selection", "frame_fix", "restore_manager")
+        ),
+        "result": _operation_enum(operation, "result", ("succeeded", "partial", "failed", "noop")),
+        "backup_status": _operation_enum(
+            operation, "backupStatus", ("created", "partial", "failed", "not_required", "not_available")
+        ),
+        "restore_mode": _operation_enum(
+            operation, "restoreMode", ("not_applicable", "selected_items", "all")
+        ),
+        "verification_status": _operation_enum(
+            operation, "verificationStatus",
+            ("not_applicable", "immediate_verified", "pending_restart", "residuals_detected", "failed"),
+        ),
+        "succeeded_unit_count": _operation_int(operation, "succeededUnitCount", 10000),
+        "failed_unit_count": _operation_int(operation, "failedUnitCount", 10000),
+        "skipped_unit_count": _operation_int(operation, "skippedUnitCount", 10000),
+        "residual_count": _operation_int(operation, "residualCount", 10000),
+    }
+    id_fields = (
+        "itemIds", "changedItemIds", "succeededItemIds", "failedItemIds",
+        "skippedItemIds", "attentionItemIds", "rebootItemIds",
+    )
+    for key in id_fields:
+        result[re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()] = _operation_ids(operation, key)
+    result["related_operation_ids"] = _operation_ids(operation, "relatedOperationIds", True)
+    items = set(result["item_ids"])
+    for key in (
+        "changed_item_ids", "succeeded_item_ids", "failed_item_ids",
+        "skipped_item_ids", "attention_item_ids", "reboot_item_ids",
+    ):
+        if not set(result[key]).issubset(items):
+            raise TelemetryOperationError("%s must be a subset of itemIds" % key)
+    statuses = [
+        set(result[key]) for key in (
+            "succeeded_item_ids", "failed_item_ids", "skipped_item_ids", "attention_item_ids"
+        )
+    ]
+    if sum(len(values) for values in statuses) != len(set().union(*statuses)):
+        raise TelemetryOperationError("operation item outcomes overlap")
+    if not set(result["changed_item_ids"]).issubset(set(result["succeeded_item_ids"])):
+        raise TelemetryOperationError("changedItemIds must be successful")
+    if operation_id in result["related_operation_ids"]:
+        raise TelemetryOperationError("operation cannot relate to itself")
+    if result["succeeded_unit_count"] < len(result["succeeded_item_ids"]):
+        raise TelemetryOperationError("succeededUnitCount is below attributed items")
+    if result["failed_unit_count"] < len(result["failed_item_ids"]):
+        raise TelemetryOperationError("failedUnitCount is below attributed items")
+    if result["skipped_unit_count"] < len(result["skipped_item_ids"]):
+        raise TelemetryOperationError("skippedUnitCount is below attributed items")
+
+    if event == "apply":
+        if result["source"] == "restore_manager" or result["restore_mode"] != "not_applicable":
+            raise TelemetryOperationError("invalid apply operation metadata")
+        if result["verification_status"] != "not_applicable" or result["residual_count"]:
+            raise TelemetryOperationError("apply must not claim restore verification")
+    else:
+        if result["source"] != "restore_manager" or result["restore_mode"] == "not_applicable":
+            raise TelemetryOperationError("invalid restore operation metadata")
+        if result["backup_status"] != "not_required" or result["verification_status"] == "not_applicable":
+            raise TelemetryOperationError("invalid restore verification metadata")
+        if result["residual_count"] < result["failed_unit_count"] + result["skipped_unit_count"]:
+            raise TelemetryOperationError("residualCount is below failed or skipped units")
+
+    failed_condition = result["failed_unit_count"] > 0 or result["backup_status"] == "failed"
+    partial_condition = (
+        result["failed_unit_count"] > 0
+        or result["skipped_unit_count"] > 0
+        or result["backup_status"] in ("partial", "failed")
+    )
+    if result["result"] == "succeeded" and (
+        result["succeeded_unit_count"] == 0 or failed_condition or partial_condition
+    ):
+        raise TelemetryOperationError("invalid succeeded operation")
+    if result["result"] == "partial" and (
+        result["succeeded_unit_count"] == 0 or not partial_condition
+    ):
+        raise TelemetryOperationError("invalid partial operation")
+    if result["result"] == "failed" and (
+        result["succeeded_unit_count"] != 0 or not failed_condition
+    ):
+        raise TelemetryOperationError("invalid failed operation")
+    if result["result"] == "noop" and (
+        result["succeeded_unit_count"] or result["failed_unit_count"] or result["changed_item_ids"]
+        or result["backup_status"] in ("partial", "failed")
+    ):
+        raise TelemetryOperationError("invalid noop operation")
+    return result
+
+
 def _tuning_text(payload, key, maximum, required=True):
     if key not in payload:
         if required:
@@ -636,11 +900,23 @@ def _tuning_bool(payload, key):
     return value
 
 
+def _tuning_optional_bool(payload, key):
+    if key not in payload or payload.get(key) is None:
+        return None
+    return _tuning_bool(payload, key)
+
+
 def _tuning_int(payload, key, minimum, maximum):
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum or value > maximum:
         raise TelemetryTuningError("invalid %s" % key)
     return value
+
+
+def _tuning_optional_int(payload, key, minimum, maximum):
+    if key not in payload or payload.get(key) is None:
+        return None
+    return _tuning_int(payload, key, minimum, maximum)
 
 
 def _tuning_float(payload, key, minimum, maximum, required=True):
@@ -669,7 +945,7 @@ def _normalize_tuning(payload):
         "installId", "event", "version", "os", "build", "cpu", "gpuVendor",
         "gpuModel", "gpuModelVerified", "ramGb", "deviceType", "configTier",
         "ok", "failed", "deviceToken", "eventId", "sentAt", "tuningType",
-        "experimentId",
+        "experimentId", "driverVersion", "gpuCount", "displayMode",
     }
     type_fields = {
         "experiment_started": {
@@ -687,6 +963,8 @@ def _normalize_tuning(payload):
             "invalidReason", "durationSec", "avgFps", "fps1Low", "p99FrameMs",
             "stutter50Ms", "stutter100Ms", "gpuUtilAvg", "gpuTempAvg",
             "gpuPowerAvg", "settingsHash", "environmentHash", "orderControlled",
+            "frameCount", "frameTimeMadMs", "stuttersPerMin", "focusLostSec",
+            "gpuTempMax", "gameExitedEarly", "captureFailed", "presentMonExitCode",
         },
         "experiment_completed": {
             "status", "result", "stopReason", "winningVariantId", "autoRollback",
@@ -793,6 +1071,28 @@ def _normalize_tuning(payload):
             not avg_fps or not fps_1_low or not p99_frame_ms or fps_1_low > avg_fps
         ):
             raise TelemetryTuningError("invalid frame metrics")
+        frame_count = _tuning_optional_int(payload, "frameCount", 0, 10000000)
+        frame_time_mad_ms = _tuning_float(payload, "frameTimeMadMs", 0, 1000, False)
+        stutters_per_min = _tuning_float(payload, "stuttersPerMin", 0, 100000, False)
+        focus_lost_sec = _tuning_float(payload, "focusLostSec", 0, 600, False)
+        gpu_temp_max = _tuning_float(payload, "gpuTempMax", 0, 120, False)
+        game_exited_early = _tuning_optional_bool(payload, "gameExitedEarly")
+        capture_failed = _tuning_optional_bool(payload, "captureFailed")
+        presentmon_exit_code = _tuning_optional_int(
+            payload, "presentMonExitCode", -2147483648, 2147483647
+        )
+        gpu_temp_avg = _tuning_float(payload, "gpuTempAvg", 0, 120, False)
+        if validity == "valid" and frame_count is not None and frame_count < 1000:
+            raise TelemetryTuningError("valid run has insufficient frames")
+        if focus_lost_sec is not None and focus_lost_sec > duration:
+            raise TelemetryTuningError("focusLostSec exceeds durationSec")
+        if gpu_temp_max is not None and gpu_temp_avg is not None and gpu_temp_max < gpu_temp_avg:
+            raise TelemetryTuningError("gpuTempMax is below gpuTempAvg")
+        if validity == "valid" and (
+            game_exited_early is True or capture_failed is True
+            or (presentmon_exit_code is not None and presentmon_exit_code != 0)
+        ):
+            raise TelemetryTuningError("valid run conflicts with capture status")
         result.update({
             "run_id": _tuning_identifier(payload, "runId"),
             "variant_id": _tuning_identifier(payload, "variantId"),
@@ -801,14 +1101,22 @@ def _normalize_tuning(payload):
             "validity": validity,
             "invalid_reason": invalid_reason,
             "duration_sec": duration,
+            "frame_count": frame_count,
             "avg_fps": avg_fps,
             "fps_1_low": fps_1_low,
             "p99_frame_ms": p99_frame_ms,
+            "frame_time_mad_ms": frame_time_mad_ms,
             "stutter_50ms": _tuning_int(payload, "stutter50Ms", 0, 10000000),
             "stutter_100ms": _tuning_int(payload, "stutter100Ms", 0, 10000000),
+            "stutters_per_min": stutters_per_min,
+            "focus_lost_sec": focus_lost_sec,
             "gpu_util_avg": _tuning_float(payload, "gpuUtilAvg", 0, 100, False),
-            "gpu_temp_avg": _tuning_float(payload, "gpuTempAvg", 0, 120, False),
+            "gpu_temp_avg": gpu_temp_avg,
+            "gpu_temp_max": gpu_temp_max,
             "gpu_power_avg": _tuning_float(payload, "gpuPowerAvg", 0, 1500, False),
+            "game_exited_early": game_exited_early,
+            "capture_failed": capture_failed,
+            "presentmon_exit_code": presentmon_exit_code,
             "settings_hash": _tuning_hash(payload, "settingsHash"),
             "environment_hash": _tuning_hash(payload, "environmentHash"),
             "order_controlled": _tuning_bool(payload, "orderControlled"),
@@ -878,6 +1186,9 @@ def _normalize_telemetry(payload):
         "gpu_vendor": _text(payload.get("gpuVendor"), 32),
         "gpu_model": _text(payload.get("gpuModel"), 160),
         "gpu_model_verified": 1 if payload.get("gpuModelVerified") is True else 0,
+        "driver_version": _text(payload.get("driverVersion"), 64),
+        "gpu_count": _bounded_int(payload.get("gpuCount"), 16),
+        "display_mode": _text(payload.get("displayMode"), 64),
         "config_tier": config_tier,
         "ram_gb": _bounded_float(payload.get("ramGb")),
         "device_type": _text(payload.get("deviceType"), 24),
@@ -896,6 +1207,7 @@ def _normalize_telemetry(payload):
         "event_id": _text(payload.get("eventId"), 64).lower(),
         "sent_at": payload.get("sentAt"),
     }
+    result["operation"] = _normalize_optimization_operation(payload, event)
     result["tuning"] = _normalize_tuning(payload) if event == "tuning" else None
     return result
 
@@ -1010,9 +1322,90 @@ def _require_tuning_variant(conn, variant_id, experiment_id):
 def _tuning_business_hash(item):
     value = {"tuning": item["tuning"]}
     if item["tuning"]["type"] == "experiment_started":
-        value.update({"appVersion": item["app_version"], "gpuModel": item["gpu_model"]})
+        value.update({
+            "appVersion": item["app_version"],
+            "os": item["os_name"],
+            "build": item["os_build"],
+            "cpu": item["cpu_model"],
+            "gpuVendor": item["gpu_vendor"],
+            "gpuModel": item["gpu_model"],
+            "gpuModelVerified": item["gpu_model_verified"],
+            "driverVersion": item["driver_version"],
+            "ramGb": item["ram_gb"],
+            "deviceType": item["device_type"],
+            "gpuCount": item["gpu_count"],
+            "displayMode": item["display_mode"],
+        })
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _optimization_business_hash(item):
+    value = {
+        "event": item["event"],
+        "operation": item["operation"],
+        "environment": {
+            "appVersion": item["app_version"],
+            "os": item["os_name"],
+            "build": item["os_build"],
+            "cpu": item["cpu_model"],
+            "gpuVendor": item["gpu_vendor"],
+            "gpuModel": item["gpu_model"],
+            "gpuModelVerified": item["gpu_model_verified"],
+            "driverVersion": item["driver_version"],
+            "ramGb": item["ram_gb"],
+            "deviceType": item["device_type"],
+            "gpuCount": item["gpu_count"],
+            "displayMode": item["display_mode"],
+        },
+    }
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _record_optimization_operation(conn, item, client_hash, now, day):
+    operation = item["operation"]
+    payload_hash = _optimization_business_hash(item)
+    existing = conn.execute(
+        "SELECT client_hash, payload_hash FROM optimization_operations WHERE operation_id=?",
+        (operation["operation_id"],),
+    ).fetchone()
+    if existing is not None:
+        if existing["client_hash"] != client_hash:
+            raise TelemetryOwnershipError("operationId belongs to another client")
+        if existing["payload_hash"] != payload_hash:
+            raise TelemetryConflictError("operationId payload is immutable")
+        return False
+    json_value = lambda values: json.dumps(values, ensure_ascii=True, separators=(",", ":"))
+    conn.execute(
+        """INSERT INTO optimization_operations (
+               operation_id, client_hash, recorded_at, day, action_type, source, result,
+               app_version, os_name, os_build, cpu_model, gpu_vendor, gpu_model,
+               gpu_model_verified, driver_version, ram_gb, device_type, gpu_count,
+               display_mode, item_set_hash, item_ids_json, changed_item_ids_json,
+               succeeded_item_ids_json, failed_item_ids_json, skipped_item_ids_json,
+               attention_item_ids_json, reboot_item_ids_json, related_operation_ids_json,
+               succeeded_unit_count, failed_unit_count, skipped_unit_count, backup_status,
+               restore_mode, verification_status, residual_count, payload_hash
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            operation["operation_id"], client_hash, now, day, item["event"],
+            operation["source"], operation["result"], item["app_version"],
+            item["os_name"], item["os_build"], item["cpu_model"], item["gpu_vendor"],
+            item["gpu_model"], item["gpu_model_verified"], item["driver_version"],
+            item["ram_gb"], item["device_type"], item["gpu_count"], item["display_mode"],
+            _tuning_item_set_hash(operation["item_ids"]), json_value(operation["item_ids"]),
+            json_value(operation["changed_item_ids"]), json_value(operation["succeeded_item_ids"]),
+            json_value(operation["failed_item_ids"]), json_value(operation["skipped_item_ids"]),
+            json_value(operation["attention_item_ids"]), json_value(operation["reboot_item_ids"]),
+            json_value(operation["related_operation_ids"]), operation["succeeded_unit_count"],
+            operation["failed_unit_count"], operation["skipped_unit_count"],
+            operation["backup_status"], operation["restore_mode"],
+            operation["verification_status"], operation["residual_count"], payload_hash,
+        ),
+    )
+    return True
 
 
 def _tuning_variant_items(variant):
@@ -1314,16 +1707,19 @@ def _record_tuning(conn, item, client_hash, now):
             """INSERT INTO tuning_experiments (
                    experiment_id, client_hash, created_at, status, goal, risk_level,
                    allow_reboot, allow_higher_power, max_temp_increase,
-                   max_power_increase, library_version, app_version, game_version, gpu_model,
-                   driver_version, baseline_variant_id, start_payload_hash
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   max_power_increase, library_version, app_version, os_name, os_build,
+                   cpu_model, gpu_vendor, game_version, gpu_model, driver_version, ram_gb,
+                   device_type, gpu_count, display_mode, baseline_variant_id, start_payload_hash
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 experiment_id, client_hash, now, tuning["status"], tuning["goal"],
                 tuning["risk_level"], int(tuning["allow_reboot"]),
                 int(tuning["allow_higher_power"]), tuning["max_temp_increase"],
-                tuning["max_power_increase"], tuning["library_version"], item["app_version"], tuning["game_version"],
-                item["gpu_model"], tuning["driver_version"], tuning["baseline_variant_id"],
-                payload_hash,
+                tuning["max_power_increase"], tuning["library_version"], item["app_version"],
+                item["os_name"], item["os_build"], item["cpu_model"], item["gpu_vendor"],
+                tuning["game_version"], item["gpu_model"], item["driver_version"],
+                item["ram_gb"], item["device_type"], item["gpu_count"], item["display_mode"],
+                tuning["baseline_variant_id"], payload_hash,
             ),
         )
         conn.execute(
@@ -1428,18 +1824,28 @@ def _record_tuning(conn, item, client_hash, now):
         conn.execute(
             """INSERT INTO tuning_runs (
                    run_id, experiment_id, variant_id, run_no, sequence_no, started_at,
-                   completed_at, validity, invalid_reason, duration_sec, avg_fps,
-                   fps_1_low, p99_frame_ms, stutter_50ms, stutter_100ms,
-                   gpu_util_avg, gpu_temp_avg, gpu_power_avg, settings_hash,
-                   environment_hash, order_controlled, payload_hash
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   completed_at, validity, invalid_reason, duration_sec, frame_count,
+                   avg_fps, fps_1_low, p99_frame_ms, frame_time_mad_ms, stutter_50ms,
+                   stutter_100ms, stutters_per_min, focus_lost_sec, gpu_util_avg,
+                   gpu_temp_avg, gpu_temp_max, gpu_power_avg, game_exited_early,
+                   capture_failed, presentmon_exit_code, settings_hash, environment_hash,
+                   order_controlled, payload_hash
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 tuning["run_id"], experiment_id, tuning["variant_id"], tuning["run_no"],
                 tuning["sequence_no"], now - tuning["duration_sec"], now,
                 tuning["validity"], tuning["invalid_reason"], tuning["duration_sec"],
+                tuning["frame_count"],
                 tuning["avg_fps"], tuning["fps_1_low"], tuning["p99_frame_ms"],
+                tuning["frame_time_mad_ms"],
                 tuning["stutter_50ms"], tuning["stutter_100ms"],
-                tuning["gpu_util_avg"], tuning["gpu_temp_avg"], tuning["gpu_power_avg"],
+                tuning["stutters_per_min"], tuning["focus_lost_sec"],
+                tuning["gpu_util_avg"], tuning["gpu_temp_avg"], tuning["gpu_temp_max"],
+                tuning["gpu_power_avg"],
+                None if tuning["game_exited_early"] is None else int(tuning["game_exited_early"]),
+                None if tuning["capture_failed"] is None else int(tuning["capture_failed"]),
+                tuning["presentmon_exit_code"],
                 tuning["settings_hash"], tuning["environment_hash"],
                 int(tuning["order_controlled"]), payload_hash,
             ),
@@ -1497,6 +1903,8 @@ def _record_telemetry(payload, now=None):
     authenticated = _telemetry_auth(item, now)
     if event == "tuning" and not authenticated:
         raise TelemetryAuthError("device token required for tuning")
+    if item["operation"] is not None and not authenticated:
+        raise TelemetryAuthError("device token required for optimization operation")
     if not authenticated and _version_tuple(item["app_version"]) >= TOKEN_REQUIRED_VERSION:
         raise TelemetryAuthError("device token required for this client version")
     if event == "performance":
@@ -1545,13 +1953,20 @@ def _record_telemetry(payload, now=None):
                     "INSERT INTO tuning_events (client_hash, event_id, seen_at) VALUES (?, ?, ?)",
                     (client_hash, item["event_id"], now),
                 )
+            if item["operation"] is not None:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM optimization_operations WHERE client_hash=? AND day=?",
+                    (client_hash, day),
+                ).fetchone()[0]
+                if count >= OPTIMIZATION_OPERATION_DAILY_LIMIT:
+                    raise TelemetryDailyLimitError("daily optimization operation limit reached")
             conn.execute(
             """
             INSERT INTO clients (
                 client_hash, first_seen, last_seen, app_version, os_name, os_build,
-                cpu_model, gpu_vendor, gpu_model, gpu_model_verified, ram_gb, device_type,
-                authenticated_last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cpu_model, gpu_vendor, gpu_model, gpu_model_verified, driver_version,
+                gpu_count, display_mode, ram_gb, device_type, authenticated_last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(client_hash) DO UPDATE SET
                 last_seen=excluded.last_seen,
                 app_version=CASE WHEN excluded.app_version<>'' THEN excluded.app_version ELSE clients.app_version END,
@@ -1563,6 +1978,9 @@ def _record_telemetry(payload, now=None):
                     WHEN excluded.gpu_model<>'' AND (excluded.gpu_model_verified=1 OR clients.gpu_model_verified=0)
                     THEN excluded.gpu_model ELSE clients.gpu_model END,
                 gpu_model_verified=CASE WHEN excluded.gpu_model_verified=1 THEN 1 ELSE clients.gpu_model_verified END,
+                driver_version=CASE WHEN excluded.driver_version<>'' THEN excluded.driver_version ELSE clients.driver_version END,
+                gpu_count=CASE WHEN excluded.gpu_count>0 THEN excluded.gpu_count ELSE clients.gpu_count END,
+                display_mode=CASE WHEN excluded.display_mode<>'' THEN excluded.display_mode ELSE clients.display_mode END,
                 ram_gb=CASE WHEN excluded.ram_gb>0 THEN excluded.ram_gb ELSE clients.ram_gb END,
                 device_type=CASE WHEN excluded.device_type<>'' THEN excluded.device_type ELSE clients.device_type END,
                 authenticated_last_seen=MAX(clients.authenticated_last_seen, excluded.authenticated_last_seen)
@@ -1570,10 +1988,13 @@ def _record_telemetry(payload, now=None):
             (
                 client_hash, now, now, item["app_version"], item["os_name"], item["os_build"],
                 item["cpu_model"], item["gpu_vendor"], item["gpu_model"],
-                item["gpu_model_verified"], item["ram_gb"], item["device_type"],
+                item["gpu_model_verified"], item["driver_version"], item["gpu_count"],
+                item["display_mode"], item["ram_gb"], item["device_type"],
                 now if authenticated else 0,
             ),
         )
+            if item["operation"] is not None:
+                _record_optimization_operation(conn, item, client_hash, now, day)
             if event == "performance":
                 conn.execute(
                     """
@@ -1623,6 +2044,7 @@ def _record_telemetry(payload, now=None):
     return {
         "trusted": authenticated,
         "performanceAccepted": event == "performance",
+        "operationAccepted": item["operation"] is not None,
         "tuningAccepted": event == "tuning",
         "tuningType": item["tuning"]["type"] if event == "tuning" else None,
     }
@@ -1869,6 +2291,169 @@ def _build_website_stats(now=None):
     }
 
 
+def _build_experiment_dashboard(conn, start_day, now):
+    start_ts = int(dt.datetime.combine(start_day, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
+    operation_rows = _rows(
+        conn,
+        """SELECT client_hash, action_type, source, result, gpu_model, driver_version,
+                  device_type, os_build, gpu_count, display_mode, item_set_hash,
+                  item_ids_json, changed_item_ids_json, succeeded_item_ids_json,
+                  failed_item_ids_json, skipped_item_ids_json, attention_item_ids_json,
+                  reboot_item_ids_json, backup_status, verification_status, residual_count
+             FROM optimization_operations WHERE day>=?""",
+        (start_day.isoformat(),),
+    )
+    experiment_rows = _rows(
+        conn,
+        """SELECT client_hash, created_at, completed_at, status, result, gpu_model,
+                  driver_version, device_type, os_build, gpu_count, display_mode
+             FROM tuning_experiments
+            WHERE created_at>=? OR COALESCE(completed_at, 0)>=?""",
+        (start_ts, start_ts),
+    )
+    run_rows = _rows(
+        conn,
+        """SELECT validity, invalid_reason, frame_count, frame_time_mad_ms,
+                  stutters_per_min, focus_lost_sec, gpu_temp_max, game_exited_early,
+                  capture_failed, presentmon_exit_code
+             FROM tuning_runs WHERE completed_at>=? AND completed_at<=?""",
+        (start_ts, now),
+    )
+
+    def json_ids(row, key):
+        try:
+            values = json.loads(row.get(key) or "[]")
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return values if isinstance(values, list) and all(isinstance(value, str) for value in values) else []
+
+    summary = {
+        "applies": 0, "restores": 0, "succeeded": 0, "partial": 0,
+        "failed": 0, "noop": 0, "backupIssues": 0,
+        "restoreImmediateVerified": 0, "restorePendingRestart": 0,
+        "restoreResiduals": 0, "restoreFailed": 0, "residualUnits": 0,
+    }
+    set_groups, item_groups, environment_groups = {}, {}, {}
+    exact_item_operations = 0
+    operation_environment_snapshots = 0
+    for row in operation_rows:
+        action = row["action_type"]
+        summary["applies" if action == "apply" else "restores"] += 1
+        summary[row["result"]] += 1
+        if row["backup_status"] in ("partial", "failed"):
+            summary["backupIssues"] += 1
+        if action == "restore":
+            output_key = {
+                "immediate_verified": "restoreImmediateVerified",
+                "pending_restart": "restorePendingRestart",
+                "residuals_detected": "restoreResiduals",
+                "failed": "restoreFailed",
+            }.get(row["verification_status"])
+            if output_key:
+                summary[output_key] += 1
+            summary["residualUnits"] += int(row["residual_count"] or 0)
+
+        item_ids = json_ids(row, "item_ids_json")
+        outcomes = {
+            name: set(json_ids(row, name + "_item_ids_json"))
+            for name in ("changed", "succeeded", "failed", "skipped", "attention", "reboot")
+        }
+        exact_item_operations += 1 if item_ids else 0
+        set_key = (row["item_set_hash"], action, row["source"])
+        item_set = set_groups.setdefault(set_key, {
+            "itemSetHash": row["item_set_hash"], "itemIds": item_ids, "action": action,
+            "source": row["source"], "operations": 0, "succeeded": 0, "partial": 0,
+            "failed": 0, "noop": 0, "residuals": 0, "_devices": set(),
+        })
+        item_set["operations"] += 1
+        item_set[row["result"]] += 1
+        item_set["residuals"] += int(row["residual_count"] or 0) > 0
+        item_set["_devices"].add(row["client_hash"])
+        for item_id in item_ids:
+            item = item_groups.setdefault(item_id, {
+                "itemId": item_id, "operations": 0, "changed": 0, "succeeded": 0,
+                "failed": 0, "skipped": 0, "attention": 0, "reboot": 0,
+                "_devices": set(),
+            })
+            item["operations"] += 1
+            for name, ids in outcomes.items():
+                item[name] += item_id in ids
+            item["_devices"].add(row["client_hash"])
+
+        environment_key = (
+            row["gpu_model"] or "未知显卡", row["driver_version"] or "未知驱动",
+            row["device_type"] or "unknown", row["os_build"] or "未知版本",
+            int(row["gpu_count"] or 0), row["display_mode"] or "未知显示模式",
+        )
+        environment = environment_groups.setdefault(environment_key, {
+            "gpuModel": environment_key[0], "driverVersion": environment_key[1],
+            "deviceType": environment_key[2], "osBuild": environment_key[3],
+            "gpuCount": environment_key[4], "displayMode": environment_key[5],
+            "operations": 0, "failed": 0, "partial": 0, "residuals": 0,
+            "_devices": set(),
+        })
+        environment["operations"] += 1
+        environment["failed"] += row["result"] == "failed"
+        environment["partial"] += row["result"] == "partial"
+        environment["residuals"] += int(row["residual_count"] or 0) > 0
+        environment["_devices"].add(row["client_hash"])
+        if row["gpu_model"] and row["os_build"] and row["device_type"]:
+            operation_environment_snapshots += 1
+
+    def finish_groups(groups, kind):
+        output = []
+        for group in groups.values():
+            group["devices"] = len(group.pop("_devices"))
+            count = group["operations"]
+            group["failureRatePct"] = round(group["failed"] * 100.0 / count, 1) if count else 0
+            if kind == "sets":
+                group["residualRatePct"] = round(group["residuals"] * 100.0 / count, 1) if count else 0
+            output.append(group)
+        secondary = "itemId" if kind == "items" else "gpuModel" if kind == "environments" else "itemSetHash"
+        output.sort(key=lambda row: (-row["operations"], row[secondary]))
+        return output
+
+    item_sets = finish_groups(set_groups, "sets")
+    items = finish_groups(item_groups, "items")
+    environments = finish_groups(environment_groups, "environments")
+    completed = [row for row in experiment_rows if row.get("completed_at") is not None]
+    enriched_runs = [row for row in run_rows if row.get("frame_count") is not None]
+    mad_values = [float(row["frame_time_mad_ms"]) for row in run_rows if row.get("frame_time_mad_ms") is not None]
+    stutter_values = [float(row["stutters_per_min"]) for row in run_rows if row.get("stutters_per_min") is not None]
+    tuning_environment_snapshots = sum(
+        bool(row.get("gpu_model") and row.get("os_build") and row.get("device_type"))
+        for row in experiment_rows
+    )
+    tuning = {
+        "experiments": len(experiment_rows), "completed": len(completed),
+        "foundBetter": sum(row.get("result") == "found_better" for row in completed),
+        "rolledBack": sum(row.get("result") == "rolled_back" for row in completed),
+        "noSignificantGain": sum(row.get("result") == "no_significant_gain" for row in completed),
+        "runs": len(run_rows), "validRuns": sum(row.get("validity") == "valid" for row in run_rows),
+        "invalidRuns": sum(row.get("validity") != "valid" for row in run_rows),
+        "enrichedRuns": len(enriched_runs),
+        "captureFailures": sum(row.get("capture_failed") == 1 or row.get("invalid_reason") == "capture_failed" for row in run_rows),
+        "gameExitedRuns": sum(row.get("game_exited_early") == 1 or row.get("invalid_reason") == "game_exited" for row in run_rows),
+        "focusLostRuns": sum(float(row.get("focus_lost_sec") or 0) > 0 for row in run_rows),
+        "thermalRuns": sum(float(row.get("gpu_temp_max") or 0) >= 90 or row.get("invalid_reason") == "thermal_anomaly" for row in run_rows),
+        "medianFrameTimeMadMs": round(float(statistics.median(mad_values)), 2) if mad_values else None,
+        "medianStuttersPerMin": round(float(statistics.median(stutter_values)), 2) if stutter_values else None,
+    }
+    return {
+        "dataReadiness": {
+            "operations": len(operation_rows),
+            "operationDevices": len({row["client_hash"] for row in operation_rows}),
+            "exactItemOperations": exact_item_operations,
+            "tuningExperiments": len(experiment_rows), "tuningRuns": len(run_rows),
+            "enrichedTuningRuns": len(enriched_runs),
+            "environmentSnapshots": operation_environment_snapshots + tuning_environment_snapshots,
+        },
+        "operationSummary": summary,
+        "itemSets": item_sets[:50], "items": items[:100], "environments": environments[:100],
+        "tuning": tuning,
+    }
+
+
 def _build_stats(now=None, days=30):
     now = int(time.time() if now is None else now)
     now_local = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE)
@@ -1965,6 +2550,7 @@ def _build_stats(now=None, days=30):
                  FROM daily_usage WHERE day>=?""",
             (start_day.isoformat(),),
         ).fetchone())
+        experiment_dashboard = _build_experiment_dashboard(conn, start_day, now)
     finally:
         conn.close()
 
@@ -2046,6 +2632,7 @@ def _build_stats(now=None, days=30):
         "performanceByGpuByDevice": performance_by_gpu_by_device,
         "performanceByConfig": performance_by_config,
         "performanceImprovement": performance_improvement,
+        "experiments": experiment_dashboard,
         "dataQuality": {
             "source": "client_self_reported",
             "sourceLabel": "客户端自报，未经独立测量验证",
@@ -3534,7 +4121,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except TelemetryOwnershipError:
                 return self._reply_json(409, {"error": "tuning identifier ownership conflict"})
             except TelemetryConflictError:
-                return self._reply_json(409, {"error": "tuning business key conflict"})
+                return self._reply_json(409, {"error": "telemetry business key conflict"})
+            except TelemetryOperationError:
+                return self._reply_json(422, {"error": "invalid optimization operation"})
             except TelemetryTuningError:
                 return self._reply_json(422, {"error": "invalid tuning event"})
             except TelemetryPerformanceError:

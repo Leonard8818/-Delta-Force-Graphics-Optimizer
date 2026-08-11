@@ -41,7 +41,8 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Detect [-Json]
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Preview
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Apply [-Items id1,id2] [-GamePath "游戏exe路径"] [-GpuSpoofModel "NVIDIA GeForce GTX 1050 Ti"] [-Risky]
-    powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Restore [-BackupFile 备份文件]
+    powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListRestoreItems [-Json]
+    powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Restore [-RestoreItems id1,id2] [-BackupFile 备份文件]
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListItems
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -ListPresets
     powershell -NoProfile -ExecutionPolicy Bypass -File delta-booster.ps1 -Apply -Preset balanced
@@ -61,6 +62,7 @@ param(
   [switch]$Preview,
   [switch]$Apply,
   [switch]$Restore,
+  [switch]$ListRestoreItems,
   [switch]$ListItems,
   [switch]$ListPresets,
   [string]$Preset,
@@ -69,6 +71,7 @@ param(
   [string[]]$Items,
   [string]$GamePath,
   [string]$BackupFile,
+  [string[]]$RestoreItems,
   [string]$ResultId,
   [string]$UserSid,
   [string]$UserLocalAppData,
@@ -110,7 +113,16 @@ $script:BackupDir = Join-Path $script:ProgramDataRoot 'backup'
 $script:IpcDir = Join-Path $script:ProgramDataRoot 'ipc'
 $script:BackupKeyFile = Join-Path $script:ProgramDataRoot 'backup.key'
 $script:LegacyRootsFile = Join-Path $script:ProgramDataRoot 'legacy-roots.json'
-$script:BackupSchemaVersion = 2
+$script:BackupSchemaVersion = 3
+$script:LegacySignedBackupSchemaVersion = 2
+$script:BackupCatalogVersion = 3
+$script:RestoreReceiptSchemaVersion = 1
+$script:AppVersion = '0.0.0'
+$guiVersionFile = Join-Path $script:Root 'gui\DeltaForceBooster-GUI.ps1'
+if (Test-Path -LiteralPath $guiVersionFile -PathType Leaf) {
+  $guiVersionText = [IO.File]::ReadAllText($guiVersionFile, [Text.Encoding]::UTF8)
+  if ($guiVersionText -match '(?m)^\$script:GuiVersion\s*=\s*''(\d+\.\d+\.\d+)''\s*$') { $script:AppVersion = $Matches[1] }
+}
 $script:LockTaskPrefix = 'DeltaForceBooster-PowerPlanLock'
 # 每个安装目录使用独立任务名：不再用 /F 覆盖系统里可能已经存在的同名任务。
 $rootHash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([IO.Path]::GetFullPath($script:Root)).ToUpperInvariant()))
@@ -1087,8 +1099,9 @@ function Get-VcRedistStatus {
   @{ Ok = $true; Text = "v14 运行库 x64/x86 版本一致（x64 $ver64 / x86 $ver86，共 $($all.Count) 个组件），正常" }
 }
 
-# 内存没开 XMP/EXPO 会跑在 JEDEC 保守频率上。SPD 里的 XMP 档位 WMI 读不到，
-# 所以只能保守判断：跑不满标称=明确没开；等于 JEDEC 基准频率=可疑，提示用户自己去 BIOS 确认。
+# WMI 读不到 SPD 中是否真的存在 XMP/A-XMP/EXPO/DOCP 档位，只能比较当前频率与
+# SMBIOS 标称频率。达到标称频率时没有降频证据；低于标称时也要同时提示平台限频、
+# 混插降频及品牌 BIOS 不开放菜单等可能，不能断言某个档位一定存在或一定未开启。
 function Get-MemoryXmpStatus {
   $mem = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
   if ($mem.Count -eq 0) { return @{ Ok = $null; Text = '无法读取内存信息' } }
@@ -1101,12 +1114,18 @@ function Get-MemoryXmpStatus {
 
   if ($cur -le 0) { return @{ Ok = $null; Text = '无法读取内存运行频率' } }
   if ($rated -gt 0 -and $cur -lt $rated) {
-    return @{ Ok = $false; Text = "$ddr 实际 $cur MHz 低于标称 $rated MHz —— XMP/EXPO 多半没开，去 BIOS 开启可白捡性能" }
+    return @{ Ok = $false; Text = "$ddr 实际 $cur MHz 低于 SMBIOS 标称 $rated MHz。可能是内存档位未启用、CPU/主板限频或混插降频；BIOS 菜单名称可能是 XMP、A-XMP、EXPO 或 DOCP，也可能被品牌机/笔记本厂商隐藏" }
+  }
+  if ($rated -gt 0 -and $cur -ge $rated) {
+    if ($cur -le $jedecMax) {
+      return @{ Ok = $true; Text = "$ddr 运行在 $cur MHz，已达到 SMBIOS 标称 $rated MHz；没有证据表明内存被降频。该内存或整机可能本来就没有 XMP/EXPO 档位，BIOS 找不到相关菜单属于正常情况" }
+    }
+    return @{ Ok = $true; Text = "$ddr 运行在 $cur MHz，已达到 SMBIOS 标称 $rated MHz；高频档位或手动内存设置已生效" }
   }
   if ($cur -le $jedecMax) {
-    return @{ Ok = $null; Text = "$ddr 运行在 $cur MHz（正好是 JEDEC 基准上限）—— 如果你的内存条标称更高，说明 XMP/EXPO 没开，值得去 BIOS 确认" }
+    return @{ Ok = $null; Text = "$ddr 运行在 $cur MHz，但系统没有提供可靠的标称频率，无法判断是否存在或启用了内存性能档位；BIOS 没有 XMP/A-XMP/EXPO/DOCP 菜单时不要强行寻找或刷非官方 BIOS" }
   }
-  @{ Ok = $true; Text = "$ddr 运行在 $cur MHz，已超过 JEDEC 基准，XMP/EXPO 已生效" }
+  @{ Ok = $true; Text = "$ddr 运行在 $cur MHz，已超过常见 JEDEC 基准；高频档位或手动内存设置已生效" }
 }
 
 function Get-NvidiaSmiPath {
@@ -1241,16 +1260,57 @@ function Get-XmpBiosTutorial($Hw) {
   $model = $(if ($Hw -and $Hw.ComputerModel) { "$($Hw.ComputerModel)" } else { '型号未识别' })
   $key = $(if ($Hw) { "$($Hw.ComputerBrandKey)" } else { 'generic' })
   $laptop = [bool]($Hw -and $Hw.IsLaptop)
+  $ddr = $(if ($Hw -and "$($Hw.MemoryType)" -in @('DDR4','DDR5')) { "$($Hw.MemoryType)" } else { '内存代际未识别' })
+  $cpuVendor = $(if ($Hw -and "$($Hw.CpuVendor)" -in @('AMD','Intel')) { "$($Hw.CpuVendor)" }
+                 elseif ($Hw -and "$($Hw.CPU)" -match '(?i)AMD|Ryzen') { 'AMD' }
+                 elseif ($Hw -and "$($Hw.CPU)" -match '(?i)Intel|Core') { 'Intel' }
+                 else { '平台未识别' })
   $entry = Get-BiosEntryInstruction $key $laptop
+  $menu = $(switch ($key) {
+    'msi' {
+      if ($cpuVendor -eq 'AMD' -and $ddr -eq 'DDR4') {
+        'MSI Click BIOS 5 按 F7 进入高级模式 → OC → A-XMP → Profile 1；部分版本在 EZ Mode 顶部直接显示 A-XMP。MSI 的 AMD DDR4 通常叫 A-XMP，不叫 EXPO 或 DOCP。'
+      } elseif ($cpuVendor -eq 'AMD' -and $ddr -eq 'DDR5') {
+        'MSI Click BIOS 5 按 F7 → OC → EXPO → Profile 1；AM5/DDR5 才优先找 EXPO。'
+      } else {
+        'MSI Click BIOS 5 按 F7 → OC → XMP/A-XMP → Profile 1；也可先看 EZ Mode 顶部是否有 XMP/A-XMP 开关。'
+      }
+    }
+    'asus' {
+      if ($laptop) {
+        '华硕/ROG 笔记本（包括魔霸系列）很多型号不开放内存超频档位。按 F7 进入 Advanced Mode 后，若没有 Ai Tweaker / Extreme Tweaker / Memory Profile 页面，就表示该机型 BIOS 未提供此功能，不需要继续找；Armoury Crate 里也不会补出该开关。'
+      } elseif ($cpuVendor -eq 'AMD' -and $ddr -eq 'DDR4') {
+        '华硕台式机/主板按 F7 → Ai Tweaker → Ai Overclock Tuner → D.O.C.P. → Profile 1；华硕 AMD DDR4 才常见 DOCP。'
+      } elseif ($cpuVendor -eq 'AMD' -and $ddr -eq 'DDR5') {
+        '华硕台式机/主板按 F7 → Ai Tweaker → Ai Overclock Tuner → EXPO I；AM5/DDR5 优先找 EXPO。'
+      } else {
+        '华硕台式机/主板按 F7 → Ai Tweaker → Ai Overclock Tuner → XMP I。'
+      }
+    }
+    'gigabyte' { '进入 Tweaker → Extreme Memory Profile (X.M.P.)；AMD DDR5 平台则找 EXPO，选择 Profile 1。' }
+    'asrock'    { '进入 OC Tweaker → DRAM Profile / Load XMP Setting；AMD DDR5 平台则找 EXPO，选择 Profile 1。' }
+    default {
+      if ($laptop) {
+        '品牌笔记本通常不开放内存超频页面。进入 Advanced/Performance/Overclocking 页面检查一次；若没有 Memory Profile、XMP、A-XMP、EXPO 或 DOCP，就表示厂商未提供该功能。'
+      } elseif ($cpuVendor -eq 'AMD' -and $ddr -eq 'DDR4') {
+        'AMD DDR4 平台按主板品牌寻找 A-XMP、XMP 或 DOCP（DOCP 主要见于华硕），选择 Profile 1。'
+      } elseif ($cpuVendor -eq 'AMD' -and $ddr -eq 'DDR5') {
+        'AMD DDR5/AM5 平台寻找 EXPO，选择 Profile 1。'
+      } else {
+        'Intel 平台通常寻找 XMP；不同主板也可能写作 Extreme Memory Profile，选择 Profile 1。'
+      }
+    }
+  })
   @(
-    'XMP（Intel 平台叫法）/ EXPO 或 DOCP（AMD 平台叫法）是内存条出厂标定的高频档位。不开启时内存跑在保守的 JEDEC 基准频率上；开启后的提升因 CPU、内存和游戏而异。'
+    'XMP、A-XMP、EXPO、DOCP 都是可选的内存性能档位名称，不是每根内存、每台品牌机或每款笔记本都有。软件只能比较系统报告的运行/标称频率，不能证明 BIOS 一定存在某个开关。'
     ''
-    "检测到电脑：$brand · $model"
-    '开启步骤（BIOS 设置只能手动进入）：'
+    "检测到电脑：$brand · $model；平台：$cpuVendor；内存：$ddr"
+    '确认步骤（BIOS 设置只能手动进入）：'
     "1. $entry；"
-    '2. 找到内存/超频页面：Intel 平台找 XMP，AMD 平台找 EXPO 或 DOCP，选择 Profile 1/档位 1；品牌整机或部分笔记本若没有该选项，表示厂商 BIOS 未开放，不要刷非官方 BIOS 强开；'
-    '3. 按 F10 保存并退出；'
-    '4. 若开启后不能正常启动，等待主板自动训练并回退；仍未恢复时重新进入 BIOS，选择 Load Optimized Defaults/恢复默认设置。'
+    "2. $menu"
+    '3. 如果上述页面或开关不存在，就以“此机型未开放/内存没有该档位”处理，不要反复寻找，也不要刷非官方 BIOS 强开；'
+    '4. 只有实际修改了档位才按 F10 保存并退出；没有找到开关时直接退出且不保存；'
+    '5. 若修改后不能正常启动，先等待主板完成内存训练并自动回退；仍未恢复时重新进入 BIOS，选择 Load Optimized Defaults/恢复默认设置。'
   ) -join "`n"
 }
 
@@ -1351,6 +1411,19 @@ function Get-HardwareInfo {
   $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
   $cs   = Get-CimInstance Win32_ComputerSystem
   $board = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
+  $memory = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+  $memoryFirst = $memory | Select-Object -First 1
+  $memoryType = $(if ($memoryFirst.SMBIOSMemoryType -eq 34) { 'DDR5' }
+                  elseif ($memoryFirst.SMBIOSMemoryType -eq 26) { 'DDR4' } else { '未知' })
+  $memoryConfiguredMHz = $(if ($memory.Count -gt 0) {
+    [int](($memory | ForEach-Object { [int]$_.ConfiguredClockSpeed } | Measure-Object -Minimum).Minimum)
+  } else { 0 })
+  $memoryRatedMHz = $(if ($memory.Count -gt 0) {
+    [int](($memory | ForEach-Object { [int]$_.Speed } | Measure-Object -Minimum).Minimum)
+  } else { 0 })
+  $cpuVendor = $(if ("$($cpu.Manufacturer) $($cpu.Name)" -match '(?i)AuthenticAMD|AMD|Ryzen') { 'AMD' }
+                 elseif ("$($cpu.Manufacturer) $($cpu.Name)" -match '(?i)GenuineIntel|Intel|Core') { 'Intel' }
+                 else { 'Unknown' })
   $nvidiaIds = @(Get-NvidiaGpuIdentities)
   $video = @(Get-CimInstance Win32_VideoController)
   $nvidiaWmiCount = @($video | Where-Object { (Get-GpuVendor $_.PNPDeviceID "$($_.Name)") -eq 'NVIDIA' }).Count
@@ -1401,9 +1474,13 @@ function Get-HardwareInfo {
     OS            = $os.Caption
     Build         = [int]$os.BuildNumber
     CPU           = $cpu.Name.Trim()
+    CpuVendor     = $cpuVendor
     Cores         = $cpu.NumberOfCores
     Threads       = $cpu.NumberOfLogicalProcessors
     RamGB         = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+    MemoryType    = $memoryType
+    MemoryConfiguredMHz = $memoryConfiguredMHz
+    MemoryRatedMHz = $memoryRatedMHz
     ComputerBrandKey = $brand.Key
     ComputerBrand = $brand.Name
     ComputerModel = "$($cs.Model)".Trim()
@@ -1897,9 +1974,9 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                Check = 'Get-VcRedistStatus'
                Note = '检测 VC++ 2015-2022(v14) 运行库是否缺失——缺了游戏很可能无法启动。x64 与 x86 两套相互独立，版本不同步很常见且通常无害，只做中性提示不报问题。本项只检测不修——卸载重装运行库会波及其他软件，须你自己判断后手动处理。' }
 
-  $items += @{ Id = 'xmp-check'; Tier = 'safe'; Name = '内存 XMP/EXPO 体检（纯检测，不改设置）'; Admin = $false; Default = $false; Kind = 'check'
+  $items += @{ Id = 'xmp-check'; Tier = 'safe'; Name = '内存频率 / XMP·A-XMP·EXPO·DOCP 体检（纯检测）'; Admin = $false; Default = $false; Kind = 'check'
                Check = 'Get-MemoryXmpStatus'
-               Note = '内存没开 XMP/EXPO 时会跑在 JEDEC 保守频率上，白白损失几十帧。BIOS 设置无法由软件修改，本项只负责把"你的内存在摸鱼"这件事告诉你。' }
+               Note = '比较内存当前频率与 SMBIOS 标称频率，并按电脑品牌、平台与 DDR 代际给出可能的 BIOS 菜单名。不是每台电脑都有性能档位；达到标称频率时不会再误报“未开启”。' }
 
   # 实验项：默认不勾、不进任何内置方案。社区大面积反馈的「进游戏后每隔十几秒卡 2~3 秒」
   # 多方指向着色器缓存异常，但这是经验疗法而非确证的因果，名字里必须写明不保证生效。
@@ -2323,10 +2400,14 @@ function Assert-ExactProperties($Object, [string[]]$Required, [string[]]$Optiona
   if ($unknown.Count -gt 0) { throw "$Label 包含未知字段：$($unknown -join '、')" }
 }
 
-function Get-BackupOpFields([string]$Kind, [bool]$Version2) {
-  $base = @(if ($Version2) { 'Id','Status','Kind' } else { 'Kind' })
+function Get-BackupOpFields([string]$Kind, [int]$SchemaVersion) {
+  $base = @(switch ($SchemaVersion) {
+    3 { 'Id','Status','ApplyId','ItemId','RestoreGroupId','OpIndex','Kind' }
+    2 { 'Id','Status','Kind' }
+    default { 'Kind' }
+  })
   switch ($Kind) {
-    'reg'     { $base + @('Path','Name','Existed','OldValue','OldKind') }
+    'reg'     { $base + @('Path','Name','Existed','OldValue','OldKind') + $(if ($SchemaVersion -eq 3) { @('AppliedValue','AppliedKind') } else { @() }) }
     'pcfg'    { $base + @('Sub','Setting','Label','Existed','OldValue','SchemeGuid') }
     'mmagent' { $base + @('Feature','OldEnabled') }
     'sched'   { $base + @('TaskName') }
@@ -2440,26 +2521,42 @@ function Assert-BackupRegValue($Op) {
   }
 }
 
-function Assert-BackupOperation($Op, [bool]$Version2, [string]$AllowedLocalAppData) {
+function Assert-BackupOperation($Op, [int]$SchemaVersion, [string]$AllowedLocalAppData) {
   if (-not $AllowedLocalAppData) { $AllowedLocalAppData = $script:TargetLocalAppData }
   $kind = "$($Op.Kind)"
-  $fields = @(Get-BackupOpFields $kind $Version2)
+  $fields = @(Get-BackupOpFields $kind $SchemaVersion)
   Assert-ExactProperties $Op $fields @() "备份操作($kind)"
   if ($kind -eq 'file') {
     # 旧版曾备份 NVIDIA App 的用户配置文件。提权还原任何用户可写路径都存在
     # 目录换成 junction 的竞态窗口；该优化项已改为纯检测，因此新旧 schema 都关闭拒绝文件操作。
     throw '备份中的用户配置文件操作已停用，请在 NVIDIA App 内手动确认该设置'
   }
-  if ($Version2) {
+  if ($SchemaVersion -ge 2) {
     $id = [guid]::Empty
     if (-not [guid]::TryParseExact("$($Op.Id)", 'D', [ref]$id)) { throw "备份操作 Id 无效：$($Op.Id)" }
     if ("$($Op.Status)" -notin @('prepared','applied')) { throw "备份操作状态无效：$($Op.Status)" }
+  }
+  if ($SchemaVersion -eq 3) {
+    $applyId = [guid]::Empty
+    if (-not [guid]::TryParseExact("$($Op.ApplyId)", 'D', [ref]$applyId)) { throw "备份操作 ApplyId 无效：$($Op.ApplyId)" }
+    foreach ($field in 'ItemId','RestoreGroupId') {
+      if ("$($Op.$field)" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') { throw "备份操作 $field 无效：$($Op.$field)" }
+    }
+    if (-not (Test-JsonInteger $Op.OpIndex 0 255)) { throw "备份操作 OpIndex 无效：$($Op.OpIndex)" }
   }
   switch ($kind) {
     'reg' {
       if (-not (Test-AllowedBackupRegTarget $Op)) { throw "备份注册表目标不在白名单：$($Op.Path)|$($Op.Name)" }
       if ("$($Op.OldKind)" -notin @('','String','ExpandString','Binary','DWord','MultiString','QWord')) { throw "注册表值类型无效：$($Op.OldKind)" }
       Assert-BackupRegValue $Op
+      if ($SchemaVersion -eq 3) {
+        if ("$($Op.AppliedKind)" -notin @('String','ExpandString','Binary','DWord','MultiString','QWord')) { throw "注册表应用值类型无效：$($Op.AppliedKind)" }
+        $applied = [pscustomobject]@{
+          Path = "$($Op.Path)"; Name = "$($Op.Name)"; Existed = $true
+          OldValue = $Op.AppliedValue; OldKind = "$($Op.AppliedKind)"
+        }
+        Assert-BackupRegValue $applied
+      }
     }
     'pcfg' {
       $valid = (($Op.Sub -ieq $script:SubUsb -and $Op.Setting -ieq 'd4e98f31-5ffe-4ce1-be31-1b38b384c009') -or
@@ -2488,21 +2585,49 @@ function Assert-BackupOperation($Op, [bool]$Version2, [string]$AllowedLocalAppDa
   }
 }
 
-function ConvertTo-CanonicalBackupOp($Op, [bool]$Version2) {
+function ConvertTo-CanonicalBackupOp($Op, [int]$SchemaVersion) {
   $ordered = [ordered]@{}
-  foreach ($n in @(Get-BackupOpFields "$($Op.Kind)" $Version2)) { $ordered[$n] = $Op.$n }
+  foreach ($n in @(Get-BackupOpFields "$($Op.Kind)" $SchemaVersion)) { $ordered[$n] = $Op.$n }
   [pscustomobject]$ordered
 }
 
+function ConvertTo-CanonicalBackupItem($Item) {
+  [pscustomobject][ordered]@{
+    ItemId = "$($Item.ItemId)"
+    RestoreGroupId = "$($Item.RestoreGroupId)"
+    DisplayName = "$($Item.DisplayName)"
+    DefinitionHash = "$($Item.DefinitionHash)"
+    RebootRequired = [bool]$Item.RebootRequired
+    OpIds = @($Item.OpIds | ForEach-Object { "$_" })
+  }
+}
+
 function Get-BackupCanonicalPayload($Document) {
-  $payload = [ordered]@{
-    SchemaVersion = [int]$Document.SchemaVersion
-    BackupId = "$($Document.BackupId)"
-    CreatedUtc = "$($Document.CreatedUtc)"
-    UserSid = "$($Document.UserSid)"
-    UserLocalAppData = "$($Document.UserLocalAppData)"
-    State = "$($Document.State)"
-    Ops = @($Document.Ops | ForEach-Object { ConvertTo-CanonicalBackupOp $_ $true })
+  $schema = [int]$Document.SchemaVersion
+  if ($schema -eq 3) {
+    $payload = [ordered]@{
+      SchemaVersion = $schema
+      BackupId = "$($Document.BackupId)"
+      ApplyId = "$($Document.ApplyId)"
+      AppVersion = "$($Document.AppVersion)"
+      CatalogVersion = [int]$Document.CatalogVersion
+      CreatedUtc = "$($Document.CreatedUtc)"
+      UserSid = "$($Document.UserSid)"
+      UserLocalAppData = "$($Document.UserLocalAppData)"
+      State = "$($Document.State)"
+      Items = @($Document.Items | ForEach-Object { ConvertTo-CanonicalBackupItem $_ })
+      Ops = @($Document.Ops | ForEach-Object { ConvertTo-CanonicalBackupOp $_ 3 })
+    }
+  } else {
+    $payload = [ordered]@{
+      SchemaVersion = $schema
+      BackupId = "$($Document.BackupId)"
+      CreatedUtc = "$($Document.CreatedUtc)"
+      UserSid = "$($Document.UserSid)"
+      UserLocalAppData = "$($Document.UserLocalAppData)"
+      State = "$($Document.State)"
+      Ops = @($Document.Ops | ForEach-Object { ConvertTo-CanonicalBackupOp $_ 2 })
+    }
   }
   $payload | ConvertTo-Json -Depth 10 -Compress
 }
@@ -2531,12 +2656,40 @@ function Write-BackupDocumentAtomic([string]$Path, $Document) {
   Write-BytesAtomic $Path $bytes
 }
 
+function Assert-BackupItem($Item) {
+  Assert-ExactProperties $Item @('ItemId','RestoreGroupId','DisplayName','DefinitionHash','RebootRequired','OpIds') @() '备份项目'
+  foreach ($field in 'ItemId','RestoreGroupId') {
+    if ("$($Item.$field)" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') { throw "备份项目 $field 无效：$($Item.$field)" }
+  }
+  if (-not "$($Item.DisplayName)" -or "$($Item.DisplayName)".Length -gt 256) { throw '备份项目显示名称无效' }
+  if ("$($Item.DefinitionHash)" -notmatch '^[0-9a-f]{64}$') { throw '备份项目定义哈希无效' }
+  if ($Item.RebootRequired -isnot [bool]) { throw '备份项目 RebootRequired 必须是布尔值' }
+  $opIds = @($Item.OpIds)
+  if ($opIds.Count -eq 0 -or $opIds.Count -gt 256 -or @($opIds | Select-Object -Unique).Count -ne $opIds.Count) {
+    throw '备份项目 OpIds 为空、重复或超过上限'
+  }
+  foreach ($opId in $opIds) {
+    $parsed = [guid]::Empty
+    if (-not [guid]::TryParseExact("$opId", 'D', [ref]$parsed)) { throw "备份项目操作 ID 无效：$opId" }
+  }
+}
+
 function Assert-BackupDocument($Document, [bool]$RequireIntegrity) {
   if ($RequireIntegrity) {
-    Assert-ExactProperties $Document @('SchemaVersion','BackupId','CreatedUtc','UserSid','UserLocalAppData','State','Ops','Integrity') @() '备份文档'
-    if ([int]$Document.SchemaVersion -ne $script:BackupSchemaVersion) { throw "不支持的备份版本：$($Document.SchemaVersion)" }
+    $schema = [int]$Document.SchemaVersion
+    if ($schema -eq 3) {
+      Assert-ExactProperties $Document @('SchemaVersion','BackupId','ApplyId','AppVersion','CatalogVersion','CreatedUtc','UserSid','UserLocalAppData','State','Items','Ops','Integrity') @() '备份文档'
+    } elseif ($schema -eq 2) {
+      Assert-ExactProperties $Document @('SchemaVersion','BackupId','CreatedUtc','UserSid','UserLocalAppData','State','Ops','Integrity') @() '备份文档'
+    } else { throw "不支持的备份版本：$($Document.SchemaVersion)" }
     $id = [guid]::Empty; $when = [DateTime]::MinValue
     if (-not [guid]::TryParseExact("$($Document.BackupId)", 'D', [ref]$id)) { throw '备份 ID 无效' }
+    if ($schema -eq 3) {
+      $applyId = [guid]::Empty
+      if (-not [guid]::TryParseExact("$($Document.ApplyId)", 'D', [ref]$applyId)) { throw '备份 ApplyId 无效' }
+      if ("$($Document.AppVersion)" -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw '备份软件版本无效' }
+      if (-not (Test-JsonInteger $Document.CatalogVersion 1 1000)) { throw '备份目录版本无效' }
+    }
     if (-not [DateTime]::TryParse("$($Document.CreatedUtc)", [ref]$when)) { throw '备份时间无效' }
     try { [void](New-Object Security.Principal.SecurityIdentifier("$($Document.UserSid)")) } catch { throw '备份用户 SID 无效' }
     if (-not [IO.Path]::IsPathRooted("$($Document.UserLocalAppData)")) { throw '备份用户 LocalAppData 路径无效' }
@@ -2550,8 +2703,24 @@ function Assert-BackupDocument($Document, [bool]$RequireIntegrity) {
   }
   $ops = @($Document.Ops)
   if ($ops.Count -gt 256) { throw '备份操作超过 256 项上限' }
+  $schemaForOps = $(if ($RequireIntegrity) { [int]$Document.SchemaVersion } else { 1 })
   $allowedLocal = $(if ($RequireIntegrity) { "$($Document.UserLocalAppData)" } else { $script:TargetLocalAppData })
-  foreach ($op in $ops) { Assert-BackupOperation $op $RequireIntegrity $allowedLocal }
+  foreach ($op in $ops) { Assert-BackupOperation $op $schemaForOps $allowedLocal }
+  if ($RequireIntegrity -and $schemaForOps -eq 3) {
+    $items = @($Document.Items)
+    if ($items.Count -gt 64) { throw '备份项目超过 64 项上限' }
+    foreach ($item in $items) { Assert-BackupItem $item }
+    if (@($items | ForEach-Object ItemId | Select-Object -Unique).Count -ne $items.Count) { throw '备份项目 ItemId 重复' }
+    $allOpIds = @($ops | ForEach-Object { "$($_.Id)" })
+    if (@($allOpIds | Select-Object -Unique).Count -ne $allOpIds.Count) { throw '备份操作 Id 重复' }
+    $mapped = @($items | ForEach-Object { @($_.OpIds) })
+    if (@($mapped | Select-Object -Unique).Count -ne $mapped.Count -or $mapped.Count -ne $allOpIds.Count) { throw '备份项目与操作映射不完整或重复' }
+    foreach ($op in $ops) {
+      if ("$($op.ApplyId)" -ne "$($Document.ApplyId)") { throw '备份操作 ApplyId 与文档不一致' }
+      $owner = @($items | Where-Object { "$($_.ItemId)" -eq "$($op.ItemId)" -and "$($_.RestoreGroupId)" -eq "$($op.RestoreGroupId)" -and @($_.OpIds) -contains "$($op.Id)" })
+      if ($owner.Count -ne 1) { throw "备份操作缺少唯一项目归属：$($op.Id)" }
+    }
+  }
   if ($RequireIntegrity) {
     $expected = Get-HmacHex (Get-BackupCanonicalPayload $Document) (Get-BackupHmacKey)
     $actualBytes = [Text.Encoding]::ASCII.GetBytes("$($Document.Integrity.Value)")
@@ -2587,8 +2756,8 @@ function Read-ValidatedBackup([string]$Path, [string[]]$LegacyDirs) {
   if ($fi.Length -gt 32MB) { throw '备份文件超过 32MB 上限' }
   $raw = [IO.File]::ReadAllText($full, [Text.Encoding]::UTF8)
   try { $doc = $raw | ConvertFrom-Json -ErrorAction Stop } catch { throw "备份 JSON 损坏：$($_.Exception.Message)" }
-  $v2 = [bool]$doc.PSObject.Properties['SchemaVersion']
-  if ($v2) {
+  $signed = [bool]$doc.PSObject.Properties['SchemaVersion']
+  if ($signed) {
     if (-not $isProtected) { throw '带完整性签名的新备份必须位于受保护备份目录' }
     Assert-BackupDocument $doc $true
     return [pscustomobject]@{ Path = $full; Document = $doc; LegacySource = $null }
@@ -2604,12 +2773,12 @@ function Read-ValidatedBackup([string]$Path, [string[]]$LegacyDirs) {
   $id = Get-LegacyMigrationId $full $raw
   $ops = @($doc.Ops | ForEach-Object {
     $h = [ordered]@{ Id = [guid]::NewGuid().ToString('D'); Status = 'applied'; Kind = "$($_.Kind)" }
-    foreach ($n in @(Get-BackupOpFields "$($_.Kind)" $false | Select-Object -Skip 1)) { $h[$n] = $_.$n }
+    foreach ($n in @(Get-BackupOpFields "$($_.Kind)" 1 | Select-Object -Skip 1)) { $h[$n] = $_.$n }
     [pscustomobject]$h
   })
   $legacyWhen = [DateTime]::Parse("$($doc.Time)")
   $migrated = [pscustomobject][ordered]@{
-    SchemaVersion = $script:BackupSchemaVersion; BackupId = $id
+    SchemaVersion = $script:LegacySignedBackupSchemaVersion; BackupId = $id
     CreatedUtc = $legacyWhen.ToUniversalTime().ToString('o')
     UserSid = $script:TargetUserSid; UserLocalAppData = $script:TargetLocalAppData
     State = $(if ($full -like '*.pending.json') { 'pending' } else { 'complete' })
@@ -2629,15 +2798,59 @@ function Read-ValidatedBackup([string]$Path, [string[]]$LegacyDirs) {
   [pscustomobject]@{ Path = $dest; Document = $migrated; LegacySource = $full; Consumed = $false }
 }
 
-function New-BackupDocument([DateTime]$When) {
+function New-BackupDocument([DateTime]$When, [string]$ApplyId) {
+  if (-not $ApplyId) { $ApplyId = [guid]::NewGuid().ToString('D') }
   [pscustomobject][ordered]@{
     SchemaVersion = $script:BackupSchemaVersion
     BackupId = [guid]::NewGuid().ToString('D')
+    ApplyId = $ApplyId
+    AppVersion = $script:AppVersion
+    CatalogVersion = $script:BackupCatalogVersion
     CreatedUtc = $When.ToUniversalTime().ToString('o')
     UserSid = $script:TargetUserSid
     UserLocalAppData = $script:TargetLocalAppData
-    State = 'pending'; Ops = @(); Integrity = $null
+    State = 'pending'; Items = @(); Ops = @(); Integrity = $null
   }
+}
+
+function Get-ItemDefinitionHash($Item) {
+  $ops = @()
+  foreach ($op in @($Item.Ops)) {
+    # PowerShell 5.1 的 @($null) 会产生一个含 null 的单元素数组。power/sched 等项目
+    # 没有 Ops 字段；若直接调用 $op.ContainsKey()，真实 Apply 会在写入第一条备份时抛
+    # “不能对 Null 值表达式调用方法”，系统操作尚未执行但该项目会被误报为失败。
+    if ($null -eq $op) { continue }
+    if ($op -isnot [Collections.IDictionary]) { throw "优化项 $($Item.Id) 的操作定义格式无效" }
+    $entry = [ordered]@{}
+    foreach ($field in 'Kind','Path','Name','Sub','Setting','Feature','TaskName','Key','Value','Kind2') {
+      if ($op.ContainsKey($field)) { $entry[$field] = $op[$field] }
+    }
+    $ops += [pscustomobject]$entry
+  }
+  $definition = [pscustomobject][ordered]@{
+    ItemId = "$($Item.Id)"; Kind = "$($Item.Kind)"; RebootRequired = [bool]$Item.Reboot; Ops = $ops
+  }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($definition | ConvertTo-Json -Depth 8 -Compress)))
+    ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+  } finally { $sha.Dispose() }
+}
+
+function New-BackupItemRecord($Item) {
+  [pscustomobject][ordered]@{
+    ItemId = "$($Item.Id)"
+    RestoreGroupId = "$($Item.Id)"
+    DisplayName = "$($Item.Name)"
+    DefinitionHash = Get-ItemDefinitionHash $Item
+    RebootRequired = [bool]$Item.Reboot
+    OpIds = @()
+  }
+}
+
+function Get-SelectiveRestoreItemIds {
+  # 第一阶段只开放无需重启、没有复杂依赖且底层目标可独立验证的八项。
+  @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref')
 }
 
 function Sort-BackupRecordsNewestFirst($Records) {
@@ -2691,7 +2904,8 @@ function Invoke-ApplyOp($Op, $ItemId, [scriptblock]$PrepareBackup, [scriptblock]
         return "无需修改：$(if ($Op.Label) { $Op.Label } else { $Op.Name }) 已是目标状态"
       }
       $token = & $PrepareBackup @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
-                                   Existed = ($null -ne $oldKind); OldValue = $oldVal; OldKind = "$oldKind" }
+                                   Existed = ($null -ne $oldKind); OldValue = $oldVal; OldKind = "$oldKind"
+                                   AppliedValue = $newVal; AppliedKind = "$($Op.Kind2)" }
       Set-RegValue $Op.Path $Op.Name $newVal $Op.Kind2
       $actualKind = Get-RegValueKind $Op.Path $Op.Name
       $actualValue = Get-RegValue $Op.Path $Op.Name
@@ -2717,8 +2931,10 @@ function Invoke-ApplyOp($Op, $ItemId, [scriptblock]$PrepareBackup, [scriptblock]
       # 隐藏项必须先解除隐藏才能写入；原 Attributes 按普通注册表值备份，还原时自动改回
       $oldAttr = $(if (Test-PowerSettingHidden $Op.Sub $Op.Setting) { Get-RegValue "$script:PsRoot\$($Op.Sub)\$($Op.Setting)" 'Attributes' } else { $null })
       if ($null -ne $oldAttr) {
+        $newAttr = ([int]$oldAttr -band (-bnot 1))
         $attrToken = & $PrepareBackup @{ Kind = 'reg'; Path = "$script:PsRoot\$($Op.Sub)\$($Op.Setting)"; Name = 'Attributes'
-                                          Existed = $true; OldValue = $oldAttr; OldKind = 'DWord' }
+                                          Existed = $true; OldValue = $oldAttr; OldKind = 'DWord'
+                                          AppliedValue = $newAttr; AppliedKind = 'DWord' }
         [void](Show-PowerSetting $Op.Sub $Op.Setting)
         & $MarkApplied $attrToken
       }
@@ -2743,9 +2959,11 @@ function Invoke-ApplyOp($Op, $ItemId, [scriptblock]$PrepareBackup, [scriptblock]
       $oldRaw  = $(if ($null -ne $oldKind) { Get-RegValue $Op.Path $Op.Name } else { $null })
       # 只比目标子键：整串里其余键值是别人的设置，不影响本项是否已达标
       if ("$(Get-KvStringItem $oldRaw $Op.Key)" -eq "$($Op.Value)") { return "无需修改：$($Op.Label) 已是目标状态" }
+      $newRaw = Set-KvStringItem $oldRaw $Op.Key $Op.Value
       $token = & $PrepareBackup @{ Kind = 'reg'; Path = $Op.Path; Name = $Op.Name
-                                   Existed = ($null -ne $oldKind); OldValue = $oldRaw; OldKind = "$oldKind" }
-      Set-RegValue $Op.Path $Op.Name (Set-KvStringItem $oldRaw $Op.Key $Op.Value) 'String'
+                                   Existed = ($null -ne $oldKind); OldValue = $oldRaw; OldKind = "$oldKind"
+                                   AppliedValue = $newRaw; AppliedKind = 'String' }
+      Set-RegValue $Op.Path $Op.Name $newRaw 'String'
       if ("$(Get-KvStringItem (Get-RegValue $Op.Path $Op.Name) $Op.Key)" -ne "$($Op.Value)") { throw '复合注册表值写入后回读验证失败' }
       & $MarkApplied $token
     }
@@ -2819,11 +3037,12 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   # 严格写前日志：每条撤销记录先以 prepared 状态做 temp→Flush(true)→原子替换，
   # 系统写入并回读成功后再标 applied。GUID 文件名避免并发/同秒冲突，核心 mutex 负责串行化。
   $applyTime = Get-Date
-  $journal = [pscustomobject]@{ Document = $null; Path = $null; Error = $null }
+  $applyId = [guid]::NewGuid().ToString('D')
+  $journal = [pscustomobject]@{ Document = $null; Path = $null; Error = $null; CurrentItem = $null; CurrentOpIndex = 0 }
   if ($needsJournal) {
     try {
       Initialize-ProtectedStore
-      $journal.Document = New-BackupDocument $applyTime
+      $journal.Document = New-BackupDocument $applyTime $applyId
       $journal.Path = Join-Path $script:BackupDir ("backup-$($journal.Document.BackupId).pending.json")
       Write-BackupDocumentAtomic $journal.Path $journal.Document
     } catch {
@@ -2835,11 +3054,26 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   $prepareBackup = {
     param($Data)
     if ($journal.Error) { throw "备份写入已失败：$($journal.Error)" }
-    $entry = [ordered]@{ Id = [guid]::NewGuid().ToString('D'); Status = 'prepared'; Kind = "$($Data.Kind)" }
-    foreach ($n in @(Get-BackupOpFields "$($Data.Kind)" $false | Select-Object -Skip 1)) { $entry[$n] = $Data[$n] }
+    if (-not $journal.CurrentItem) { throw '备份项目上下文缺失' }
+    $opId = [guid]::NewGuid().ToString('D')
+    $entry = [ordered]@{
+      Id = $opId; Status = 'prepared'; ApplyId = "$($journal.Document.ApplyId)"
+      ItemId = "$($journal.CurrentItem.Id)"; RestoreGroupId = "$($journal.CurrentItem.Id)"
+      OpIndex = [int]$journal.CurrentOpIndex; Kind = "$($Data.Kind)"
+    }
+    foreach ($n in @(Get-BackupOpFields "$($Data.Kind)" 3)) {
+      if (-not $entry.Contains($n)) { $entry[$n] = $Data[$n] }
+    }
     $op = [pscustomobject]$entry
-    Assert-BackupOperation $op $true
+    Assert-BackupOperation $op 3
+    $itemRecord = @($journal.Document.Items | Where-Object { "$($_.ItemId)" -eq "$($journal.CurrentItem.Id)" }) | Select-Object -First 1
+    if (-not $itemRecord) {
+      $itemRecord = New-BackupItemRecord $journal.CurrentItem
+      $journal.Document.Items = @($journal.Document.Items) + @($itemRecord)
+    }
+    $itemRecord.OpIds = @($itemRecord.OpIds) + @($opId)
     $journal.Document.Ops = @($journal.Document.Ops) + @($op)
+    $journal.CurrentOpIndex++
     try { Write-BackupDocumentAtomic $journal.Path $journal.Document }
     catch { $journal.Error = $_.Exception.Message; throw "备份 prepared 状态持久化失败：$($journal.Error)" }
     $op.Id
@@ -2859,6 +3093,8 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
     # 备份落不了盘就立即停手：后续改动将无法回滚
     if ($journal.Error) { break }
     $seq++
+    $journal.CurrentItem = $it
+    $journal.CurrentOpIndex = 0
     $appliedBefore = @($journal.Document.Ops | Where-Object Status -eq 'applied').Count
     $changeOverride = $null
     # 进度回调来自调用方（GUI），必须包进保护：回调抛异常不能把整轮执行拖死在半路
@@ -3009,7 +3245,7 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
       $_.Changed -and -not $_.Attention -and $_.Msg -notlike '纯检测：*'
     } | ForEach-Object { $_.Name })
   }
-  [pscustomobject]@{ Results = $results; Backup = $bf; BackupError = $journal.Error; UnrecordedNames = $unrecorded }
+  [pscustomobject]@{ ApplyId = $applyId; Results = $results; Backup = $bf; BackupError = $journal.Error; UnrecordedNames = $unrecorded }
   } finally { Exit-EngineMutex $engineMutex }
 }
 
@@ -3048,23 +3284,98 @@ function Get-RestoreOpKey($op) {
   }
 }
 
-function Invoke-Restore([string]$File, [scriptblock]$Progress) {
-  $engineMutex = Enter-EngineMutex
-  try {
-  if (-not (Test-Admin)) { throw '还原受保护备份需要管理员权限' }
-  # 默认合并所有尚未消费过的备份：分多次执行优化会产生多份备份，只回退最新一份会把
-  # 更早那次的改动原封留在系统里，而界面却宣布「已回到优化前」。显式传 -BackupFile
-  # 仍只还原那一份（专家操作，CLI 契约不变）。全部成功后给备份文件打 .restored 后缀，
-  # 下次还原不再消费，避免把早已还原过的旧值再写回系统、覆盖用户此后的手动调整
+function Get-RestoreReceiptCanonicalPayload($Receipt) {
+  $payload = [pscustomobject][ordered]@{
+    SchemaVersion = [int]$Receipt.SchemaVersion
+    RestoreActionId = "$($Receipt.RestoreActionId)"
+    Mode = "$($Receipt.Mode)"
+    UserSid = "$($Receipt.UserSid)"
+    RestoredItemIds = @($Receipt.RestoredItemIds | ForEach-Object { "$_" })
+    ConsumedOps = @($Receipt.ConsumedOps | ForEach-Object {
+      [pscustomobject][ordered]@{ BackupId = "$($_.BackupId)"; OpId = "$($_.OpId)" }
+    })
+    CreatedUtc = "$($Receipt.CreatedUtc)"
+    Verification = "$($Receipt.Verification)"
+  }
+  $payload | ConvertTo-Json -Depth 8 -Compress
+}
+
+function Set-RestoreReceiptIntegrity($Receipt) {
+  $value = Get-HmacHex (Get-RestoreReceiptCanonicalPayload $Receipt) (Get-BackupHmacKey)
+  $Receipt.Integrity = [pscustomobject][ordered]@{ Algorithm = 'HMAC-SHA256'; Value = $value }
+}
+
+function Assert-RestoreReceipt($Receipt) {
+  Assert-ExactProperties $Receipt @('SchemaVersion','RestoreActionId','Mode','UserSid','RestoredItemIds','ConsumedOps','CreatedUtc','Verification','Integrity') @() '还原消费凭证'
+  if ([int]$Receipt.SchemaVersion -ne $script:RestoreReceiptSchemaVersion) { throw "不支持的还原消费凭证版本：$($Receipt.SchemaVersion)" }
+  $actionId = [guid]::Empty; $when = [DateTime]::MinValue
+  if (-not [guid]::TryParseExact("$($Receipt.RestoreActionId)", 'D', [ref]$actionId)) { throw '还原消费凭证 ID 无效' }
+  if ("$($Receipt.Mode)" -notin @('selected_items','all')) { throw '还原消费凭证模式无效' }
+  try { [void](New-Object Security.Principal.SecurityIdentifier("$($Receipt.UserSid)")) } catch { throw '还原消费凭证用户 SID 无效' }
+  if (-not [DateTime]::TryParse("$($Receipt.CreatedUtc)", [ref]$when)) { throw '还原消费凭证时间无效' }
+  if ("$($Receipt.Verification)" -ne 'verified') { throw '还原消费凭证尚未验证' }
+  $itemIds = @($Receipt.RestoredItemIds)
+  if ($itemIds.Count -gt 64 -or @($itemIds | Select-Object -Unique).Count -ne $itemIds.Count) { throw '还原消费凭证项目列表重复或超过上限' }
+  foreach ($itemId in $itemIds) { if ("$itemId" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') { throw "还原消费凭证项目 ID 无效：$itemId" } }
+  $ops = @($Receipt.ConsumedOps)
+  if ($ops.Count -eq 0 -or $ops.Count -gt 4096) { throw '还原消费凭证操作为空或超过上限' }
+  $pairs = @()
+  foreach ($op in $ops) {
+    Assert-ExactProperties $op @('BackupId','OpId') @() '还原消费操作'
+    foreach ($field in 'BackupId','OpId') {
+      $parsed = [guid]::Empty
+      if (-not [guid]::TryParseExact("$($op.$field)", 'D', [ref]$parsed)) { throw "还原消费操作 $field 无效：$($op.$field)" }
+    }
+    $pairs += ("$($op.BackupId)|$($op.OpId)".ToLowerInvariant())
+  }
+  if (@($pairs | Select-Object -Unique).Count -ne $pairs.Count) { throw '还原消费凭证包含重复操作' }
+  Assert-ExactProperties $Receipt.Integrity @('Algorithm','Value') @() '还原消费凭证完整性字段'
+  if ($Receipt.Integrity.Algorithm -ne 'HMAC-SHA256' -or "$($Receipt.Integrity.Value)" -notmatch '^[0-9a-f]{64}$') { throw '还原消费凭证完整性字段无效' }
+  $expected = Get-HmacHex (Get-RestoreReceiptCanonicalPayload $Receipt) (Get-BackupHmacKey)
+  if (-not (Test-FixedTimeEqual ([Text.Encoding]::ASCII.GetBytes("$($Receipt.Integrity.Value)")) ([Text.Encoding]::ASCII.GetBytes($expected)))) {
+    throw '还原消费凭证完整性校验失败，文件可能已被修改'
+  }
+}
+
+function Write-RestoreReceipt($Receipt) {
   Initialize-ProtectedStore
-  $restoreNotes = @()
-  $legacyDirs = @()
-  $sourceFiles = @()
+  Set-RestoreReceiptIntegrity $Receipt
+  Assert-RestoreReceipt $Receipt
+  $path = Join-Path $script:BackupDir ("restore-receipt-$($Receipt.RestoreActionId).json")
+  if (Test-Path -LiteralPath $path) { throw '还原消费凭证文件已存在' }
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Receipt | ConvertTo-Json -Depth 10))
+  Write-BytesAtomic $path $bytes
+  Set-ProtectedFileAcl $path
+  $path
+}
+
+function Read-ValidatedRestoreReceipt([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path)
+  if (-not (Test-PathUnder $full $script:BackupDir) -or (Test-PathHasReparsePoint $full)) { throw '还原消费凭证路径无效' }
+  $fi = Get-Item -LiteralPath $full -ErrorAction Stop
+  if ($fi.Length -gt 8MB) { throw '还原消费凭证超过 8MB 上限' }
+  try { $receipt = [IO.File]::ReadAllText($full, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
+  catch { throw "还原消费凭证 JSON 损坏：$($_.Exception.Message)" }
+  Assert-RestoreReceipt $receipt
+  $receipt
+}
+
+function Get-ConsumedRestoreOpSet {
+  $set = @{}
+  if (-not (Test-Path -LiteralPath $script:BackupDir -PathType Container)) { return $set }
+  foreach ($path in @(Get-ChildItem -LiteralPath $script:BackupDir -Filter 'restore-receipt-*.json' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $receipt = Read-ValidatedRestoreReceipt $path
+    if ("$($receipt.UserSid)" -ine $script:TargetUserSid) { continue }
+    foreach ($op in @($receipt.ConsumedOps)) { $set[("$($op.BackupId)|$($op.OpId)".ToLowerInvariant())] = $true }
+  }
+  $set
+}
+
+function Get-ValidatedRestoreRecords([string]$File, [bool]$AllowEmpty) {
+  Initialize-ProtectedStore
+  $notes = @(); $legacyDirs = @(); $sourceFiles = @(); $alreadyConsumed = $false
   if ($File) {
     $candidate = [IO.Path]::GetFullPath($File)
-    # 自动调优把“正在回滚哪一份”先写入本地状态，再调用短生命周期管理员引擎。
-    # 如果机器恰好在系统还原完成、GUI 清除状态引用之前断电，原文件已被原子标为
-    # .restored；重试同一个显式 BackupFile 必须幂等成功，而不是把实验卡死。
     $restoredCandidate = $candidate + '.restored'
     if ((Test-PathUnder $candidate $script:BackupDir) -and
         -not (Test-Path -LiteralPath $candidate -PathType Leaf) -and
@@ -3074,20 +3385,14 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
           ([IO.Path]::GetFullPath("$($consumed.Document.UserLocalAppData)").TrimEnd('\') -ine $script:TargetLocalAppData.TrimEnd('\'))) {
         throw '指定备份属于另一个 Windows 用户，已拒绝跨用户还原'
       }
-      return [pscustomobject]@{
-        File = $candidate; Files = @($candidate); MergedCount = 1; RestoredOps = 0
-        Failed = @(); Skipped = @(); Notes = @('指定备份此前已完成还原，本次无需重复执行')
-      }
+      return [pscustomobject]@{ Records = @(); Notes = @('指定备份此前已完成还原，本次无需重复执行'); AlreadyConsumed = $true }
     }
     if (-not (Test-PathUnder $candidate $script:BackupDir)) {
-      $legacyDirs = @(Get-LegacyBackupDirs)
-      $restoreNotes += @($script:LegacyBackupWarnings)
+      $legacyDirs = @(Get-LegacyBackupDirs); $notes += @($script:LegacyBackupWarnings)
     }
     $sourceFiles = @($candidate)
-  }
-  else {
-    $legacyDirs = @(Get-LegacyBackupDirs)
-    $restoreNotes += @($script:LegacyBackupWarnings)
+  } else {
+    $legacyDirs = @(Get-LegacyBackupDirs); $notes += @($script:LegacyBackupWarnings)
     $sourceFiles = @(
       foreach ($d in (@($script:BackupDir) + @($legacyDirs) | Select-Object -Unique)) {
         if (Test-Path -LiteralPath $d) {
@@ -3097,31 +3402,277 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
     ) | Select-Object -Unique
   }
   if ($sourceFiles.Count -eq 0) {
-    $detail = $(if ($restoreNotes.Count -gt 0) { "（$($restoreNotes -join '；')）" } else { '' })
+    if ($AllowEmpty) { return [pscustomobject]@{ Records = @(); Notes = $notes; AlreadyConsumed = $false } }
+    $detail = $(if ($notes.Count -gt 0) { "（$($notes -join '；')）" } else { '' })
     throw "未找到任何备份文件，无法还原$detail"
   }
-  # GUID 文件名没有时间顺序；必须按签名文档里的 CreatedUtc 新→旧排序，
-  # 合并同一目标时才能稳定保留最早一次 Apply 记录的真实原值。
   $readRecords = @($sourceFiles | ForEach-Object { Read-ValidatedBackup $_ $legacyDirs })
   $consumed = @($readRecords | Where-Object Consumed)
-  if ($consumed.Count -gt 0) { $restoreNotes += "已跳过 $($consumed.Count) 份早已迁移并还原的旧备份" }
-  $uniqueRecords = @($readRecords | Where-Object { -not $_.Consumed } | Group-Object Path | ForEach-Object { $_.Group[0] })
-  $records = @(Sort-BackupRecordsNewestFirst $uniqueRecords)
-  if ($records.Count -eq 0) { throw "未找到尚未还原的备份$(if ($restoreNotes.Count -gt 0) { "（$($restoreNotes -join '；')）" })" }
+  if ($consumed.Count -gt 0) { $notes += "已跳过 $($consumed.Count) 份早已迁移并还原的旧备份" }
+  $records = @(Sort-BackupRecordsNewestFirst @($readRecords | Where-Object { -not $_.Consumed } | Group-Object Path | ForEach-Object { $_.Group[0] }))
   $mismatch = @($records | Where-Object {
     $_.Document.UserSid -ine $script:TargetUserSid -or
     ([IO.Path]::GetFullPath("$($_.Document.UserLocalAppData)").TrimEnd('\') -ine $script:TargetLocalAppData.TrimEnd('\'))
   })
   if ($File -and $mismatch.Count -gt 0) { throw '指定备份属于另一个 Windows 用户，已拒绝跨用户还原' }
-  if ($mismatch.Count -gt 0) { $restoreNotes += "已跳过 $($mismatch.Count) 份属于其他 Windows 用户的备份" }
+  if ($mismatch.Count -gt 0) { $notes += "已跳过 $($mismatch.Count) 份属于其他 Windows 用户的备份" }
   $records = @($records | Where-Object { $mismatch -notcontains $_ })
-  if ($records.Count -eq 0) { throw '未找到属于当前目标用户的备份文件，无法还原' }
+  if ($records.Count -eq 0 -and -not $AllowEmpty) { throw '未找到属于当前目标用户的备份文件，无法还原' }
+  [pscustomobject]@{ Records = $records; Notes = $notes; AlreadyConsumed = $alreadyConsumed }
+}
+
+function Get-ActiveV3RestoreOps($Records, $ConsumedSet) {
+  $list = New-Object System.Collections.Generic.List[object]
+  foreach ($record in @($Records | Where-Object { [int]$_.Document.SchemaVersion -eq 3 })) {
+    $items = @{}; foreach ($item in @($record.Document.Items)) { $items["$($item.ItemId)"] = $item }
+    foreach ($op in @($record.Document.Ops)) {
+      $key = ("$($record.Document.BackupId)|$($op.Id)".ToLowerInvariant())
+      if ($ConsumedSet.ContainsKey($key)) { continue }
+      [void]$list.Add([pscustomobject]@{
+        BackupId = "$($record.Document.BackupId)"; BackupPath = "$($record.Path)"
+        CreatedUtc = [DateTime]::Parse("$($record.Document.CreatedUtc)").ToUniversalTime()
+        Item = $items["$($op.ItemId)"]; Op = $op; ConsumeKey = $key
+      })
+    }
+  }
+  @($list.ToArray())
+}
+
+function Get-SelectiveRestoreUnits($Wrappers) {
+  $units = New-Object System.Collections.Generic.List[object]
+  foreach ($group in @($Wrappers | Group-Object { Get-RestoreOpKey $_.Op })) {
+    if (-not $group.Name) { continue }
+    $ordered = @($group.Group | Sort-Object @{Expression='CreatedUtc';Descending=$false}, @{Expression={ [int]$_.Op.OpIndex };Descending=$false})
+    [void]$units.Add([pscustomobject]@{
+      TargetKey = $group.Name; Restore = $ordered[0].Op; Latest = $ordered[-1].Op; Wrappers = @($ordered)
+    })
+  }
+  @($units.ToArray())
+}
+
+function Test-RegOperationMatchesApplied($Op) {
+  $kind = Get-RegValueKind $Op.Path $Op.Name
+  $value = $(if ($null -ne $kind) { Get-RegValue $Op.Path $Op.Name } else { $null })
+  $matches = ($null -ne $kind) -and "$kind" -eq "$($Op.AppliedKind)" -and (Test-ValueEqual $value $Op.AppliedValue)
+  [pscustomobject]@{ Matches = [bool]$matches; CurrentKind = "$kind"; CurrentValue = $value }
+}
+
+function Get-RestoreItemCatalog {
+  if (-not (Test-Admin)) { throw '读取受保护还原目录需要管理员权限' }
+  $state = Get-ValidatedRestoreRecords $null $true
+  $consumedSet = Get-ConsumedRestoreOpSet
+  $active = @(Get-ActiveV3RestoreOps $state.Records $consumedSet)
+  $supported = @(Get-SelectiveRestoreItemIds)
+  $shared = @{}
+  foreach ($target in @($active | Group-Object { Get-RestoreOpKey $_.Op })) {
+    $owners = @($target.Group | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique)
+    if ($target.Name -and $owners.Count -gt 1) { foreach ($owner in $owners) { $shared[$owner] = $true } }
+  }
+  $items = New-Object System.Collections.Generic.List[object]
+  foreach ($itemGroup in @($active | Where-Object { $supported -contains "$($_.Op.ItemId)" } | Group-Object { "$($_.Op.ItemId)" })) {
+    $wrappers = @($itemGroup.Group)
+    $meta = @($wrappers | Sort-Object CreatedUtc -Descending | ForEach-Object Item | Where-Object { $_ } | Select-Object -First 1)
+    if ($meta.Count -eq 0) { continue }
+    $units = @(Get-SelectiveRestoreUnits $wrappers)
+    $status = 'available'; $reason = ''; $canRestore = $true
+    if (@($wrappers | Where-Object { $_.Op.Kind -ne 'reg' }).Count -gt 0) {
+      $status = 'unsupported'; $reason = '该项目包含当前版本尚未开放的底层设置，仅支持全部复原'; $canRestore = $false
+    } elseif ($shared.ContainsKey($itemGroup.Name)) {
+      $status = 'shared_target'; $reason = '该项目与其他项目共享底层设置，请使用全部复原'; $canRestore = $false
+    } else {
+      foreach ($unit in $units) {
+        $check = Test-RegOperationMatchesApplied $unit.Latest
+        if (-not $check.Matches) { $status = 'conflict'; $reason = '检测到优化后又被用户或其他程序修改，本次不会覆盖'; $canRestore = $false; break }
+      }
+    }
+    [void]$items.Add([pscustomobject][ordered]@{
+      Id = $itemGroup.Name; Name = "$($meta[0].DisplayName)"; RestoreGroupId = "$($meta[0].RestoreGroupId)"
+      SettingCount = $units.Count; HistoryOpCount = $wrappers.Count; RebootRequired = [bool]$meta[0].RebootRequired
+      Status = $status; StatusText = $(switch ($status) { 'available' { '可精确复原' }; 'conflict' { '发生后续修改' }; 'shared_target' { '存在共享设置' }; default { '仅支持全部复原' } })
+      Reason = $reason; CanRestore = $canRestore
+    })
+  }
+  $legacyRecords = @($state.Records | Where-Object { [int]$_.Document.SchemaVersion -eq 2 -and @($_.Document.Ops).Count -gt 0 })
+  $unsupportedIds = @($active | Where-Object { $supported -notcontains "$($_.Op.ItemId)" } | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique)
+  $activeV3BackupCount = @($active | ForEach-Object BackupId | Select-Object -Unique).Count
+  [pscustomobject][ordered]@{
+    SchemaVersion = 1; Items = @($items.ToArray()); LegacyBackupCount = $legacyRecords.Count
+    UnsupportedV3ItemCount = $unsupportedIds.Count; ActiveBackupCount = $activeV3BackupCount + $legacyRecords.Count
+    ActiveItemIds = @($active | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique)
+    ActiveItemCount = @($active | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique).Count
+    ActiveOpCount = $active.Count + @($legacyRecords | ForEach-Object { @($_.Document.Ops) }).Count
+    HasActiveChanges = [bool]($active.Count -gt 0 -or $legacyRecords.Count -gt 0); Notes = @($state.Notes)
+  }
+}
+
+function Get-RegRestoreSnapshot($Op) {
+  $kind = Get-RegValueKind $Op.Path $Op.Name
+  [pscustomobject]@{
+    Path = "$($Op.Path)"; Name = "$($Op.Name)"; Existed = ($null -ne $kind)
+    Value = $(if ($null -ne $kind) { Get-RegValue $Op.Path $Op.Name } else { $null }); Kind = "$kind"
+  }
+}
+
+function Set-RegRestoreSnapshot($Snapshot) {
+  if ($Snapshot.Existed) {
+    $value = $Snapshot.Value
+    if ($Snapshot.Kind -eq 'Binary') { $value = [byte[]]@($value) }
+    elseif ($Snapshot.Kind -eq 'MultiString') { $value = [string[]]@($value) }
+    Set-RegValue $Snapshot.Path $Snapshot.Name $value $Snapshot.Kind
+    if ("$(Get-RegValueKind $Snapshot.Path $Snapshot.Name)" -ne "$($Snapshot.Kind)" -or -not (Test-ValueEqual (Get-RegValue $Snapshot.Path $Snapshot.Name) $value)) { throw '注册表状态回滚后验证失败' }
+  } else {
+    Remove-RegValue $Snapshot.Path $Snapshot.Name
+    if ($null -ne (Get-RegValueKind $Snapshot.Path $Snapshot.Name)) { throw '注册表状态回滚删除后验证失败' }
+  }
+}
+
+function Invoke-RestoreRegOperation($Op) {
+  if ($Op.Existed) {
+    $value = $Op.OldValue
+    if ($Op.OldKind -eq 'Binary') { $value = [byte[]]@($value) }
+    elseif ($Op.OldKind -eq 'MultiString') { $value = [string[]]@($value) }
+    Set-RegValue $Op.Path $Op.Name $value $Op.OldKind
+    if ("$(Get-RegValueKind $Op.Path $Op.Name)" -ne "$($Op.OldKind)" -or -not (Test-ValueEqual (Get-RegValue $Op.Path $Op.Name) $value)) { throw '注册表还原后回读验证失败' }
+  } else {
+    Remove-RegValue $Op.Path $Op.Name
+    if ($null -ne (Get-RegValueKind $Op.Path $Op.Name)) { throw '注册表删除后回读验证失败' }
+  }
+}
+
+function New-RestoreReceipt([string]$Mode, [string[]]$ItemIds, $Wrappers) {
+  [pscustomobject][ordered]@{
+    SchemaVersion = $script:RestoreReceiptSchemaVersion
+    RestoreActionId = [guid]::NewGuid().ToString('D')
+    Mode = $Mode; UserSid = $script:TargetUserSid; RestoredItemIds = @($ItemIds | Select-Object -Unique)
+    ConsumedOps = @($Wrappers | ForEach-Object { [pscustomobject][ordered]@{ BackupId = "$($_.BackupId)"; OpId = "$($_.Op.Id)" } })
+    CreatedUtc = [DateTime]::UtcNow.ToString('o'); Verification = 'verified'; Integrity = $null
+  }
+}
+
+function Invoke-RestoreSelected([string[]]$ItemIds, [scriptblock]$Progress) {
+  $engineMutex = Enter-EngineMutex
+  try {
+    if (-not (Test-Admin)) { throw '按项目复原受保护备份需要管理员权限' }
+    $ItemIds = @($ItemIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+    if ($ItemIds.Count -eq 0) { throw '请至少选择一个要复原的项目' }
+    $unsupported = @($ItemIds | Where-Object { (Get-SelectiveRestoreItemIds) -notcontains $_ })
+    if ($unsupported.Count -gt 0) { throw "以下项目暂不支持按项目复原：$($unsupported -join '、')" }
+    $state = Get-ValidatedRestoreRecords $null $false
+    $active = @(Get-ActiveV3RestoreOps $state.Records (Get-ConsumedRestoreOpSet))
+    $itemResults = New-Object System.Collections.Generic.List[object]
+    $successes = New-Object System.Collections.Generic.List[object]
+    $failed = New-Object System.Collections.Generic.List[string]
+    $index = 0
+    foreach ($itemId in $ItemIds) {
+      $index++
+      $wrappers = @($active | Where-Object { "$($_.Op.ItemId)" -eq $itemId })
+      $meta = @($wrappers | ForEach-Object Item | Where-Object { $_ } | Select-Object -First 1)
+      $name = $(if ($meta.Count) { "$($meta[0].DisplayName)" } else { $itemId })
+      if ($Progress) { & $Progress ([pscustomobject]@{ Stage='start';Index=$index;Total=$ItemIds.Count;Name=$name;Ok=$null }) }
+      $ok = $false; $message = ''
+      if ($wrappers.Count -eq 0) { $message = '没有仍生效且可精确复原的记录' }
+      elseif (@($wrappers | Where-Object { $_.Op.Kind -ne 'reg' }).Count -gt 0) { $message = '该项目包含当前版本尚未开放的底层设置，请使用全部复原' }
+      else {
+        $units = @(Get-SelectiveRestoreUnits $wrappers)
+        $conflict = $false
+        foreach ($unit in $units) { if (-not (Test-RegOperationMatchesApplied $unit.Latest).Matches) { $conflict = $true; break } }
+        if ($conflict) { $message = '检测到优化后又被用户或其他程序修改，已保留当前状态' }
+        else {
+          $snapshots = [ordered]@{}; $touched = New-Object System.Collections.Generic.List[string]
+          try {
+            foreach ($unit in $units) { $snapshots[$unit.TargetKey] = Get-RegRestoreSnapshot $unit.Latest }
+            foreach ($unit in $units) {
+              [void]$touched.Add($unit.TargetKey)
+              Invoke-RestoreRegOperation $unit.Restore
+            }
+            $ok = $true; $message = "已复原 $($units.Count) 个底层设置"
+            [void]$successes.Add([pscustomobject]@{ Id=$itemId;Name=$name;Wrappers=$wrappers;Snapshots=$snapshots;Units=$units;RebootRequired=[bool]$meta[0].RebootRequired })
+          } catch {
+            $restoreError = $_.Exception.Message; $rollbackErrors = @()
+            $rollbackKeys = @($touched.ToArray()); if ($rollbackKeys.Count -gt 1) { [array]::Reverse($rollbackKeys) }
+            foreach ($key in $rollbackKeys) {
+              try { Set-RegRestoreSnapshot $snapshots[$key] } catch { $rollbackErrors += $_.Exception.Message }
+            }
+            $message = "$restoreError；本项目已自动撤销本次复原$(if ($rollbackErrors.Count) { "（回滚异常：$($rollbackErrors -join '；')）" })"
+          }
+        }
+      }
+      if (-not $ok) { [void]$failed.Add("$name：$message") }
+      [void]$itemResults.Add([pscustomobject]@{ Id=$itemId;Name=$name;Ok=$ok;Message=$message })
+      if ($Progress) { & $Progress ([pscustomobject]@{ Stage='done';Index=$index;Total=$ItemIds.Count;Name=$name;Ok=$ok }) }
+    }
+    $receiptPath = $null
+    if ($successes.Count -gt 0) {
+      $receiptWrappers = @($successes.ToArray() | ForEach-Object { @($_.Wrappers) })
+      try { $receiptPath = Write-RestoreReceipt (New-RestoreReceipt 'selected_items' @($successes.ToArray() | ForEach-Object Id) $receiptWrappers) }
+      catch {
+        $receiptError = $_.Exception.Message
+        $rollbackSuccesses = @($successes.ToArray()); if ($rollbackSuccesses.Count -gt 1) { [array]::Reverse($rollbackSuccesses) }
+        foreach ($success in $rollbackSuccesses) {
+          $rollbackErrors = @()
+          $rollbackKeys = @($success.Snapshots.Keys); if ($rollbackKeys.Count -gt 1) { [array]::Reverse($rollbackKeys) }
+          foreach ($key in $rollbackKeys) {
+            try { Set-RegRestoreSnapshot $success.Snapshots[$key] } catch { $rollbackErrors += $_.Exception.Message }
+          }
+          $msg = "消费凭证写入失败，已撤销本次复原：$receiptError$(if ($rollbackErrors.Count) { "；回滚异常：$($rollbackErrors -join '；')" })"
+          $row = @($itemResults.ToArray() | Where-Object Id -eq $success.Id | Select-Object -First 1)
+          if ($row.Count) { $row[0].Ok = $false; $row[0].Message = $msg }
+          [void]$failed.Add("$($success.Name)：$msg")
+        }
+        $successes.Clear()
+      }
+    }
+    $successArray = @($successes.ToArray())
+    $files = @($successArray | ForEach-Object { @($_.Wrappers | ForEach-Object BackupPath) } | Select-Object -Unique)
+    [pscustomobject][ordered]@{
+      Mode='selected_items'; File=$(if($files.Count){$files[0]}else{$null}); Files=$files; MergedCount=$files.Count
+      RestoredOps=@($successArray | ForEach-Object { @($_.Units).Count } | Measure-Object -Sum).Sum
+      RestoredItems=$successArray.Count; Failed=@($failed.ToArray()); Skipped=@(); Notes=@($state.Notes)
+      ItemResults=@($itemResults.ToArray()); RebootItems=@($successArray | Where-Object RebootRequired | ForEach-Object Name)
+      RestoredItemIds=@($successArray | ForEach-Object Id)
+      RebootItemIds=@($successArray | Where-Object RebootRequired | ForEach-Object Id)
+      ApplyIds=@($successArray | ForEach-Object { @($_.Wrappers | ForEach-Object { "$($_.Op.ApplyId)" }) } | Select-Object -Unique)
+      Receipt=$receiptPath
+    }
+  } finally { Exit-EngineMutex $engineMutex }
+}
+
+function Invoke-Restore([string]$File, [scriptblock]$Progress) {
+  $engineMutex = Enter-EngineMutex
+  try {
+  if (-not (Test-Admin)) { throw '还原受保护备份需要管理员权限' }
+  # 默认合并所有尚未消费过的备份：分多次执行优化会产生多份备份，只回退最新一份会把
+  # 更早那次的改动原封留在系统里，而界面却宣布「已回到优化前」。显式传 -BackupFile
+  # 仍只还原那一份（专家操作，CLI 契约不变）。全部成功后给备份文件打 .restored 后缀，
+  # 下次还原不再消费，避免把早已还原过的旧值再写回系统、覆盖用户此后的手动调整
+  $state = Get-ValidatedRestoreRecords $File $false
+  if ($state.AlreadyConsumed) {
+    return [pscustomobject]@{ Mode='all'; File=$File; Files=@($File); MergedCount=1; RestoredOps=0
+      Failed=@(); Skipped=@(); Notes=@($state.Notes); Receipt=$null }
+  }
+  $restoreNotes = @($state.Notes)
+  $consumedSet = Get-ConsumedRestoreOpSet
+  $activeV3 = @(Get-ActiveV3RestoreOps $state.Records $consumedSet)
+  $activeV3Backups = @($activeV3 | ForEach-Object BackupId | Select-Object -Unique)
+  $records = @($state.Records | Where-Object {
+    [int]$_.Document.SchemaVersion -eq 2 -or $activeV3Backups -contains "$($_.Document.BackupId)"
+  })
+  if ($records.Count -eq 0) {
+    if ($File) {
+      return [pscustomobject]@{ Mode='all'; File=$File; Files=@($File); MergedCount=1; RestoredOps=0
+        Failed=@(); Skipped=@(); Notes=@('指定备份此前已完成还原，本次无需重复执行'); Receipt=$null }
+    }
+    throw "未找到尚未还原的备份$(if ($restoreNotes.Count -gt 0) { "（$($restoreNotes -join '；')）" })"
+  }
   $files = @($records | ForEach-Object { $_.Path })
   # 按「新→旧」展开成一张操作表（每份内部仍逆序执行）
   $flat = New-Object System.Collections.Generic.List[object]
   foreach ($record in $records) {
     $f = $record.Path; $b = $record.Document
-    $cur = @($b.Ops); [array]::Reverse($cur)
+    if ([int]$b.SchemaVersion -eq 3) {
+      $cur = @($activeV3 | Where-Object { $_.BackupId -eq "$($b.BackupId)" } | ForEach-Object Op)
+    } else { $cur = @($b.Ops) }
+    if ($cur.Count -gt 1) { [array]::Reverse($cur) }
     foreach ($o in $cur) { [void]$flat.Add($o) }
     # *.pending.json = 某次执行中途异常退出（断电/被杀/备份目录中途写失败）实时保留的备份：
     # 内容有效、正常还原，但必须让用户知道它的来源——那次执行没有跑完
@@ -3256,17 +3807,31 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
     }
     if ($Progress) { & $Progress ([pscustomobject]@{ Stage = 'done'; Index = $seq; Total = $total; Name = (Get-RestoreOpLabel $op); Ok = $opOk }) }
   }
-  # 全部成功才给消费过的备份打 .restored 后缀（不再匹配 backup-*.json）；有失败保留原名，
-  # 修复权限后可整体重试（重写旧值幂等无害）。改名失败不算还原失败，但必须提示：
-  # 不标记的话下次还原会把这些旧值再写回系统
+  # v3 原始备份保持不可变，通过签名消费凭证记录已还原操作；v2 缺少项目归属，继续用
+  # .restored 整份归档兼容旧版。任何还原失败都不消费记录，修复后可重试。
+  $receiptPath = $null
   if (@($failed).Count -eq 0) {
-    foreach ($f in $files) {
-      try { Rename-Item -LiteralPath $f -NewName ((Split-Path -Leaf $f) + '.restored') -ErrorAction Stop }
-      catch { $failed += "备份「$(Split-Path -Leaf $f)」已还原但完成标记失败：$($_.Exception.Message)" }
+    if ($activeV3.Count -gt 0) {
+      try {
+        $receipt = New-RestoreReceipt 'all' @($activeV3 | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique) $activeV3
+        $receiptPath = Write-RestoreReceipt $receipt
+      } catch { $failed += "v3 备份已还原但消费凭证写入失败：$($_.Exception.Message)" }
+    }
+    if (@($failed).Count -eq 0) {
+      foreach ($record in @($records | Where-Object { [int]$_.Document.SchemaVersion -eq 2 })) {
+        $f = $record.Path
+        try { Rename-Item -LiteralPath $f -NewName ((Split-Path -Leaf $f) + '.restored') -ErrorAction Stop }
+        catch { $failed += "备份「$(Split-Path -Leaf $f)」已还原但完成标记失败：$($_.Exception.Message)" }
+      }
     }
   }
-  [pscustomobject]@{ File = $files[0]; Files = $files; MergedCount = @($files).Count
-                     RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes }
+  $allSucceeded = @($failed).Count -eq 0
+  [pscustomobject]@{ Mode='all'; File = $files[0]; Files = $files; MergedCount = @($files).Count
+                     RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes
+                     RestoredItemIds = $(if ($allSucceeded) { @($activeV3 | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique) } else { @() })
+                     RebootItemIds = $(if ($allSucceeded) { @($activeV3 | Where-Object { $_.Item -and $_.Item.RebootRequired } | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique) } else { @() })
+                     ApplyIds = @($activeV3 | ForEach-Object { "$($_.Op.ApplyId)" } | Select-Object -Unique)
+                     Receipt=$receiptPath }
   } finally { Exit-EngineMutex $engineMutex }
 }
 
@@ -3320,9 +3885,9 @@ function Write-DetectText($r) {
 
 if ($Json) { try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {} }
 
-$didDispatch = [bool]($ListItems -or $Detect -or $Preview -or $ListPresets -or $SavePreset -or $DeletePreset -or $Apply -or $Restore)
+$didDispatch = [bool]($ListItems -or $Detect -or $Preview -or $ListPresets -or $SavePreset -or $DeletePreset -or $Apply -or $Restore -or $ListRestoreItems)
 if ($didDispatch) {
-$dispatchAction = $(if ($Apply) { 'Apply' } elseif ($Restore) { 'Restore' } elseif ($Detect -or $Preview) { 'Detect' } else { 'Other' })
+$dispatchAction = $(if ($Apply) { 'Apply' } elseif ($Restore -or $ListRestoreItems) { 'Restore' } elseif ($Detect -or $Preview) { 'Detect' } else { 'Other' })
 $dispatchData = $null; $dispatchError = $null; $cliExitCode = 0
 try {
   Set-TargetUserContext $UserSid $UserLocalAppData
@@ -3379,6 +3944,14 @@ elseif ($DeletePreset) {
   $n = Remove-UserPreset $DeletePreset
   if ($Json) { @{ Deleted = $n } | ConvertTo-Json } else { Write-Output "方案「$n」已删除" }
 }
+elseif ($ListRestoreItems) {
+  $r = Get-RestoreItemCatalog
+  if ($Json) { $r | ConvertTo-Json -Depth 6 }
+  else {
+    foreach ($item in @($r.Items)) { Write-Output "  $(if ($item.CanRestore) { '[可复原]' } else { '[不可选]' }) $($item.Id) — $($item.Name)（$($item.StatusText)）" }
+    if ($r.LegacyBackupCount -gt 0) { Write-Output "旧版本备份：$($r.LegacyBackupCount) 份，仅支持全部还原" }
+  }
+}
 elseif ($Apply) {
   # -Preset 与 -Items 二选一；同时给出时以 -Preset 为准
   if ($Preset) { $Items = Resolve-PresetItems $Preset $GamePath }
@@ -3407,10 +3980,14 @@ elseif ($Apply) {
   }
 }
 elseif ($Restore) {
-  $r = Invoke-Restore $BackupFile
+  if ($BackupFile -and @($RestoreItems).Count -gt 0) { throw '-BackupFile 与 -RestoreItems 不能同时使用' }
+  $r = $(if (@($RestoreItems).Count -gt 0) { Invoke-RestoreSelected $RestoreItems } else { Invoke-Restore $BackupFile })
   if ($Json) { $r | ConvertTo-Json -Depth 4 }
   else {
-    if ($r.MergedCount -gt 1) { Write-Output "已合并 $($r.MergedCount) 份备份，共还原 $($r.RestoredOps) 项改动（同一设置以最早备份的原值为准）" }
+    if ($r.Mode -eq 'selected_items') {
+      foreach ($item in @($r.ItemResults)) { Write-Output "  $(if ($item.Ok) { '[复原成功]' } else { '[复原失败]' }) $($item.Name) — $($item.Message)" }
+      Write-Output "按项目复原完成：$($r.RestoredItems) 项成功，共写回 $($r.RestoredOps) 个底层设置"
+    } elseif ($r.MergedCount -gt 1) { Write-Output "已合并 $($r.MergedCount) 份备份，共还原 $($r.RestoredOps) 项改动（同一设置以最早备份的原值为准）" }
     else { Write-Output "已按备份还原 $($r.RestoredOps) 项改动（备份：$($r.File)）" }
     foreach ($f in $r.Failed) { Write-Output "  [还原失败] $f" }
     foreach ($s in $r.Skipped) { Write-Output "  [还原跳过] $s" }

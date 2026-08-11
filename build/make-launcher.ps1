@@ -178,9 +178,10 @@ $hashRowsText
     static bool IsRepairOnlyToken(DfbTokenFacts token, bool currentAdmin) {
         if (!currentAdmin || token == null || token.IsMedium || !token.Elevated || token.IntegrityRid < 0x3000)
             return false;
-        if (ReadUacPolicy("EnableLUA", 1) == 0) return true;
-        return token.Sid != null && token.Sid.EndsWith("-500", StringComparison.Ordinal) &&
-            ReadUacPolicy("FilterAdministratorToken", 0) != 1;
+        // 用户经常习惯性右键“以管理员身份运行”。这时已经丢失 medium token，不能再
+        // 提供原用户 worker，但仍可进入受限兼容会话；不要在入口直接把正版安装拦死。
+        // EngineHost 会再次核验启动器确为同会话 high token，GUI 再关闭全部用户态 broker。
+        return true;
     }
 
     static Dictionary<string,string> EnterTrustedElevationEnvironment() {
@@ -395,8 +396,13 @@ $hashRowsText
         if (action != "MigrateLegacyData" && action != "ClearShaderCache" && action != "GetGpuPanelApps" &&
             action != "GetNvAutoOptStatus")
             throw new InvalidOperationException("原用户 worker 动作不在白名单");
-        if (action == "GetGpuPanelApps" && payload != "NVIDIA" && payload != "AMD" && payload != "Intel")
-            throw new InvalidOperationException("显卡厂商不在白名单");
+        if (action == "GetGpuPanelApps") {
+            payload = (payload ?? "").Trim();
+            if (String.Equals(payload, "NVIDIA", StringComparison.OrdinalIgnoreCase)) payload = "NVIDIA";
+            else if (String.Equals(payload, "AMD", StringComparison.OrdinalIgnoreCase)) payload = "AMD";
+            else if (String.Equals(payload, "Intel", StringComparison.OrdinalIgnoreCase)) payload = "Intel";
+            else throw new InvalidOperationException("显卡厂商不在白名单");
+        }
         if (action != "GetGpuPanelApps" && !String.IsNullOrEmpty(payload))
             throw new InvalidOperationException("原用户 worker 动作不接受参数");
         string workerSession = RandomHex();
@@ -426,7 +432,12 @@ $hashRowsText
             psi.EnvironmentVariables["PATHEXT"] = ".COM;.EXE;.BAT;.CMD";
             psi.EnvironmentVariables["SystemRoot"] = windows;
             psi.EnvironmentVariables["WINDIR"] = windows;
-            psi.EnvironmentVariables["ProgramData"] = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+            // .NET Framework 4.x 的 CommonApplicationData 会按 %SystemDrive% 展开系统路径；
+            // 清空 worker 环境后少这一项，GetFolderPath 会抛“需要绝对路径信息”。
+            psi.EnvironmentVariables["SystemDrive"] = Path.GetPathRoot(windows).TrimEnd('\\');
+            string commonAppData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+            psi.EnvironmentVariables["ProgramData"] = commonAppData;
+            psi.EnvironmentVariables["ALLUSERSPROFILE"] = commonAppData;
             psi.EnvironmentVariables["ProgramFiles"] = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
             psi.EnvironmentVariables["ProgramFiles(x86)"] = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             psi.EnvironmentVariables["USERPROFILE"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -707,7 +718,7 @@ $hashRowsText
             bool currentAdmin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
             bool repairOnly = IsRepairOnlyToken(token, currentAdmin);
             if (!token.IsMedium && !repairOnly)
-                throw new InvalidOperationException("启动器必须由原登录用户普通双击运行，请不要右键选择“以管理员身份运行”。");
+                throw new InvalidOperationException("当前 Windows 会话令牌不是可用的普通或管理员交互令牌。");
             bool createdNew;
             try { marker = CreateSessionMarker(out createdNew); }
             catch (UnauthorizedAccessException) { createdNew = false; }

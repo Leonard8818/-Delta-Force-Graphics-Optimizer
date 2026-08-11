@@ -23,7 +23,8 @@ $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$tokens, [ref]$errors)
 Assert-True ($errors.Count -eq 0) ('GUI PowerShell AST parse failed: ' + (($errors | ForEach-Object Message) -join '; '))
 $raw = [IO.File]::ReadAllText($guiPath, [Text.Encoding]::UTF8)
-$referenceData = Get-Content -LiteralPath (Join-Path $root 'data\streamer-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$referenceRaw = Get-Content -LiteralPath (Join-Path $root 'data\streamer-settings.json') -Raw -Encoding UTF8
+$referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True (-not $raw.Contains('「立即更新」全程自动：')) 'obsolete inline-update explanation is still shown'
 Assert-True $raw.Contains("`$script:UpdUi.InlineNote.Visibility = 'Collapsed'") 'inline-update explanation row is not collapsed'
@@ -52,6 +53,32 @@ Assert-True ($raw.Contains("Get-XmpBiosTutorial `$script:HardwareInfo") -and
   'computer brand is not displayed or the BIOS tutorial is not brand-aware'
 Assert-True ($raw.Contains('Get-GpuGuideText $Hw.MainGpuVendor $Hw.MainGpuName $Hw.IsLaptop $Hw')) `
   'GPU guide does not pass detected hardware into the configuration-aware recommendation'
+Assert-True ($raw.Contains('x:Name="TabFrameFixBtn" Content="掉帧修复"') -and
+  $raw.Contains('x:Name="FrameFixPage"') -and
+  $raw.Contains("@('framefix', 'TabFrameFixBtn', 'FrameFixPage')") -and
+  $raw.Contains("`$ui.TabFrameFixBtn.Add_Click({ Select-Tab 'framefix' })")) `
+  'frame-drop repair tab is not wired into the main navigation'
+Assert-True ($raw.Contains('x:Name="TabTuneBtn" Style="{StaticResource TabBtn}" Tag="" IsEnabled="False" Opacity="1"') -and
+  $raw.Contains('Text="AI定制优化"') -and
+  $raw.Contains('Text="（敬请期待）" Foreground="{StaticResource Gold}" FontWeight="Bold"') -and
+  -not $raw.Contains("`$ui.TabTuneBtn.Add_Click({ Select-Tab 'tune' })")) `
+  'AI custom optimization placeholder is not disabled or its coming-soon label is not highlighted'
+Assert-True ($raw.Contains('x:Name="FrameFixCacheBtn" Content="清理着色器缓存"') -and
+  $raw.Contains('x:Name="FrameFixGpuPrefBtn" Content="设置高性能 GPU"') -and
+  $raw.Contains('x:Name="FrameFixVcBtn" Content="检查 VC++ 运行库"') -and
+  $raw.Contains("`$ui.FrameFixCacheBtn.Add_Click({ Invoke-FrameFixCacheCleanup })") -and
+  $raw.Contains("`$ui.FrameFixGpuPrefBtn.Add_Click({ Invoke-FrameFixGpuPreference })") -and
+  $raw.Contains("`$ui.FrameFixVcBtn.Add_Click({ Invoke-FrameFixVcredistCheck })") -and
+  $raw.Contains('x:Name="FrameFixProgressPanel"') -and
+  $raw.Contains('x:Name="FrameFixProgressBar"') -and
+  $raw.Contains('x:Name="FrameFixProgressText"')) `
+  'frame-drop page still exposes text-only advice without direct software actions'
+Assert-True ($raw.Contains('@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children)') -and
+  $raw.Contains('包含 ★ 显卡型号伪装 · 执行前二次确认')) `
+  'optimization select-all does not include the GPU model spoof row'
+Assert-True ($raw.Contains("Show-ConfirmDialog '未选择优化项' 'NO ITEMS SELECTED'") -and
+  $raw.Contains('请先勾选至少一个优化项目，再点击「执行优化」。')) `
+  'execute optimization does not show a visible prompt when no item is selected'
 Assert-True ($raw.Contains("`$lines.Add('== 用户反馈选择 ==')") -and
   $raw.Contains('New-DiagnosticReport -Feedback $feedback') -and
   $raw.Contains("if ((`$issueChoices.Count + `$benefitChoices.Count) -eq 0)")) `
@@ -59,6 +86,12 @@ Assert-True ($raw.Contains("`$lines.Add('== 用户反馈选择 ==')") -and
 $recommended = @($referenceData.streamers | Where-Object { $_.featured -eq $true })
 Assert-True ($recommended.Count -eq 1 -and $referenceData.streamers[0].featured -eq $true) `
   'game settings reference does not expose exactly one featured recommendation as the first column'
+Assert-True (-not $recommended[0].platform -and -not $referenceRaw.Contains('本次推荐')) `
+  'featured recommendation still shows the redundant small subtitle'
+Assert-True (-not $raw.Contains('$meta = New-Text "数据更新：') -and
+  -not $raw.Contains('$nt = New-WrapText "备注：$($s.notes)"') -and
+  $raw.Contains('$s.captured -and $s.featured -ne $true')) `
+  'reference page still shows the removed metadata/note or the recommendation capture date'
 $recommendedSettings = $recommended[0].settings
 foreach ($expected in @(
   @('显示模式', '全屏（频繁切屏可用无边框）'), @('武器动态模糊', '关闭'),
@@ -71,9 +104,19 @@ foreach ($expected in @(
 $referenceSchemaNames = @($referenceData.settings_schema | ForEach-Object { "$($_.name)" })
 Assert-True ($referenceSchemaNames -contains '显示适配器' -and
   $referenceSchemaNames -contains 'Intel Xe 低延迟（实验性）') `
-  'recommended screenshot settings are missing from the displayed reference schema'
-Assert-True ($raw.Contains("'★ 推荐设置'") -and $raw.Contains('按截图整理 · 设备相关项请按本机调整')) `
+  'recommended settings are missing from the displayed reference schema'
+Assert-True ($raw.Contains("'★ 推荐设置'") -and $raw.Contains('性能优先推荐 · 设备相关项请按本机调整')) `
   'featured recommendation is not visually distinguished in the game settings page'
+$screenshotTerm = -join @([char]0x622A, [char]0x56FE)
+Assert-True (-not $raw.Contains($screenshotTerm) -and -not $referenceRaw.Contains($screenshotTerm)) `
+  'game settings reference still contains screenshot-related wording'
+Assert-True ($raw.Contains('x:Name="InlineRestorePanel"') -and
+  -not $raw.Contains('function Show-RestoreManagerDialog') -and
+  $raw.Contains('可单选、多选或全选') -and $raw.Contains('全选可复原项目') -and
+  $raw.Contains('复原所选项目') -and $raw.Contains('确认全部复原') -and
+  $raw.Contains('Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems') -and
+  $raw.Contains('Invoke-ElevatedEngineAction -Action Restore -RestoreItemIds')) `
+  'optimization page does not expose inline single/multi/select-all plus full restore through the protected engine'
 Assert-True ($raw.Contains("'SystemRoot','WINDIR','ProgramData','ProgramFiles','ProgramFiles(x86)','TEMP','TMP','PATH','PSModulePath','COMSPEC','PATHEXT','__COMPAT_LAYER'") -and
   $raw.Contains('（仅记录名称，不上传值）')) `
   'diagnostic environment collection is not value-allowlisted or does not redact injection values'
@@ -93,6 +136,131 @@ $sidFunction = Find-GuiFunction 'Test-IsBuiltInAdministratorSid'
 $enableUacFunction = Find-GuiFunction 'Enable-UacForNextRestart'
 $localNoBackupFunction = Find-GuiFunction 'Invoke-LocalNoBackupItems'
 $validatedCandidateFunction = Find-GuiFunction 'Get-ValidatedTuningCandidateRuntime'
+$restoreManagerFunction = Find-GuiFunction 'Initialize-InlineRestorePanel'
+$restoreActionFunction = Find-GuiFunction 'Invoke-InlineRestoreAction'
+$restoreSelectionFunction = Find-GuiFunction 'Update-InlineRestoreSelection'
+$hideRestoreFunction = Find-GuiFunction 'Hide-InlineRestorePanel'
+$dropFramePlanFunction = Find-GuiFunction 'Get-DropFrameRepairPlan'
+$frameCacheFunction = Find-GuiFunction 'Invoke-FrameFixCacheCleanup'
+$frameGpuFunction = Find-GuiFunction 'Invoke-FrameFixGpuPreference'
+$frameVcFunction = Find-GuiFunction 'Invoke-FrameFixVcredistCheck'
+$frameProgressFunction = Find-GuiFunction 'Set-FrameFixProgress'
+$commonHighlightFunction = Find-GuiFunction 'Set-DropFrameCommonText'
+$vendorLinkFunction = Find-GuiFunction 'Set-DropFrameVendorText'
+$updateDropFrameFunction = Find-GuiFunction 'Update-DropFrameRepairPage'
+$itemRowFunction = Find-GuiFunction 'New-ItemRow'
+$dropFramePlanText = $dropFramePlanFunction.Extent.Text
+Assert-True ($dropFramePlanText.Contains("'NVIDIA'") -and $dropFramePlanText.Contains("'AMD'") -and
+  $dropFramePlanText.Contains("'Intel'") -and $dropFramePlanText.Contains('MainGpuVendor') -and
+  $dropFramePlanText.Contains('MainGpuName')) `
+  'frame-drop repair plan is not generated from the detected primary GPU vendor and model'
+$accountTerm = -join @([char]0x8D26, [char]0x53F7)
+Assert-True (-not $dropFramePlanText.Contains($accountTerm)) `
+  'frame-drop repair plan still includes account-based diagnosis'
+. ([scriptblock]::Create($dropFramePlanText))
+$nvPlan = Get-DropFrameRepairPlan ([pscustomobject]@{ MainGpuVendor='NVIDIA'; MainGpuName='GeForce RTX 4070' })
+$amdPlan = Get-DropFrameRepairPlan ([pscustomobject]@{ MainGpuVendor='AMD'; MainGpuName='Radeon RX 7800 XT' })
+$intelPlan = Get-DropFrameRepairPlan ([pscustomobject]@{ MainGpuVendor='Intel'; MainGpuName='Intel Arc B580' })
+Assert-True ($nvPlan.VendorTitle -eq 'NVIDIA 专项排查' -and $nvPlan.VendorText.Contains('NVIDIA 控制面板')) `
+  'NVIDIA frame-drop recommendation is missing'
+Assert-True ($amdPlan.VendorTitle -eq 'AMD Radeon 专项排查' -and $amdPlan.VendorText.Contains('Radeon Anti-Lag')) `
+  'AMD frame-drop recommendation is missing'
+Assert-True ($intelPlan.VendorTitle -eq 'Intel 显卡专项排查' -and $intelPlan.VendorText.Contains('Resizable BAR')) `
+  'Intel frame-drop recommendation is missing'
+Assert-True ($nvPlan.Summary.StartsWith('近期版本掉帧') -and -not $nvPlan.Summary.Contains('检测到主力显卡')) `
+  'frame-drop summary still repeats the detected primary GPU sentence'
+Assert-True ($nvPlan.Common.Contains('【可执行】') -and $nvPlan.Common.Contains('【可检查】') -and
+  -not $nvPlan.Common.Contains('【软件可执行】') -and -not $nvPlan.Common.Contains('【软件可检查】')) `
+  'frame-drop common plan does not distinguish direct actions from manual advice'
+Assert-True ($commonHighlightFunction.Extent.Text.Contains('FrameFixCommonText.Inlines.Clear()') -and
+  $commonHighlightFunction.Extent.Text.Contains("`$run.Background") -and
+  $commonHighlightFunction.Extent.Text.Contains("`$run.FontWeight = 'Bold'")) `
+  'frame-drop direct-action labels are not rendered as highlighted inline runs'
+Assert-True ($vendorLinkFunction.Extent.Text.Contains('Windows.Documents.Hyperlink') -and
+  $vendorLinkFunction.Extent.Text.Contains('NVIDIA 控制面板') -and
+  $vendorLinkFunction.Extent.Text.Contains('NVIDIA App') -and
+  $vendorLinkFunction.Extent.Text.Contains('Open-GpuPanel $this.Tag.App') -and
+  $vendorLinkFunction.Extent.Text.Contains('Open-HelpLink') -and
+  $vendorLinkFunction.Extent.Text.Contains("`$link.Foreground = New-Brush `$script:C.Green") -and
+  $updateDropFrameFunction.Extent.Text.Contains('Set-DropFrameVendorText')) `
+  'NVIDIA control panel and NVIDIA App names are not highlighted clickable direct links'
+Assert-True ($frameCacheFunction.Extent.Text.Contains("Get-FrameFixActionItem 'shader-cache-clean'") -and
+  $frameCacheFunction.Extent.Text.Contains('Invoke-LocalNoBackupItems') -and
+  $frameGpuFunction.Extent.Text.Contains("-ItemIds @('gpu-pref')") -and
+  $frameGpuFunction.Extent.Text.Contains('BackupError') -and
+  $frameVcFunction.Extent.Text.Contains("Get-FrameFixActionItem 'vcredist-check'") -and
+  $frameVcFunction.Extent.Text.Contains('Show-HealthDialog')) `
+  'frame-drop direct actions do not reuse the protected apply/check/cache paths'
+Assert-True ($frameProgressFunction.Extent.Text.Contains("IsIndeterminate = `$true") -and
+  $frameProgressFunction.Extent.Text.Contains("Value = 100") -and
+  $frameCacheFunction.Extent.Text.Contains('Set-FrameFixProgress') -and
+  $frameGpuFunction.Extent.Text.Contains('Set-FrameFixProgress') -and
+  $frameVcFunction.Extent.Text.Contains('Set-FrameFixProgress')) `
+  'one or more frame-drop direct actions do not display start/completion progress'
+Assert-True ($itemRowFunction.Extent.Text.Contains("`$Item.Id -eq 'xmp-check'") -and
+  $itemRowFunction.Extent.Text.Contains("`$starRun.Text = '★ '") -and
+  $itemRowFunction.Extent.Text.Contains('Windows.Thickness 21, 0, 0, 0') -and
+  $itemRowFunction.Extent.Text.Contains("`$starRun.Foreground = New-Brush `$nameColor") -and
+  $itemRowFunction.Extent.Text.Contains("`$nameRun.Foreground = New-Brush `$nameColor") -and
+  $itemRowFunction.Extent.Text.Contains('Add_MouseLeftButtonUp') -and
+  $itemRowFunction.Extent.Text.Contains('Show-HealthDialog')) `
+  'memory frequency item is not starred and clickable through the existing health dialog'
+$restoreManagerText = $restoreManagerFunction.Extent.Text
+Assert-True ($restoreManagerText.Contains("`$item.Status -eq 'conflict'") -and
+  $restoreManagerText.Contains('旧版本备份') -and $restoreManagerText.Contains('仅支持下方「全部复原」')) `
+  'inline restore manager does not explain conflict protection or v2 full-restore-only compatibility'
+Assert-True ($restoreActionFunction.Extent.Text.Contains("ValidateSet('selected_items','all')") -and
+  $restoreActionFunction.Extent.Text.Contains('Invoke-ElevatedEngineAction -Action Restore -RestoreItemIds $itemIds') -and
+  $restoreActionFunction.Extent.Text.Contains('Invoke-ElevatedEngineAction -Action Restore })') -and
+  $raw.Contains("`$ui.InlineRestoreSelectedBtn.Add_Click({ Invoke-InlineRestoreAction 'selected_items' })") -and
+  $raw.Contains("`$ui.InlineRestoreAllBtn.Add_Click({ Invoke-InlineRestoreAction 'all' })") -and
+  $raw.Contains('检测到后续修改的项目不会被选择性覆盖。')) `
+  'inline restore buttons are not connected to selected/full protected restore actions'
+$mainXamlMatch = [regex]::Match($raw, '(?s)\$xaml\s*=\s*@''\r?\n(.*?)\r?\n''@\r?\n\r?\n\$window\s*=')
+Assert-True $mainXamlMatch.Success 'main window XAML block is missing'
+Add-Type -AssemblyName PresentationFramework
+$mainXamlWindow = [Windows.Markup.XamlReader]::Parse($mainXamlMatch.Groups[1].Value)
+Assert-True ($mainXamlWindow.FindName('InlineRestorePanel') -and
+  $mainXamlWindow.FindName('InlineRestoreSelectedBtn') -and $mainXamlWindow.FindName('InlineRestoreAllBtn') -and
+  $mainXamlWindow.FindName('InlineRestoreSelectAllBtn') -and $mainXamlWindow.FindName('InlineRestoreClearBtn')) `
+  'main optimization page XAML does not parse with all inline restore controls'
+$window = $mainXamlWindow
+$ui = @{}
+foreach ($name in 'InlineRestorePanel','InlineRestoreItemsPanel','InlineRestoreEmptyText',
+                   'InlineRestoreLegacyNotice','InlineRestoreLegacyText','InlineRestoreSelectedText','InlineRestoreAllSummary',
+                   'InlineRestoreSelectAllBtn','InlineRestoreClearBtn','InlineRestoreSelectedBtn','InlineRestoreAllBtn',
+                   'InlineRestoreCloseBtn','RestoreBtn') {
+  $ui[$name] = $window.FindName($name)
+}
+$script:C = @{ LineSoft='#FF16241F'; TextPri='#FFFFFFFF'; TextMut='#FF7A8580'; Green='#FF00E884'; Danger='#FFFF6B6B'; Gold='#FFE5C46A' }
+$script:Busy = $false
+function New-Brush([string]$Hex) { (New-Object Windows.Media.BrushConverter).ConvertFromString($Hex) }
+function Test-TuningExperimentActive { $false }
+. ([scriptblock]::Create($restoreSelectionFunction.Extent.Text))
+. ([scriptblock]::Create($hideRestoreFunction.Extent.Text))
+. ([scriptblock]::Create($restoreManagerFunction.Extent.Text))
+$restoreCatalogFixture = [pscustomobject]@{
+  Items = @(
+    [pscustomobject]@{ Id='gpu-pref'; Name='强制游戏使用高性能 GPU'; CanRestore=$true; SettingCount=1; Status='ready'; StatusText='可精确复原'; RebootRequired=$false; Reason='' },
+    [pscustomobject]@{ Id='conflict-item'; Name='后续已修改项目'; CanRestore=$false; SettingCount=1; Status='conflict'; StatusText='检测到后续修改'; RebootRequired=$false; Reason='保持当前值' }
+  )
+  LegacyBackupCount = 0; UnsupportedV3ItemCount = 0; ActiveItemCount = 2; ActiveOpCount = 2
+  ActiveBackupCount = 1; HasActiveChanges = $true
+}
+Initialize-InlineRestorePanel $restoreCatalogFixture
+$readyRestoreCheck = @($script:InlineRestoreChecks.ToArray() | Where-Object Tag -eq 'gpu-pref')[0]
+$conflictRestoreCheck = @($script:InlineRestoreChecks.ToArray() | Where-Object Tag -eq 'conflict-item')[0]
+Assert-True ($ui.InlineRestorePanel.Visibility -eq 'Visible' -and $ui.InlineRestoreItemsPanel.Children.Count -eq 2 -and
+  $readyRestoreCheck.IsEnabled -and -not $conflictRestoreCheck.IsEnabled -and
+  -not $ui.InlineRestoreSelectedBtn.IsEnabled -and $ui.InlineRestoreAllBtn.IsEnabled) `
+  'inline restore catalog did not render directly in the optimization page with safe enablement'
+$readyRestoreCheck.IsChecked = $true
+Update-InlineRestoreSelection
+Assert-True ($ui.InlineRestoreSelectedText.Text -eq '已选择 1 项' -and $ui.InlineRestoreSelectedBtn.IsEnabled) `
+  'inline restore selection does not enable the selected restore action'
+Hide-InlineRestorePanel
+Assert-True ($ui.InlineRestorePanel.Visibility -eq 'Collapsed' -and $ui.RestoreBtn.Content -eq '还原设置') `
+  'inline restore panel does not collapse back into the optimization page'
 $repairBranches = @($ast.FindAll({
   param($node)
   $node -is [Management.Automation.Language.IfStatementAst] -and

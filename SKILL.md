@@ -52,7 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   每项带 `Reboot` 字段（成功且确需重启才为 true），汇报时按它提醒用户重启，别自己猜；
 - `pcie-check` / `vcredist-check` / `xmp-check` 是纯检测项，只读不写：分别报告 PCIe 链路
   异常（引导查插槽/延长线）、VC++ v14 运行库缺失（引导手动安装，**不要代劳卸载**）、
-  内存未开 XMP/EXPO（引导进 BIOS，软件改不了）。检测项查出问题时结果标 `Attention`
+  内存当前频率与 SMBIOS 标称频率的差异（只能提示确认，不能证明某个性能档位一定存在）。检测项查出问题时结果标 `Attention`
   归入「体检发现问题」，不计入失败。
   vcredist 判定口径（引擎 v0.12 起）：**只有缺失某个/全部架构才算问题**。x64 与 x86
   是两套相互独立的运行库、各自服务对应位数的程序，两者版本不同步很常见且通常无害——
@@ -67,8 +67,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   正常的，不用处理，也不要为此去卸载；只有缺失某架构、或确实反复闪退且已排除其他
   原因时，才考虑在「应用和功能」里只卸载该架构的 VC++ 2015-2022 后重装，
   **绝不建议卸载其他年份的 VC++**（2010/2012/2013 是独立运行库，其他软件依赖）。
-  XMP/EXPO 转述要点：开机按 Del/F2 进 BIOS，Intel 叫 XMP、AMD 叫 EXPO/DOCP，收益因
-  硬件而异别承诺具体帧数，开完开不了机就进 BIOS 恢复默认设置即可。
+  内存档位转述要点：菜单名取决于主板品牌、CPU 平台与 DDR 代际，不可只按 Intel/AMD
+  二分。MSI AMD DDR4 通常叫 A-XMP，华硕 AMD DDR4 常见 DOCP，AMD DDR5 才优先找 EXPO，
+  Intel 通常找 XMP；ROG 魔霸等品牌笔记本可能完全不开放相关菜单。达到 SMBIOS 标称频率
+  时不要再引导用户进 BIOS；菜单不存在时按厂商未开放或内存没有该档位处理，不刷非官方
+  BIOS。收益因硬件而异，不承诺具体帧数；实际修改后启动异常再恢复 BIOS 默认设置。
 - **不要建议关闭引导虚拟化**：ACE 反作弊已开始检查虚拟化状态，关掉会导致游戏报错进不去，
   该项已于 v0.6 移除。
 
@@ -101,7 +104,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   或让用户以管理员运行。
 - 每次 Apply 会先把可还原设置的旧值写入
   `%ProgramData%\DeltaForceBooster\backup\backup-<GUID>.pending.json`：备份使用严格 schema、
-  HMAC 完整性校验和原子写前日志，普通用户进程没有写权限；全部完成后才发布为正式备份。
+  HMAC 完整性校验和原子写前日志，普通用户进程没有写权限；schema v3 同时记录 `ApplyId`、
+  项目归属、实际写入值和项目内操作顺序，全部完成后才发布为正式备份。
 - 结果里每项带 `Ok`、`Changed`、`Skipped`、`Attention` 字段，末尾有「x 成功、y 失败、z 跳过
   （、n 项体检发现问题）」汇总。`Attention=true` 表示纯检测项查出了真实问题——这是
   检测项「立功」而不是工具失败，转述时务必与失败区分开，别让用户误以为工具坏了；
@@ -138,12 +142,22 @@ Export Profiles 手动备份当前配置。
 ### 还原（用户后悔时）
 
 ```
+powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booster.ps1" -ListRestoreItems
+powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booster.ps1" -Restore -RestoreItems dvr-off,hags
 powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booster.ps1" -Restore
 ```
 
-默认合并所有尚未消费的受保护备份，按签名文档里的创建时间从新到旧处理，同一目标恢复
-到最早一次优化前的原值；`-BackupFile` 可指定某个具体备份。还原成功后备份会标为
-`.restored`，避免重复消费。
+`-ListRestoreItems` 返回当前可精确复原项目及冲突状态；`-RestoreItems` 支持单选和多选，
+统一恢复到各项目第一次被工具修改前。执行前会确认当前值仍是工具当时写入的值；检测到
+用户或其他程序的后续修改时保留当前状态。每个项目内部原子执行，任一子设置失败会写回
+本次复原前状态。成功操作通过签名 `restore-receipt-<GUID>.json` 消费，原始 v3 备份不改名。
+第一阶段只开放八个无需重启且没有复杂依赖的项目：`game-mode`、`dvr-off`、
+`prio-separation`、`net-throttling-off`、`sys-responsiveness`、`mmcss-games`、`fso-off`、
+`gpu-pref`；其余项目继续使用全部复原。
+
+不带 `-RestoreItems` 时仍是全部复原：合并所有尚未消费的受保护备份，按签名文档里的创建
+时间从新到旧处理，同一目标恢复到最早一次优化前的原值；`-BackupFile` 可指定某个具体备份。
+旧版 v2 备份没有可靠项目归属，只支持全部复原，成功后整份标为 `.restored`。
 结果字段：`RestoredOps`（还原条数）、`Failed`（真失败，带人话项名）、`Skipped`
 （跳过且无实际影响——「继承默认」的电源隐藏项删不掉注册表子键（ACL 只授权 SYSTEM）
 且残留在已停用的工具自建方案里时归此类，转述时明确告诉用户这不影响任何生效设置）、
@@ -187,7 +201,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 | mmcss-games | MMCSS 游戏任务档位拉满（GPU/IO 调度，收益微弱但零副作用） | 是 | 需要 |
 | windowed-opt-off | 关闭「窗口化游戏优化」（复合串只改目标子键） | 否 | 否 |
 | vcredist-check | VC++ v14 运行库体检（纯检测，缺失才报问题） | 否 | 否 |
-| xmp-check | 内存 XMP/EXPO 体检（纯检测） | 否 | 否 |
+| xmp-check | 内存频率 / XMP·A-XMP·EXPO·DOCP 体检（纯检测） | 否 | 否 |
 | pagefile-custom | 虚拟内存固定（初始=内存×1.5、最大=×2，仅闪退时用） | 否 | 需要 |
 | nvidia-profile | 导入 N 卡配置档（需 tools\ 就位） | 否 | 需要 |
 

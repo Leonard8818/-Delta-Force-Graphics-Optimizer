@@ -640,13 +640,24 @@ if ($TestBuild) {
 # scripts\updater.ps1 的白名单内，否则老客户端会拒绝下载。
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
-$manifestNotes = '内置一键更新现在会保留旧版本，直到新版出现可交互窗口；新版启动失败或安装器在验证阶段中断时，会自动恢复旧版本。\n上传完整诊断前新增问题与改善效果多选页，可标记掉帧、卡顿、过热、涨帧和 1% Low 改善等情况。\n显卡型号伪装新增 RTX 2050、RTX 2060 与 RX560；AMD 显卡恢复支持并默认选择 RX560，750 Ti、1050 Ti、RX560 标记为推荐项。\nAMD 驱动设置指引保留原推荐方案，并新增按显卡性能、屏幕分辨率与刷新率、设备类型和内存生成的个性化方案。\n新增电脑品牌检测，XMP/EXPO 的 BIOS 进入教程会按检测到的品牌显示对应按键。'
+$manifestNotes = @'
+- 新增「掉帧修复」页面，按 NVIDIA、AMD、Intel 显卡提供专项排查方案。
+- 支持直接清理着色器缓存、设置高性能 GPU、检查 VC++ 运行库，并显示执行进度。
+
+- 「还原设置」新增单选、多选、全选及全部复原，并增加后续修改冲突保护和失败回滚。
+- 优化页「全选」现已包含显卡型号伪装，执行前仍保留二次确认。
+- 内存频率体检增加星标和快捷入口，可直接查看对应电脑品牌及平台的 BIOS 教程。
+- 修复达到标称内存频率后仍被误报为未开启 XMP、EXPO、DOCP 的问题。
+- 修复电源计划切换出现 Null 错误、着色器缓存清理路径异常、显卡厂商识别失败等问题。
+- 修复部分电脑首次打开软件被权限状态误判的问题，提升启动和版本更新后的可用性。
+- 「AI定制优化（敬请期待）」
+'@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂
   version  = "$ver"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.20.4'
+  minimumSupportedVersion = '0.21.6'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

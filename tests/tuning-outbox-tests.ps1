@@ -32,6 +32,7 @@ function New-CommonPayload([string]$ExperimentId, [string]$Type) {
     installId = '11111111-1111-4111-8111-111111111111'
     event = 'tuning'; version = '0.20.0'; os = 'Windows 11'; build = '26100'; cpu = 'CPU'
     gpuVendor = 'NVIDIA'; gpuModel = 'NVIDIA GeForce RTX 5060 Ti'; gpuModelVerified = $true
+    driverVersion='driver';gpuCount=1;displayMode='2560x1440@165'
     ramGb = 32.0; deviceType = 'desktop'; tuningType = $Type; experimentId = $ExperimentId
   }
 }
@@ -56,7 +57,9 @@ function New-RunPayload([string]$ExperimentId, [string]$RunId = 'run-1') {
   $p.runId="$ExperimentId.$RunId"; $p.variantId="$ExperimentId.baseline"; $p.runNo=1; $p.sequenceNo=1
   $p.validity='valid'; $p.invalidReason=''; $p.durationSec=120; $p.avgFps=120.0; $p.fps1Low=80.0
   $p.p99FrameMs=15.0; $p.stutter50Ms=0; $p.stutter100Ms=0; $p.gpuUtilAvg=70.0
-  $p.gpuTempAvg=60.0; $p.gpuPowerAvg=100.0; $p.settingsHash=('1'*64); $p.environmentHash=('2'*64)
+  $p.frameCount=12000;$p.frameTimeMadMs=1.5;$p.stuttersPerMin=0.0;$p.focusLostSec=0.0
+  $p.gpuTempAvg=60.0;$p.gpuTempMax=65.0;$p.gpuPowerAvg=100.0;$p.gameExitedEarly=$false
+  $p.captureFailed=$false;$p.presentMonExitCode=0;$p.settingsHash=('1'*64);$p.environmentHash=('2'*64)
   $p.orderControlled=$true
   [pscustomobject]$p
 }
@@ -87,6 +90,12 @@ try {
   Assert-Throws { Add-DfbTuningOutboxEvent $unknown $cfg1 -NowUnix 1786248002 } 'unknown tuning payload field' 'unknown payload field was accepted'
   $ordinaryFields = New-StartPayload 'exp-ordinary-fields'; $ordinaryFields | Add-Member configTier 'balanced'
   Assert-Throws { Add-DfbTuningOutboxEvent $ordinaryFields $cfg1 -NowUnix 1786248002 } 'unknown tuning payload field' 'ordinary telemetry fields leaked into tuning schema'
+  $legacyRun = New-RunPayload 'exp-legacy-run'
+  foreach($field in 'frameCount','frameTimeMadMs','stuttersPerMin','focusLostSec','gpuTempMax','gameExitedEarly','captureFailed','presentMonExitCode') {
+    $legacyRun.PSObject.Properties.Remove($field)
+  }
+  $legacyInfo = Get-DfbTuningPayloadInfo $legacyRun
+  Assert-True ($legacyInfo.TuningType -eq 'run_completed') 'legacy queued run without enriched fields was rejected'
 
   # One failed experiment head must not let its child overtake it, while another experiment may drain.
   [void](Add-DfbTuningOutboxEvent (New-VariantPayload 'exp-order-a') $cfg1 -NowUnix 1786248002)

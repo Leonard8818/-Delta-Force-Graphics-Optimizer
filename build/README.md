@@ -133,9 +133,9 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
 
 ```json
 {
-  "version": "0.21.3",
-  "minimumSupportedVersion": "0.20.4",
-  "notes": "修复了一些已知问题。",
+  "version": "0.22.0",
+  "minimumSupportedVersion": "0.21.6",
+  "notes": "v0.22.0 更新说明（由构建脚本生成）",
   "url": "https://df.ltz88.cn/",
   "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
   "sha256": "（安装包的 SHA256，小写十六进制，构建脚本自动填）",

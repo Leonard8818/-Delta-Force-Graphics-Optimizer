@@ -1,0 +1,33 @@
+﻿#requires -Version 5.1
+param()
+
+$ErrorActionPreference='Stop'
+$root=Split-Path -Parent $PSScriptRoot
+$path=Join-Path $root 'website\admin\legacy\index.html'
+if(-not (Test-Path -LiteralPath $path -PathType Leaf)){
+  Write-Host 'SKIP: private admin dashboard is not present in this checkout'
+  exit 0
+}
+$raw=Get-Content -LiteralPath $path -Raw -Encoding UTF8
+$script:Assertions=0
+function Assert-True([bool]$Condition,[string]$Message){$script:Assertions++;if(-not $Condition){throw "ASSERT: $Message"}}
+
+foreach($needle in @(
+  'data-main-tab="usage"','data-main-tab="experiments"','id="usageView"','id="experimentsView"',
+  'role="tablist"','role="tabpanel"','function selectMainTab','function renderExperiments',
+  'data.experiments','id="expItemSets"','id="expItems"','id="expEnvironments"',
+  'TRAINING READINESS','ENVIRONMENT MATRIX','结构化操作','还原验证结果'
+)){Assert-True $raw.Contains($needle) "experiment dashboard is missing: $needle"}
+
+$ids=@([regex]::Matches($raw,'\bid="([A-Za-z][A-Za-z0-9_-]*)"')|ForEach-Object{$_.Groups[1].Value})
+$duplicates=@($ids|Group-Object|Where-Object Count -gt 1)
+Assert-True ($duplicates.Count -eq 0) ('duplicate HTML ids: '+(($duplicates|ForEach-Object Name)-join ', '))
+
+$experimentIds=@([regex]::Matches($raw,"(?:set|renderExperimentRows)\('(?<id>exp[A-Za-z0-9]+)'")|ForEach-Object{$_.Groups['id'].Value}|Sort-Object -Unique)
+foreach($id in $experimentIds){Assert-True ($ids -contains $id) "renderExperiments references a missing node: $id"}
+Assert-True (-not $raw.Contains('client_hash')) 'private dashboard exposes a raw client hash field'
+Assert-True ($raw.Contains("fetch('../api/stats'")) 'dashboard no longer loads the protected aggregate stats API'
+Assert-True ($raw.Contains("history.replaceState(null,'',selected==='experiments'?'#experiments':'#usage')")) 'main tab selection is not addressable by hash'
+Assert-True ($raw.Contains('不会上传项目的注册表路径、键值、原值或新值')) 'privacy notice does not explain the new project-level telemetry boundary'
+
+Write-Host "admin experiment dashboard tests passed: $script:Assertions assertions"

@@ -124,7 +124,12 @@ function Invoke-WorkerShaderCache {
 }
 
 function Get-WorkerGpuPanelApps([string]$Vendor) {
-  if ($Vendor -notin 'NVIDIA','AMD','Intel') { throw '显卡厂商不在白名单' }
+  $Vendor = switch ("$Vendor".Trim().ToUpperInvariant()) {
+    'NVIDIA' { 'NVIDIA' }
+    'AMD'    { 'AMD' }
+    'INTEL'  { 'Intel' }
+    default  { throw '显卡厂商不在白名单' }
+  }
   $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
   $system = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
   $apps = @()
