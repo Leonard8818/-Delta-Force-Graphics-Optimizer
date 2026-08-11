@@ -324,16 +324,17 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(5, public["totalApplyOk"])
         self.assertEqual("Asia/Shanghai", public["timezone"])
         self.assertEqual(
-            {"users", "active7d", "active15m", "launchesToday",
+            {"users", "active7d", "active15m", "active60m", "launchesToday",
              "totalLaunches", "totalApplies", "totalApplyOk"},
             set(public["trends"]),
         )
         for key, values in public["trends"].items():
-            self.assertEqual(8 if key == "active15m" else 7, len(values))
+            self.assertEqual(8 if key in {"active15m", "active60m"} else 7, len(values))
             self.assertTrue(all(isinstance(value, int) and value >= 0 for value in values))
         self.assertEqual(public["users"], public["trends"]["users"][-1])
         self.assertEqual(public["active7d"], public["trends"]["active7d"][-1])
         self.assertEqual(public["active15m"], public["trends"]["active15m"][-1])
+        self.assertEqual(public["active60m"], public["trends"]["active60m"][-1])
         self.assertEqual(public["launchesToday"], public["trends"]["launchesToday"][-1])
         self.assertEqual(public["totalLaunches"], public["trends"]["totalLaunches"][-1])
         self.assertEqual(public["totalApplies"], public["trends"]["totalApplies"][-1])
@@ -541,6 +542,14 @@ class TelemetryTests(unittest.TestCase):
                     "INSERT INTO daily_usage (day, client_hash, launches) VALUES (?, 'fresh-client', 1)",
                     (fresh_day,),
                 )
+                conn.execute(
+                    "INSERT INTO website_visits (seen_at, visitor_hash) VALUES (?, 'expired-visitor')",
+                    (now - (SERVER.WEBSITE_VISIT_KEEP_DAYS + 1) * 86400,),
+                )
+                conn.execute(
+                    "INSERT INTO website_visits (seen_at, visitor_hash) VALUES (?, 'fresh-visitor')",
+                    (now,),
+                )
         finally:
             conn.close()
 
@@ -552,6 +561,7 @@ class TelemetryTests(unittest.TestCase):
                 "replayIds": 1,
                 "dailyUsage": 1,
                 "clients": 1,
+                "websiteVisits": 1,
             },
             result,
         )
@@ -563,8 +573,57 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(["event-fresh"], [row[0] for row in conn.execute("SELECT event_id FROM telemetry_replays")])
             self.assertEqual(["fresh-client"], [row[0] for row in conn.execute("SELECT client_hash FROM clients")])
             self.assertEqual(["fresh-client"], [row[0] for row in conn.execute("SELECT client_hash FROM daily_usage")])
+            self.assertEqual(["fresh-visitor"], [row[0] for row in conn.execute("SELECT visitor_hash FROM website_visits")])
         finally:
             conn.close()
+
+    def test_sixty_minute_online_and_website_visits_are_clear_and_separate(self):
+        now = int(dt.datetime(2026, 8, 11, 4, 30, tzinfo=dt.timezone.utc).timestamp())
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.executemany(
+                    "INSERT INTO clients (client_hash, first_seen, last_seen) VALUES (?, ?, ?)",
+                    [
+                        ("online-15m", now - 100, now - 100),
+                        ("online-60m", now - 1800, now - 1800),
+                        ("offline-60m", now - 3700, now - 3700),
+                    ],
+                )
+        finally:
+            conn.close()
+
+        visitor_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        visitor_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        visitor_c = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        SERVER._record_website_visit(visitor_a, now - 1200)
+        SERVER._record_website_visit(visitor_a, now - 1100)
+        SERVER._record_website_visit(visitor_b, now - 3500)
+        SERVER._record_website_visit(visitor_c, now - 4000)
+
+        stats = SERVER._build_stats(now)
+        self.assertEqual(1, stats["totals"]["active15m"])
+        self.assertEqual(2, stats["totals"]["active60m"])
+        website = stats["website"]
+        self.assertEqual({"views": 3, "visitors": 2}, website["last60m"])
+        self.assertEqual({"views": 4, "visitors": 3}, website["today"])
+        self.assertEqual(24, len(website["hourly"]))
+        self.assertEqual("12:00", website["hourly"][-1]["label"])
+        self.assertEqual({"views": 2, "visitors": 1}, {
+            key: website["hourly"][-1][key] for key in ("views", "visitors")
+        })
+        self.assertEqual({"views": 2, "visitors": 2}, {
+            key: website["hourly"][-2][key] for key in ("views", "visitors")
+        })
+
+        conn = SERVER._connect()
+        try:
+            stored = [row[0] for row in conn.execute("SELECT DISTINCT visitor_hash FROM website_visits")]
+        finally:
+            conn.close()
+        self.assertEqual(3, len(stored))
+        self.assertTrue(all(len(value) == 64 and value not in {visitor_a, visitor_b, visitor_c} for value in stored))
+        self.assertNotEqual(SERVER._client_hash(visitor_a), SERVER._website_visitor_hash(visitor_a))
 
     def test_client_ip_only_trusts_loopback_proxy_and_uses_last_valid_hop(self):
         class FakeHandler:
@@ -617,10 +676,20 @@ class TelemetryTests(unittest.TestCase):
             self.assertFalse(legacy["trusted"])
             self.assertIn("deviceToken", legacy)
 
+            visitor_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            status, visit = post("/report/website-visit", {"visitorId": visitor_id})
+            self.assertEqual(200, status)
+            self.assertTrue(visit["ok"])
+            with self.assertRaises(urllib.error.HTTPError) as bad_visit:
+                post("/report/website-visit", {"visitorId": "not-a-visitor-id"})
+            self.assertEqual(400, bad_visit.exception.code)
+
             request = urllib.request.Request(base + "/api/stats", headers={"X-DFB-Admin-Token": "test-admin-token"})
             with urllib.request.urlopen(request, timeout=3) as response:
                 stats = json.load(response)
             self.assertEqual(2, stats["totals"]["users"])
+            self.assertEqual(1, stats["website"]["today"]["views"])
+            self.assertEqual(1, stats["website"]["today"]["visitors"])
             self.assertEqual("client_self_reported", stats["dataQuality"]["source"])
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 urllib.request.urlopen(base + "/api/stats", timeout=3)
@@ -633,6 +702,7 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(2, public_stats["totalLaunches"])
             self.assertEqual(7, len(public_stats["trends"]["totalLaunches"]))
             self.assertEqual(8, len(public_stats["trends"]["active15m"]))
+            self.assertEqual(8, len(public_stats["trends"]["active60m"]))
             self.assertEqual("Asia/Shanghai", public_stats["timezone"])
         finally:
             httpd.shutdown()

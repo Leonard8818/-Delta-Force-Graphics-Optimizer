@@ -19,6 +19,11 @@ Assert-True ($setupSource -match 'CreateProcessWithTokenW') 'elevated installer 
 Assert-True ($setupSource -match 'CreateEnvironmentBlock') 'run-after does not build the original desktop user environment'
 Assert-True ($setupSource -match 'StartWithDesktopShellToken\(exe, originSid\)') 'run-after is not connected to the desktop token launcher'
 Assert-True ($setupSource -notmatch 'FileName\s*=\s*explorer') 'run-after still delegates through explorer.exe and may inherit the elevated installer token'
+Assert-True ($setupSource -match 'InstallForLaunchValidation' -and $setupSource -match 'WaitForStartupReadiness' -and
+  $setupSource -match 'RollbackDeferredInstall') 'run-after no longer retains the old version through startup validation'
+Assert-True ($setupSource -match 'EnumWindows\(callback, IntPtr\.Zero\)' -and
+  $setupSource -notmatch 'IntPtr\s+window\s*=\s*process\.MainWindowHandle') `
+  'startup health check can miss WPF when PowerShell exposes another main window first'
 function Invoke-TestSetup([string[]]$Arguments, [string]$WorkingDirectory = '') {
   $start = @{ FilePath = $setup; ArgumentList = $Arguments; Wait = $true; PassThru = $true }
   if ($WorkingDirectory) { $start.WorkingDirectory = $WorkingDirectory }
@@ -151,6 +156,33 @@ try {
   # 其他盘布局必须恰好是 <volume>\<anchor>\app，任意中间层都 fail closed。
   $setupAssembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($setup))
   $installerType = $setupAssembly.GetType('DfbSetup.Installer', $true)
+  # 健康检查必须识别进程树里的任意可交互 WPF 顶层窗口，而不是只相信
+  # Process.MainWindowHandle（PowerShell 可能先暴露隐藏控制台/辅助窗口）。
+  Add-Type -AssemblyName PresentationFramework
+  $savedNoLaunch = $env:DFB_TEST_NOLAUNCH
+  $savedHealthFailure = $env:DFB_TEST_STARTUP_HEALTH_FAIL
+  Remove-Item Env:DFB_TEST_NOLAUNCH,Env:DFB_TEST_STARTUP_HEALTH_FAIL -ErrorAction SilentlyContinue
+  $healthWindow = New-Object Windows.Window
+  $healthWindow.Title = 'DFB startup health fixture'
+  $healthWindow.Width = 120; $healthWindow.Height = 80
+  $healthWindow.WindowStartupLocation = 'Manual'
+  $healthWindow.Left = -30000; $healthWindow.Top = -30000
+  $healthWindow.ShowInTaskbar = $false
+  $healthWindow.Show()
+  try {
+    $healthWindow.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+    $waitForStartup = $installerType.GetMethod('WaitForStartupReadiness', [Reflection.BindingFlags]'Static,Public')
+    $healthArgs = New-Object 'object[]' 3
+    $healthArgs[0] = [string]$testBase; $healthArgs[1] = [int]$PID; $healthArgs[2] = $null
+    Assert-True ([bool]$waitForStartup.Invoke($null, $healthArgs)) 'startup health check missed an interactive WPF window'
+    Assert-True ([string]$healthArgs[2] -like '*DFB startup health fixture*') 'startup health result did not identify the ready WPF window'
+  } finally {
+    $healthWindow.Close()
+    if ($null -eq $savedNoLaunch) { Remove-Item Env:DFB_TEST_NOLAUNCH -ErrorAction SilentlyContinue }
+    else { $env:DFB_TEST_NOLAUNCH = $savedNoLaunch }
+    if ($null -eq $savedHealthFailure) { Remove-Item Env:DFB_TEST_STARTUP_HEALTH_FAIL -ErrorAction SilentlyContinue }
+    else { $env:DFB_TEST_STARTUP_HEALTH_FAIL = $savedHealthFailure }
+  }
   $checkSecure = $installerType.GetMethod('CheckSecureInstallLocation', [Reflection.BindingFlags]'Static,Public')
   $checkDesktopOrigin = $installerType.GetMethod('CheckDesktopShellOrigin', [Reflection.BindingFlags]'Static,Public')
   $volumeReplaceRights = $installerType.GetMethod('HasVolumeRootReplacementRights', [Reflection.BindingFlags]'Static,NonPublic')
@@ -253,13 +285,22 @@ try {
     $lines[2] -eq "LauncherSha256=$sha" -and $lines[3] -eq "EngineHostSha256=$hostSha") `
     'identity/launcher/EngineHost hash mismatch'
 
+  $otsSentinel = 'OTS-OLD-VERSION'
+  [IO.File]::WriteAllText((Join-Path $dest 'README.md'), $otsSentinel, [Text.UTF8Encoding]::new($false))
   $otsLog = Join-Path $case 'ots-runafter.log'
   $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", '/runafter',
     '/originsid=S-1-5-21-1-2-3-1001', "/log=`"$otsLog`"")
-  Assert-True ($code -eq 0) "OTS run-after install exit=$code"
+  Assert-True ($code -eq 1) "OTS run-after rollback exit=$code"
   $otsText = [IO.File]::ReadAllText($otsLog)
-  Assert-True ($otsText -like '*已跳过自动启动*' -and $otsText -like '*请由原用户从公共快捷方式手动打开*') `
-    'OTS /runafter did not install fail-closed without launching into the wrong account'
+  Assert-True ($otsText -like '*已跳过自动启动*' -and $otsText -like '*启动验证被跳过，已恢复旧版*') `
+    'OTS /runafter did not roll back when startup validation was skipped'
+  Assert-True ([IO.File]::ReadAllText((Join-Path $dest 'README.md')) -eq $otsSentinel) `
+    'OTS /runafter did not restore the exact old install tree'
+  Assert-True (@(Get-ChildItem $pf -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-pending-*').Count -eq 0) `
+    'skipped run-after rollback left a pending old version'
+
+  # Restore the valid packaged payload before the remaining integrity tests.
+  [IO.File]::Copy((Join-Path $root 'README.md'), (Join-Path $dest 'README.md'), $true)
 
   $launcherBytes = [IO.File]::ReadAllBytes((Join-Path $dest '启动优化工具.exe'))
   $launcherAssembly = [Reflection.Assembly]::Load($launcherBytes)
@@ -386,7 +427,7 @@ try {
   [void][IO.Directory]::CreateDirectory((Join-Path $dest 'config'))
   [IO.File]::WriteAllText((Join-Path $dest 'config\marker.json'), '{"keep":true}')
   $before = (Get-FileHash (Join-Path $dest '启动优化工具.exe')).Hash
-  foreach ($point in 'after-extract','after-old-move') {
+  foreach ($point in 'after-extract','after-old-move','after-new-move') {
     $env:DFB_TEST_INSTALL_FAIL_AT = $point
     $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", "/log=`"$(Join-Path $case "$point.log")`"")
     Assert-True ($code -eq 1) "$point exit=$code"
@@ -395,6 +436,38 @@ try {
     Assert-True (@(Get-ChildItem $pf -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-*').Count -eq 0) "$point left transaction directory"
   }
   Remove-Item Env:DFB_TEST_INSTALL_FAIL_AT -ErrorAction SilentlyContinue
+
+  # CreateProcess 成功不等于新版能打开。测试构建在窗口健康检查处注入失败，安装器必须
+  # 把尚未提交的旧目录恢复回来，而不是留下“更新完成但软件上不去”的状态。
+  $oldReadme = Join-Path $dest 'README.md'
+  [IO.File]::WriteAllText($oldReadme, 'OLD-STARTUP-HEALTH', (New-Object Text.UTF8Encoding($false)))
+  $healthLog = Join-Path $case 'startup-health-failure.log'
+  $env:DFB_TEST_STARTUP_HEALTH_FAIL = '1'
+  try {
+    $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", '/runafter', "/originsid=$currentUserSid", "/log=`"$healthLog`"")
+  } finally { Remove-Item Env:DFB_TEST_STARTUP_HEALTH_FAIL -ErrorAction SilentlyContinue }
+  Assert-True ($code -eq 1) "startup health failure exit=$code"
+  Assert-True ([IO.File]::ReadAllText($oldReadme) -eq 'OLD-STARTUP-HEALTH') 'startup health failure did not restore exact old tree'
+  Assert-True (([IO.File]::ReadAllText($healthLog)) -like '*启动验证失败，已恢复旧版*') 'startup health rollback was not logged'
+  Assert-True (@(Get-ChildItem $pf -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-*').Count -eq 0) `
+    'startup health rollback left a transaction directory'
+
+  # 模拟安装器在“目录已切换、启动验证尚未提交”时崩溃。下一次安装先恢复 pending 旧版；
+  # 随后在新一轮 after-extract 注入失败，最终落盘内容必须仍是旧树。
+  $installDeferred = $installerType.GetMethod('InstallForLaunchValidation', [Reflection.BindingFlags]'Static,Public')
+  $deferredArgs = New-Object 'object[]' 3
+  $deferredArgs[0] = $dest; $deferredArgs[1] = $null; $deferredArgs[2] = $null
+  [void]$installDeferred.Invoke($null, $deferredArgs)
+  Assert-True (@(Get-ChildItem $pf -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-pending-*').Count -eq 1) `
+    'deferred install did not retain one pending old version'
+  Assert-True ([IO.File]::ReadAllText($oldReadme) -ne 'OLD-STARTUP-HEALTH') 'deferred install did not switch to the new tree'
+  $env:DFB_TEST_INSTALL_FAIL_AT = 'after-extract'
+  try { $code = Invoke-TestSetup @('/silent', "/dir=`"$dest`"", "/log=`"$(Join-Path $case 'pending-recovery.log')`"") }
+  finally { Remove-Item Env:DFB_TEST_INSTALL_FAIL_AT -ErrorAction SilentlyContinue }
+  Assert-True ($code -eq 1) "pending recovery follow-up exit=$code"
+  Assert-True ([IO.File]::ReadAllText($oldReadme) -eq 'OLD-STARTUP-HEALTH') 'interrupted pending update did not restore old tree first'
+  Assert-True (@(Get-ChildItem $pf -Force | Where-Object Name -Like '.DeltaForceBooster.dfb-*').Count -eq 0) `
+    'interrupted pending recovery left a transaction directory'
 
   $id = [guid]::NewGuid().ToString('N')
   $rollback = Join-Path $pf ".DeltaForceBooster.dfb-rollback-$id"

@@ -1,9 +1,12 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.21.5
+  DeltaForceBooster 图形界面 — v0.21.6
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.21.6：①更新安装器在新版出现可交互窗口前保留旧版本；新版启动失败或安装器在验证
+        阶段中断时自动恢复旧版本；②上传完整诊断前新增问题与改善效果多选页；③游戏内
+        设置参考新增按用户截图整理的性能优先推荐方案，并突出显示在对照表第一列。
   v0.21.5：修复非中文区域设置（ACP≠936）的机器上软件完全无法启动：QueryFullProcessImageName
         的 P/Invoke 缺 CharSet.Unicode，绑到 ANSI 变体后「启动优化工具.exe」被转成 ??????.exe，
         .NET Framework 的 Path.GetFullPath 拒绝 ? 通配符，EngineHost 启动即死。卸载宿主同病同修。
@@ -445,7 +448,7 @@ catch {
 }
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.21.5'
+$script:GuiVersion = '0.21.6'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -819,7 +822,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.21.5 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.21.6 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1240,7 +1243,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.21.5 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.21.6 ] 改动前自动备份 · 可一键还原设置" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1856,7 +1859,7 @@ function Update-StreamerPage {
   $wt = New-Text '仅供参考 · 本工具不会也无法修改游戏内设置' $script:C.Gold 12
   $wt.FontWeight = 'Bold'
   $wsp.Children.Add($wt) | Out-Null
-  $wd = New-WrapText '下表是头部主播公开的游戏内画质设置记录，请进入游戏后在「设置 → 视频」页签里手动对照调整。主播设置随游戏版本和硬件不同而变化，不保证适合你的机器。' $script:C.TextSec 11
+  $wd = New-WrapText '第一列是按本次三张截图整理的性能优先推荐方案，其余列是头部主播公开的游戏内画质设置记录。请进入游戏后在「设置 → 视频」页签里手动对照；分辨率、刷新率、显卡与超分辨率选项要按本机硬件调整。' $script:C.TextSec 11
   $wd.Margin = New-Object Windows.Thickness 0, 4, 0, 0
   $wsp.Children.Add($wd) | Out-Null
   $warn.Child = $wsp
@@ -1945,7 +1948,7 @@ function Update-StreamerPage {
     for ($j = 0; $j -lt $streamers.Count; $j++) {
       $s = $streamers[$j]
       $hs = New-Object Windows.Controls.StackPanel
-      $nm = New-Text "$(if ($s.name) { $s.name } else { "主播$($j + 1)" })" $script:C.Green 12
+      $nm = New-Text "$(if ($s.featured -eq $true) { '★ 推荐设置' } elseif ($s.name) { $s.name } else { "主播$($j + 1)" })" $(if ($s.featured -eq $true) { $script:C.Gold } else { $script:C.Green }) 12
       $nm.FontWeight = 'Bold'
       $hs.Children.Add($nm) | Out-Null
       if ($s.platform) { $hs.Children.Add((New-Text "$($s.platform)" $script:C.TextMut 10 -Mono)) | Out-Null }
@@ -2030,7 +2033,7 @@ function Update-StreamerPage {
     $csp = New-Object Windows.Controls.StackPanel
     $head = New-Object Windows.Controls.StackPanel
     $head.Orientation = 'Horizontal'
-    $nm2 = New-Text "$(if ($s.name) { $s.name } else { '未命名主播' })" $script:C.TextPri 12
+    $nm2 = New-Text "$(if ($s.featured -eq $true) { '★ 推荐设置' } elseif ($s.name) { $s.name } else { '未命名主播' })" $(if ($s.featured -eq $true) { $script:C.Gold } else { $script:C.TextPri }) 12
     $nm2.FontWeight = 'Bold'
     $head.Children.Add($nm2) | Out-Null
     if ($s.platform) {
@@ -2059,7 +2062,7 @@ function Update-StreamerPage {
       $nt.Margin = New-Object Windows.Thickness 0, 3, 0, 0
       $csp.Children.Add($nt) | Out-Null
     }
-    $tail = New-Text '设置随版本/硬件而异，仅供参考' $script:C.Gold 10
+    $tail = New-Text $(if ($s.featured -eq $true) { '按截图整理 · 设备相关项请按本机调整' } else { '设置随版本/硬件而异，仅供参考' }) $script:C.Gold 10
     $tail.Margin = New-Object Windows.Thickness 0, 4, 0, 0
     $csp.Children.Add($tail) | Out-Null
     $card.Child = $csp
@@ -3801,6 +3804,182 @@ function Load-ActiveTuningExperiment {
 $script:ReportUploadUrl = 'https://df.ltz88.cn/report/upload'
 $script:ReportMaxBytes = 256KB
 
+$script:DiagnosticIssueChoices = @(
+  [pscustomobject]@{ Id = 'low_fps'; Label = '帧率偏低（平均 FPS 低）' }
+  [pscustomobject]@{ Id = 'frame_drops'; Label = '掉帧 / 帧率波动' }
+  [pscustomobject]@{ Id = 'stutter'; Label = '卡顿 / 微卡 / 突然停顿' }
+  [pscustomobject]@{ Id = 'low_one_percent'; Label = '1% Low 偏低（画面不流畅）' }
+  [pscustomobject]@{ Id = 'input_latency'; Label = '输入延迟高 / 操作粘滞' }
+  [pscustomobject]@{ Id = 'slow_loading'; Label = '游戏加载慢 / 切换场景卡' }
+  [pscustomobject]@{ Id = 'game_crash'; Label = '游戏闪退 / 黑屏 / 无响应' }
+  [pscustomobject]@{ Id = 'system_lag'; Label = '电脑整体卡顿 / 响应慢' }
+  [pscustomobject]@{ Id = 'cpu_heat'; Label = 'CPU 占用或温度过高' }
+  [pscustomobject]@{ Id = 'gpu_heat'; Label = 'GPU 占用或温度过高' }
+  [pscustomobject]@{ Id = 'noise_power'; Label = '风扇噪音大 / 功耗高' }
+  [pscustomobject]@{ Id = 'app_update_failure'; Label = '优化工具打不开 / 更新失败' }
+  [pscustomobject]@{ Id = 'apply_restore_failure'; Label = '优化或还原执行失败' }
+)
+$script:DiagnosticBenefitChoices = @(
+  [pscustomobject]@{ Id = 'fps_gain'; Label = '平均帧率提升（涨帧）' }
+  [pscustomobject]@{ Id = 'one_percent_gain'; Label = '1% Low 提升 / 掉帧减少' }
+  [pscustomobject]@{ Id = 'less_stutter'; Label = '卡顿 / 微卡减少' }
+  [pscustomobject]@{ Id = 'lower_latency'; Label = '输入延迟降低 / 操作更跟手' }
+  [pscustomobject]@{ Id = 'faster_loading'; Label = '游戏加载 / 切换场景更快' }
+  [pscustomobject]@{ Id = 'smoother_system'; Label = '电脑响应更流畅' }
+  [pscustomobject]@{ Id = 'lower_cpu_heat'; Label = 'CPU 温度降低' }
+  [pscustomobject]@{ Id = 'lower_gpu_heat'; Label = 'GPU 温度降低' }
+  [pscustomobject]@{ Id = 'lower_noise_power'; Label = '风扇更安静 / 功耗降低' }
+  [pscustomobject]@{ Id = 'better_stability'; Label = '游戏稳定性提高 / 闪退减少' }
+)
+
+# “上传完整诊断”的第一步：先让用户标记当前问题和已经感受到的改善。两组都支持多选；
+# 至少选择一项才进入隐私确认页，避免收到没有反馈上下文的完整诊断。
+function Show-DiagnosticFeedbackDialog {
+  $fxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="700" Height="650" WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <Window.Resources>
+    <Style x:Key="FeedbackCheck" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="#FFFFFFFF"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="Row" Background="#FF0B1713" BorderBrush="#FF1B2E28"
+                    BorderThickness="1" Padding="10,8" Margin="0,0,0,7">
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Border x:Name="Box" Width="14" Height="14" BorderBrush="#FF2C443B"
+                        BorderThickness="1" Background="Transparent" VerticalAlignment="Top" Margin="0,1,0,0">
+                  <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="#FF04241B"
+                        StrokeThickness="2" Visibility="Collapsed"/>
+                </Border>
+                <ContentPresenter Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center"/>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
+                <Setter TargetName="Row" Property="BorderBrush" Value="#FF17603F"/>
+                <Setter TargetName="Row" Property="Background" Value="#FF0E2A21"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Row" Property="BorderBrush" Value="#FF00E884"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Border x:Name="DlgTitle" Grid.Row="0" Background="#FF0D1417" BorderBrush="#FF1B2E28"
+            BorderThickness="0,0,0,1" Padding="14,11">
+      <Grid>
+        <StackPanel Orientation="Horizontal">
+          <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
+            <TextBlock Text="反馈选择" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+          </Border>
+          <TextBlock Text="DIAGNOSTIC FEEDBACK" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+                     VerticalAlignment="Center" Margin="9,0,0,0"/>
+        </StackPanel>
+        <TextBlock Text="1 / 2" HorizontalAlignment="Right" Foreground="#FF00E884"
+                   FontFamily="Consolas" FontSize="10" VerticalAlignment="Center"/>
+      </Grid>
+    </Border>
+    <Grid Grid.Row="1" Margin="14,12,14,8">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <StackPanel Grid.Row="0" Margin="2,0,2,10">
+        <TextBlock Text="这次主要遇到了什么？优化后有哪些改善？" Foreground="#FFFFFFFF"
+                   FontSize="17" FontWeight="Bold"/>
+        <TextBlock Text="两组都可以多选。改善项还没有感受到时可留空；至少选择一项后再继续。"
+                   Foreground="#FF9AA5A0" FontSize="11" Margin="0,4,0,0"/>
+      </StackPanel>
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Grid.Column="0" Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Padding="11">
+            <StackPanel>
+              <TextBlock Text="遇到的问题（可多选）" Foreground="#FFE5C46A" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="CURRENT PROBLEMS" Foreground="#FF7A8580" FontFamily="Consolas" FontSize="9" Margin="0,2,0,9"/>
+              <StackPanel x:Name="IssuePanel"/>
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="2" Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Padding="11">
+            <StackPanel>
+              <TextBlock Text="优化后已有改善（可多选）" Foreground="#FF00E884" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="IMPROVEMENTS" Foreground="#FF7A8580" FontFamily="Consolas" FontSize="9" Margin="0,2,0,9"/>
+              <StackPanel x:Name="BenefitPanel"/>
+            </StackPanel>
+          </Border>
+        </Grid>
+      </ScrollViewer>
+    </Grid>
+    <Grid Grid.Row="2" Margin="14,4,14,14">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="HintTxt" Grid.Column="0" Text="选择内容会写入诊断报告，上传前仍会显示完整数据清单。"
+                 Foreground="#FF7A8580" FontSize="10" VerticalAlignment="Center" TextWrapping="Wrap" Margin="2,0,10,0"/>
+      <Button x:Name="CancelBtn" Grid.Column="1" Content="取消" Width="82" Height="34" IsCancel="True"/>
+      <Button x:Name="NextBtn" Grid.Column="2" Content="下一步：确认上传" Width="158" Height="34"
+              IsDefault="True" Margin="9,0,0,0"/>
+    </Grid>
+  </Grid>
+</Window>
+'@
+  $script:FeedbackDlg = [Windows.Markup.XamlReader]::Parse($fxaml)
+  $script:FeedbackDlg.Resources.MergedDictionaries.Add($script:ThemeRes)
+  $script:FeedbackDlg.Owner = $window
+  $script:FeedbackIssuePanel = $script:FeedbackDlg.FindName('IssuePanel')
+  $script:FeedbackBenefitPanel = $script:FeedbackDlg.FindName('BenefitPanel')
+  foreach ($group in @(
+    [pscustomobject]@{ Panel = $script:FeedbackIssuePanel; Choices = $script:DiagnosticIssueChoices }
+    [pscustomobject]@{ Panel = $script:FeedbackBenefitPanel; Choices = $script:DiagnosticBenefitChoices }
+  )) {
+    foreach ($choice in $group.Choices) {
+      $cb = New-Object Windows.Controls.CheckBox
+      $cb.Style = $script:FeedbackDlg.FindResource('FeedbackCheck')
+      $cb.Tag = $choice
+      $label = New-Object Windows.Controls.TextBlock
+      $label.Text = $choice.Label
+      $label.TextWrapping = 'Wrap'
+      $label.Foreground = New-Brush $script:C.TextPri
+      $label.FontSize = 11
+      $cb.Content = $label
+      $group.Panel.Children.Add($cb) | Out-Null
+    }
+  }
+  $script:FeedbackDlg.FindName('CancelBtn').Style = $window.FindResource('Ghost')
+  $script:FeedbackDlg.FindName('NextBtn').Style = $window.FindResource('Primary')
+  $script:DiagnosticFeedbackResult = $null
+  $script:FeedbackDlg.FindName('DlgTitle').Add_MouseLeftButtonDown({ $script:FeedbackDlg.DragMove() })
+  $script:FeedbackDlg.FindName('CancelBtn').Add_Click({ $script:FeedbackDlg.DialogResult = $false })
+  $script:FeedbackDlg.FindName('NextBtn').Add_Click({
+    $issueChoices = @($script:FeedbackIssuePanel.Children | Where-Object { $_.IsChecked -eq $true } | ForEach-Object { $_.Tag })
+    $benefitChoices = @($script:FeedbackBenefitPanel.Children | Where-Object { $_.IsChecked -eq $true } | ForEach-Object { $_.Tag })
+    if (($issueChoices.Count + $benefitChoices.Count) -eq 0) {
+      $script:FeedbackDlg.FindName('HintTxt').Text = '请至少选择一项当前问题或改善效果。'
+      $script:FeedbackDlg.FindName('HintTxt').Foreground = New-Brush '#FFFF6B6B'
+      return
+    }
+    $script:DiagnosticFeedbackResult = [pscustomobject]@{
+      IssueIds = [string[]]@($issueChoices | ForEach-Object { $_.Id })
+      IssueLabels = [string[]]@($issueChoices | ForEach-Object { $_.Label })
+      BenefitIds = [string[]]@($benefitChoices | ForEach-Object { $_.Id })
+      BenefitLabels = [string[]]@($benefitChoices | ForEach-Object { $_.Label })
+    }
+    $script:FeedbackDlg.DialogResult = $true
+  })
+  if (-not [bool]$script:FeedbackDlg.ShowDialog()) { return $null }
+  $script:DiagnosticFeedbackResult
+}
+
 # 脱敏：路径里的用户名、机器名、账户名一律替换。目录结构保留——排查问题要看得出
 # 游戏装在哪层目录，但没必要知道机器主人叫什么
 function Protect-ReportText([string]$Text) {
@@ -3820,11 +3999,27 @@ function Protect-ReportText([string]$Text) {
 
 # 报告只放排查需要的：硬件 + 各优化项当前状态 + 运行日志 + 版本号 + 最近备份的项目名。
 # 绝不带备份 JSON 原文——那里面是注册表原值，外传没有意义
-function New-DiagnosticReport {
+function New-DiagnosticReport($Feedback) {
   $lines = New-Object System.Collections.Generic.List[string]
   $lines.Add("DeltaForceBooster 诊断报告")
   $lines.Add("生成时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
   $lines.Add("界面版本：v$script:GuiVersion")
+  $lines.Add('')
+
+  $lines.Add('== 用户反馈选择 ==')
+  if ($Feedback) {
+    $issueLabels = @($Feedback.IssueLabels)
+    $benefitLabels = @($Feedback.BenefitLabels)
+    $issueIds = @($Feedback.IssueIds)
+    $benefitIds = @($Feedback.BenefitIds)
+    $lines.Add("遇到的问题：$(if ($issueLabels.Count) { $issueLabels -join '、' } else { '未选择' })")
+    $lines.Add("问题标签：$(if ($issueIds.Count) { $issueIds -join ',' } else { 'none' })")
+    $lines.Add("已有改善：$(if ($benefitLabels.Count) { $benefitLabels -join '、' } else { '未选择' })")
+    $lines.Add("改善标签：$(if ($benefitIds.Count) { $benefitIds -join ',' } else { 'none' })")
+  } else {
+    $lines.Add('遇到的问题：未选择')
+    $lines.Add('已有改善：未选择')
+  }
   $lines.Add('')
 
   $lines.Add('== 硬件与系统 ==')
@@ -5366,15 +5561,24 @@ $ui.GuideBtn.Add_Click({ Show-GpuGuideDialog (Get-HardwareInfo) })
 
 $ui.DisclaimerBtn.Add_Click({ Show-DisclaimerDialog -ReadOnly | Out-Null })
 
-# 上传诊断报告：先组装（含脱敏）再让用户确认要发什么，确认后才上传。绝不静默发送
+# 上传诊断报告：先选择问题/改善，再组装脱敏报告并确认数据清单，最后才上传。绝不静默发送
 $ui.ReportBtn.Add_Click({
   try {
+    $feedback = Show-DiagnosticFeedbackDialog
+    if (-not $feedback) {
+      Write-Log '已取消上传诊断报告。'
+      return
+    }
     Write-Log '正在收集诊断信息…'
-    $report = New-DiagnosticReport
+    $report = New-DiagnosticReport -Feedback $feedback
     $kb = [math]::Round([Text.Encoding]::UTF8.GetByteCount($report) / 1KB, 1)
+    $selectedIssues = $(if (@($feedback.IssueLabels).Count) { @($feedback.IssueLabels) -join '、' } else { '未选择' })
+    $selectedBenefits = $(if (@($feedback.BenefitLabels).Count) { @($feedback.BenefitLabels) -join '、' } else { '未选择' })
     $msg = @(
       "将把以下内容上传到作者的服务器（$script:ReportUploadUrl），仅用于排查你反馈的问题："
       ''
+      "· 你选择的当前问题：$selectedIssues"
+      "· 你选择的已有改善：$selectedBenefits"
       '· 硬件型号与系统版本（CPU / 显卡 / 内存 / Windows 版本）'
       '· 显示器分辨率/刷新率、音频设备、页面文件、系统启动时间与相关进程名'
       '· 排障所需的关键环境变量（路径会脱敏；敏感变量只记录名称，不上传值）'

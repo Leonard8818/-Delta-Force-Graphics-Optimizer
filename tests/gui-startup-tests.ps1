@@ -23,6 +23,7 @@ $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$tokens, [ref]$errors)
 Assert-True ($errors.Count -eq 0) ('GUI PowerShell AST parse failed: ' + (($errors | ForEach-Object Message) -join '; '))
 $raw = [IO.File]::ReadAllText($guiPath, [Text.Encoding]::UTF8)
+$referenceData = Get-Content -LiteralPath (Join-Path $root 'data\streamer-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
 Assert-True (-not $raw.Contains('「立即更新」全程自动：')) 'obsolete inline-update explanation is still shown'
 Assert-True $raw.Contains("`$script:UpdUi.InlineNote.Visibility = 'Collapsed'") 'inline-update explanation row is not collapsed'
@@ -34,6 +35,35 @@ Assert-True ($raw.Contains('Content="上传完整诊断"') -and
   $raw.Contains("`$lines.Add('== 运行环境与显示 / 音频 ==')") -and
   $raw.Contains("`$lines.Add('== 关键环境变量（脱敏） ==')")) `
   'expanded negative-effect diagnostic collection is missing from the report button'
+Assert-True ($raw.Contains('function Show-DiagnosticFeedbackDialog') -and
+  $raw.Contains("Id = 'frame_drops'; Label = '掉帧 / 帧率波动'") -and
+  $raw.Contains("Id = 'system_lag'; Label = '电脑整体卡顿 / 响应慢'") -and
+  $raw.Contains("Id = 'gpu_heat'; Label = 'GPU 占用或温度过高'") -and
+  $raw.Contains("Id = 'fps_gain'; Label = '平均帧率提升（涨帧）'") -and
+  $raw.Contains("Id = 'one_percent_gain'; Label = '1% Low 提升 / 掉帧减少'")) `
+  'diagnostic feedback page is missing required multi-select problem/improvement choices'
+Assert-True ($raw.Contains("`$lines.Add('== 用户反馈选择 ==')") -and
+  $raw.Contains('New-DiagnosticReport -Feedback $feedback') -and
+  $raw.Contains("if ((`$issueChoices.Count + `$benefitChoices.Count) -eq 0)")) `
+  'diagnostic feedback selection is not required and embedded in the uploaded report'
+$recommended = @($referenceData.streamers | Where-Object { $_.featured -eq $true })
+Assert-True ($recommended.Count -eq 1 -and $referenceData.streamers[0].featured -eq $true) `
+  'game settings reference does not expose exactly one featured recommendation as the first column'
+$recommendedSettings = $recommended[0].settings
+foreach ($expected in @(
+  @('显示模式', '全屏（频繁切屏可用无边框）'), @('武器动态模糊', '关闭'),
+  @('场景视距', '极高'), @('渲染倍率', '100%'), @('纹理质量', '极高'),
+  @('阴影贴图分辨率', '低'), @('DLSS 帧生成', '开启'), @('后台帧数上限', '5')
+)) {
+  Assert-True ("$($recommendedSettings.PSObject.Properties[$expected[0]].Value)" -eq $expected[1]) `
+    "recommended game setting mismatch: $($expected[0])"
+}
+$referenceSchemaNames = @($referenceData.settings_schema | ForEach-Object { "$($_.name)" })
+Assert-True ($referenceSchemaNames -contains '显示适配器' -and
+  $referenceSchemaNames -contains 'Intel Xe 低延迟（实验性）') `
+  'recommended screenshot settings are missing from the displayed reference schema'
+Assert-True ($raw.Contains("'★ 推荐设置'") -and $raw.Contains('按截图整理 · 设备相关项请按本机调整')) `
+  'featured recommendation is not visually distinguished in the game settings page'
 Assert-True ($raw.Contains("'SystemRoot','WINDIR','ProgramData','ProgramFiles','ProgramFiles(x86)','TEMP','TMP','PATH','PSModulePath','COMSPEC','PATHEXT','__COMPAT_LAYER'") -and
   $raw.Contains('（仅记录名称，不上传值）')) `
   'diagnostic environment collection is not value-allowlisted or does not redact injection values'

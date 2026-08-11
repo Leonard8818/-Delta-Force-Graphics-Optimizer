@@ -29,6 +29,7 @@ ADMIN_API_TOKEN = os.environ.get("DFB_ADMIN_API_TOKEN", "")
 TELEMETRY_PEPPER = os.environ.get("DFB_TELEMETRY_PEPPER", "")
 MAX_REPORT_BODY = 256 * 1024
 MAX_TELEMETRY_BODY = 8 * 1024
+MAX_WEBSITE_VISIT_BODY = 1024
 MAX_ADMIN_RESPONSE_BODY = 1024 * 1024
 MAX_WEEKLY_SNAPSHOT_BODY = 768 * 1024
 PORT = int(os.environ.get("DFB_REPORT_PORT", "8899"))
@@ -36,6 +37,7 @@ RATE_WINDOW = 60
 KEEP_DAYS = 30
 PERFORMANCE_KEEP_DAYS = 90
 TELEMETRY_KEEP_DAYS = 180
+WEBSITE_VISIT_KEEP_DAYS = 30
 REPLAY_KEEP_DAYS = 2
 DEVICE_TOKEN_TTL_DAYS = 30
 TELEMETRY_CLOCK_SKEW = 10 * 60
@@ -248,6 +250,7 @@ def _run_maintenance(now=None):
     removed_replays = 0
     removed_usage = 0
     removed_clients = 0
+    removed_website_visits = 0
     conn = _connect()
     try:
         with conn:
@@ -279,6 +282,11 @@ def _run_maintenance(now=None):
                 (now - TELEMETRY_KEEP_DAYS * 86400,),
             )
             removed_clients = max(0, cursor.rowcount)
+            cursor = conn.execute(
+                "DELETE FROM website_visits WHERE seen_at<?",
+                (now - WEBSITE_VISIT_KEEP_DAYS * 86400,),
+            )
+            removed_website_visits = max(0, cursor.rowcount)
     finally:
         conn.close()
     return {
@@ -287,6 +295,7 @@ def _run_maintenance(now=None):
         "replayIds": removed_replays,
         "dailyUsage": removed_usage,
         "clients": removed_clients,
+        "websiteVisits": removed_website_visits,
     }
 
 
@@ -367,6 +376,12 @@ def _init_db():
                 PRIMARY KEY (client_hash, event_id)
             );
             CREATE INDEX IF NOT EXISTS idx_replays_seen_at ON telemetry_replays(seen_at);
+            CREATE TABLE IF NOT EXISTS website_visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seen_at INTEGER NOT NULL,
+                visitor_hash TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_website_visits_seen_at ON website_visits(seen_at);
             CREATE TABLE IF NOT EXISTS weekly_snapshots (
                 week_start TEXT PRIMARY KEY,
                 generated_at INTEGER NOT NULL,
@@ -1773,6 +1788,87 @@ def _metric_delta(optimized, baseline, key):
     return optimized[key] - baseline[key]
 
 
+def _website_visitor_hash(visitor_id):
+    if not TELEMETRY_PEPPER:
+        raise RuntimeError("DFB_TELEMETRY_PEPPER is not configured")
+    visitor_id = _text(visitor_id, 64).lower()
+    if not _install_id_re.fullmatch(visitor_id):
+        raise ValueError("bad visitor id")
+    # Keep browser visitors in a separate hash namespace so they cannot be joined to
+    # application install identifiers even if a browser happens to reuse the same UUID.
+    return hashlib.sha256(
+        (TELEMETRY_PEPPER + "\nwebsite-visitor\n" + visitor_id).encode("utf-8")
+    ).hexdigest()
+
+
+def _record_website_visit(visitor_id, now=None):
+    now = int(time.time() if now is None else now)
+    visitor_hash = _website_visitor_hash(visitor_id)
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO website_visits (seen_at, visitor_hash) VALUES (?, ?)",
+                (now, visitor_hash),
+            )
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+def _build_website_stats(now=None):
+    now = int(time.time() if now is None else now)
+    now_local = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE)
+    today_start = int(dt.datetime.combine(
+        now_local.date(), dt.time.min, tzinfo=REPORT_TIMEZONE
+    ).timestamp())
+    current_hour = now_local.replace(minute=0, second=0, microsecond=0)
+    hourly_start = current_hour - dt.timedelta(hours=23)
+    hourly_start_ts = int(hourly_start.timestamp())
+    conn = _connect()
+    try:
+        recent = conn.execute(
+            """SELECT COUNT(*) views, COUNT(DISTINCT visitor_hash) visitors
+                 FROM website_visits WHERE seen_at>=? AND seen_at<=?""",
+            (now - 3600, now),
+        ).fetchone()
+        today = conn.execute(
+            """SELECT COUNT(*) views, COUNT(DISTINCT visitor_hash) visitors
+                 FROM website_visits WHERE seen_at>=? AND seen_at<=?""",
+            (today_start, now),
+        ).fetchone()
+        buckets = {}
+        for row in conn.execute(
+            "SELECT seen_at, visitor_hash FROM website_visits WHERE seen_at>=? AND seen_at<=?",
+            (hourly_start_ts, now),
+        ):
+            hour = dt.datetime.fromtimestamp(int(row["seen_at"]), REPORT_TIMEZONE).replace(
+                minute=0, second=0, microsecond=0
+            )
+            entry = buckets.setdefault(hour, {"views": 0, "visitors": set()})
+            entry["views"] += 1
+            entry["visitors"].add(row["visitor_hash"])
+    finally:
+        conn.close()
+
+    hourly = []
+    for offset in range(24):
+        hour = hourly_start + dt.timedelta(hours=offset)
+        entry = buckets.get(hour, {"views": 0, "visitors": set()})
+        hourly.append({
+            "hour": hour.strftime("%Y-%m-%dT%H:00+08:00"),
+            "label": hour.strftime("%H:00"),
+            "views": int(entry["views"]),
+            "visitors": len(entry["visitors"]),
+        })
+    return {
+        "last60m": {"views": int(recent["views"]), "visitors": int(recent["visitors"])},
+        "today": {"views": int(today["views"]), "visitors": int(today["visitors"])},
+        "hourly": hourly,
+        "timezone": "Asia/Shanghai",
+    }
+
+
 def _build_stats(now=None, days=30):
     now = int(time.time() if now is None else now)
     now_local = dt.datetime.fromtimestamp(now, REPORT_TIMEZONE)
@@ -1786,6 +1882,7 @@ def _build_stats(now=None, days=30):
     try:
         total_users = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
         active_15m = conn.execute("SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 900,)).fetchone()[0]
+        active_60m = conn.execute("SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 3600,)).fetchone()[0]
         active_24h = conn.execute("SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 86400,)).fetchone()[0]
         active_7d = conn.execute("SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 7 * 86400,)).fetchone()[0]
         active_30d = conn.execute("SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 30 * 86400,)).fetchone()[0]
@@ -1925,6 +2022,7 @@ def _build_stats(now=None, days=30):
         "totals": {
             "users": total_users,
             "active15m": active_15m,
+            "active60m": active_60m,
             "active24h": active_24h,
             "active7d": active_7d,
             "active30d": active_30d,
@@ -1972,6 +2070,7 @@ def _build_stats(now=None, days=30):
             "reportUtcOffset": "+08:00",
         },
         "diagnosticReports": _report_summary(),
+        "website": _build_website_stats(now),
     }
 
 
@@ -1983,9 +2082,8 @@ def _build_public_stats(now=None):
     trend_days = [today - dt.timedelta(days=offset) for offset in range(6, -1, -1)]
     trend_start = trend_days[0]
     trend_start_ts = int(dt.datetime.combine(trend_start, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
-    quarter_end = now_local.replace(minute=(now_local.minute // 15) * 15, second=0, microsecond=0)
-    quarter_start = quarter_end - dt.timedelta(minutes=15 * 7)
-    quarter_start_ts = int(quarter_start.timestamp())
+    sample_ends = [now_local - dt.timedelta(minutes=15 * offset) for offset in range(7, -1, -1)]
+    rolling_start_ts = int((sample_ends[0] - dt.timedelta(minutes=60)).timestamp())
     conn = _connect()
     try:
         totals = dict(conn.execute(
@@ -2032,18 +2130,24 @@ def _build_public_stats(now=None):
             usage_by_day.setdefault(row["day"], set()).add(row["client_hash"])
 
         quarter_clients = [set() for _ in range(8)]
+        rolling_hour_clients = [set() for _ in range(8)]
         for row in conn.execute(
             "SELECT client_hash, seen_at FROM telemetry_replays WHERE seen_at>=? AND seen_at<=?",
-            (quarter_start_ts, now),
+            (rolling_start_ts, now),
         ):
-            index = int((int(row["seen_at"]) - quarter_start_ts) // 900)
-            if 0 <= index < len(quarter_clients):
-                quarter_clients[index].add(row["client_hash"])
+            seen_at = int(row["seen_at"])
+            for index, sample_end in enumerate(sample_ends):
+                sample_end_ts = int(sample_end.timestamp())
+                if sample_end_ts - 3600 <= seen_at <= sample_end_ts:
+                    rolling_hour_clients[index].add(row["client_hash"])
+                if sample_end_ts - 900 <= seen_at <= sample_end_ts:
+                    quarter_clients[index].add(row["client_hash"])
 
         trends = {
             "users": [],
             "active7d": [],
             "active15m": [len(clients) for clients in quarter_clients],
+            "active60m": [len(clients) for clients in rolling_hour_clients],
             "launchesToday": [],
             "totalLaunches": [],
             "totalApplies": [],
@@ -2077,6 +2181,9 @@ def _build_public_stats(now=None):
         active_15m = int(conn.execute(
             "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 900,)
         ).fetchone()[0])
+        active_60m = int(conn.execute(
+            "SELECT COUNT(*) FROM clients WHERE last_seen>=?", (now - 3600,)
+        ).fetchone()[0])
         launches_today = int(conn.execute(
             "SELECT COALESCE(SUM(launches),0) FROM daily_usage WHERE day=?",
             (today.isoformat(),),
@@ -2084,6 +2191,7 @@ def _build_public_stats(now=None):
         trends["users"][-1] = users
         trends["active7d"][-1] = active_7d
         trends["active15m"][-1] = active_15m
+        trends["active60m"][-1] = active_60m
         trends["launchesToday"][-1] = launches_today
         trends["totalLaunches"][-1] = int(totals["launches"])
         trends["totalApplies"][-1] = int(totals["applies"])
@@ -2094,6 +2202,7 @@ def _build_public_stats(now=None):
             "users": users,
             "active7d": active_7d,
             "active15m": active_15m,
+            "active60m": active_60m,
             "launchesToday": launches_today,
             "totalLaunches": int(totals["launches"]),
             "totalApplies": int(totals["applies"]),
@@ -3315,6 +3424,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path.rstrip("/")
         ip = _client_ip(self)
+        if path == "/report/website-visit":
+            if not _rate_ok("website-visit:" + ip, 120):
+                return self._reply_json(429, {"error": "too many visits, try later"})
+            try:
+                raw = self._read_body(MAX_WEBSITE_VISIT_BODY)
+                payload = json.loads(raw.decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"visitorId"}:
+                    raise ValueError("bad website visit")
+                result = _record_website_visit(payload.get("visitorId"))
+            except OverflowError:
+                return self._reply_json(413, {"error": "body too large"})
+            except (UnicodeError, json.JSONDecodeError, ValueError):
+                return self._reply_json(400, {"error": "bad website visit"})
+            except RuntimeError:
+                return self._reply_json(503, {"error": "website statistics unavailable"})
+            return self._reply_json(200, result)
+
         if path == "/api/weekly/snapshot":
             if not _admin_authorized(self):
                 return self._reply_json(403, {"error": "forbidden"})

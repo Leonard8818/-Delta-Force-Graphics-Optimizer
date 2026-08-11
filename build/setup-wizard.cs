@@ -65,6 +65,7 @@ namespace DfbSetup {
 
 static class Program {
     public const string Version = "__VER__";
+    enum LaunchDisposition { Started, Skipped, Failed }
 
     [STAThread]
     static void Main(string[] args) {
@@ -235,16 +236,46 @@ static class Program {
                 return 2;
             }
             installStarted = true;
-            Installer.Install(dest, delegate(int i, int n, string name) {
+            Installer.DeferredInstall deferred = null;
+            Action<int, int, string> progress = delegate(int i, int n, string name) {
                 if (i == 1 || i == n || i % 20 == 0) Log(logFile, string.Format("  {0}/{1} {2}", i, n, name));
-            }, migrationSource);
+            };
+            if (runAfter) deferred = Installer.InstallForLaunchValidation(dest, progress, migrationSource);
+            else Installer.Install(dest, progress, migrationSource);
             string codeRoot = Installer.CodeRootForInstall(dest);
             // 静默模式与向导完成页的默认勾选保持一致：开始菜单与桌面快捷方式都建
             Log(logFile, "开始菜单快捷方式: " + Installer.CreateShortcuts(codeRoot));
             Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(codeRoot));
-            Log(logFile, "安装完成: " + codeRoot);
+            Log(logFile, runAfter ? "新版文件已切换，等待启动验证: " + codeRoot : "安装完成: " + codeRoot);
             if (!string.IsNullOrEmpty(Installer.LastMigrationNote)) Log(logFile, Installer.LastMigrationNote);
-            if (runAfter) Log(logFile, "启动新版: " + LaunchInstalled(codeRoot, originSid));
+            if (runAfter) {
+                int launchedPid;
+                LaunchDisposition disposition;
+                string launchDetail = LaunchInstalled(codeRoot, originSid, out disposition, out launchedPid);
+                Log(logFile, "启动新版: " + launchDetail);
+                if (disposition == LaunchDisposition.Failed) {
+                    string rollbackDetail = Installer.RollbackDeferredInstall(deferred);
+                    Log(logFile, "启动失败，已恢复旧版: " + rollbackDetail);
+                    throw new InvalidOperationException("新版没有启动：" + launchDetail + "；" + rollbackDetail);
+                }
+                if (disposition == LaunchDisposition.Skipped) {
+                    string rollbackDetail = Installer.RollbackDeferredInstall(deferred);
+                    Log(logFile, "启动验证被跳过，已恢复旧版: " + rollbackDetail);
+                    throw new InvalidOperationException("新版未完成启动验证：" + launchDetail + "；" + rollbackDetail);
+                }
+                if (disposition == LaunchDisposition.Started) {
+                    string readiness;
+                    if (!Installer.WaitForStartupReadiness(codeRoot, launchedPid, out readiness)) {
+                        string rollbackDetail = Installer.RollbackDeferredInstall(deferred);
+                        Log(logFile, "新版启动验证失败，已恢复旧版: " + readiness + "；" + rollbackDetail);
+                        throw new InvalidOperationException("新版启动验证失败：" + readiness + "；" + rollbackDetail);
+                    }
+                    Log(logFile, "新版启动验证通过: " + readiness);
+                }
+                string commitDetail = Installer.CommitDeferredInstall(deferred);
+                if (!string.IsNullOrEmpty(commitDetail)) Log(logFile, commitDetail);
+                Log(logFile, "更新事务已提交: " + codeRoot);
+            }
             return 0;
         } catch (Exception ex) {
             Log(logFile, "安装失败: " + ex);
@@ -306,7 +337,9 @@ static class Program {
         } catch (Exception ex) { detail = "等待异常: " + ex.Message; return true; }
     }
 
-    static string LaunchInstalled(string dest, string originSid) {
+    static string LaunchInstalled(string dest, string originSid, out LaunchDisposition disposition, out int launchedPid) {
+        disposition = LaunchDisposition.Failed;
+        launchedPid = 0;
         try {
             string exe = Path.Combine(dest, "启动优化工具.exe");
             if (!File.Exists(exe)) return "未找到 " + exe;
@@ -314,31 +347,28 @@ static class Program {
             if (identityError != null) throw new UnauthorizedAccessException(identityError);
             // 沙箱验证钩子（与 DFB_TEST_DESKTOP / DFB_TEST_DOWNLOADS 同类）：验证要走完
             // 参数解析与时序，但绝不能真把主程序拉起来——它会自提权弹 UAC 打断验证
-            if (Installer.TestNoLaunch(dest))
+            if (Installer.TestNoLaunch(dest)) {
+                disposition = LaunchDisposition.Started;
                 return "测试模式跳过启动: " + exe;
+            }
             // 主程序退不干净时的兜底（只按主窗口标题精确匹配请求关闭）：旧实例拒绝退出
-            // 多半是正在执行优化——绝不强杀，放弃自动启动并明确告诉用户怎么办
+            // 多半是正在执行优化——绝不强杀，也不能提交未经启动验证的新版本；交给外层回滚。
             if (!Installer.CloseRunningBooster()) {
-                WarnBox("新版本已安装完成，但检测到旧版程序仍在运行（可能正在执行优化或还原）。\r\n\r\n已跳过自动启动。请等待旧版完成并关闭后，再手动打开新版本。");
+                disposition = LaunchDisposition.Skipped;
                 return "旧版程序仍在运行（可能正在执行优化），已跳过自动启动";
             }
-            return Installer.StartInstalledApplication(dest, originSid);
+            string result = Installer.StartInstalledApplication(dest, originSid, out launchedPid);
+            disposition = LaunchDisposition.Started;
+            return result;
         } catch (UnauthorizedAccessException ex) {
-            if (!Installer.TestNoLaunch(dest)) {
-                try {
-                    WinForms.MessageBox.Show(
-                        "新版本已安装完成，但已跳过自动启动。\r\n\r\n" + ex.Message +
-                        "\r\n\r\n请关闭安装器，由原用户从公共桌面或开始菜单快捷方式手动打开。",
-                        "三角洲行动优化助手 · 已跳过自动启动",
-                        WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
-                } catch (Exception) { }
-            }
-            return "已跳过自动启动：" + ex.Message + "；请由原用户从公共快捷方式手动打开";
-        } catch (Exception ex) { return "启动失败: " + ex.Message; }
+            disposition = LaunchDisposition.Skipped;
+            return "已跳过自动启动：" + ex.Message;
+        } catch (Exception ex) { disposition = LaunchDisposition.Failed; return "启动失败: " + ex.Message; }
     }
 
     // 安装采用完整暂存、校验、目录切换和失败回滚，不再逐文件覆盖旧版本。
     static void FailBox(string dest, string reason, bool partialInstall) {
+        if (Installer.TestNoLaunch(dest)) return;
         string state = partialInstall
             ? "新版本没有通过完整安装，暂存内容已清理；已有版本不会与新文件混在一起"
             : "原来的版本没有被破坏，可以正常继续使用";
@@ -403,6 +433,17 @@ static class Installer {
         public string CodeRoot;
         public bool IsCustomAnchor;
     }
+    public sealed class DeferredInstall {
+        internal string Full;
+        internal string Parent;
+        internal string Leaf;
+        internal string Id;
+        internal string Stage;
+        internal string Pending;
+        internal string MigrationFull;
+        internal bool HadPrevious;
+        internal bool Completed;
+    }
     sealed class PayloadFile {
         public string RelativePath;
         public string Sha256;
@@ -459,6 +500,13 @@ static class Installer {
     public static bool TestNoLaunch(string scope) {
 #if DFB_TESTING
         return TestFlagEnabled("DFB_TEST_NOLAUNCH", scope);
+#else
+        return false;
+#endif
+    }
+    static bool TestStartupHealthFailure(string scope) {
+#if DFB_TESTING
+        return TestFlagEnabled("DFB_TEST_STARTUP_HEALTH_FAIL", scope);
 #else
         return false;
 #endif
@@ -671,6 +719,20 @@ static class Installer {
     static extern IntPtr GetShellWindow();
     [DllImport("user32.dll", SetLastError = true)]
     static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern int GetClassName(IntPtr window, StringBuilder className, int maxCount);
+    delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowText(IntPtr window, StringBuilder text, int maxCount);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
     [DllImport("advapi32.dll", SetLastError = true)]
@@ -698,6 +760,14 @@ static class Installer {
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32 entry);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32 entry);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct STARTUPINFO {
@@ -727,6 +797,21 @@ static class Installer {
         public IntPtr hThread;
         public int dwProcessId;
         public int dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct PROCESSENTRY32 {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
     }
 
     public static string NormalizeSid(string value) {
@@ -822,7 +907,7 @@ static class Installer {
         return sum;
     }
 
-    static void StartWithDesktopShellToken(string exe, string originSid) {
+    static int StartWithDesktopShellToken(string exe, string originSid) {
         IntPtr processHandle = IntPtr.Zero, tokenHandle = IntPtr.Zero, environment = IntPtr.Zero, integrity = IntPtr.Zero;
         PROCESS_INFORMATION processInformation = new PROCESS_INFORMATION();
         try {
@@ -875,6 +960,7 @@ static class Installer {
                     CREATE_UNICODE_ENVIRONMENT, environment, Environment.SystemDirectory,
                     ref startupInfo, out processInformation))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法以当前桌面普通用户启动软件");
+            return processInformation.dwProcessId;
         } finally {
             if (processInformation.hThread != IntPtr.Zero) CloseHandle(processInformation.hThread);
             if (processInformation.hProcess != IntPtr.Zero) CloseHandle(processInformation.hProcess);
@@ -888,6 +974,12 @@ static class Installer {
     // 安装器写受保护程序目录时处于 elevated token；asInvoker 启动器若直接继承该 token，
     // 会被启动器安全策略拒绝。使用已复验的当前桌面 medium token 精确启动安装后的启动器。
     public static string StartInstalledApplication(string dest, string originSid) {
+        int ignored;
+        return StartInstalledApplication(dest, originSid, out ignored);
+    }
+
+    public static string StartInstalledApplication(string dest, string originSid, out int processId) {
+        processId = 0;
         string identityError = CheckDesktopShellOrigin(originSid);
         if (identityError != null) throw new UnauthorizedAccessException(identityError);
         string exe = Path.Combine(dest, "启动优化工具.exe");
@@ -895,11 +987,96 @@ static class Installer {
         if (TestNoLaunch(dest))
             return "测试模式跳过启动: " + exe;
         if (IsElevated()) {
-            StartWithDesktopShellToken(exe, originSid);
+            processId = StartWithDesktopShellToken(exe, originSid);
             return "已由当前桌面普通用户启动";
         }
-        Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true });
+        using (Process process = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true })) {
+            if (process == null) throw new InvalidOperationException("启动器进程未创建");
+            processId = process.Id;
+        }
         return "已启动";
+    }
+
+    static Dictionary<int, int> SnapshotProcessParents() {
+        const uint TH32CS_SNAPPROCESS = 0x00000002;
+        IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法枚举启动进程树");
+        try {
+            var parents = new Dictionary<int, int>();
+            PROCESSENTRY32 entry = new PROCESSENTRY32();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+            if (!Process32FirstW(snapshot, ref entry)) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取启动进程树");
+            do {
+                parents[(int)entry.th32ProcessID] = (int)entry.th32ParentProcessID;
+                entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+            } while (Process32NextW(snapshot, ref entry));
+            return parents;
+        } finally { CloseHandle(snapshot); }
+    }
+
+    static bool IsProcessDescendant(int processId, int rootProcessId, Dictionary<int, int> parents) {
+        int current = processId;
+        var seen = new HashSet<int>();
+        for (int depth = 0; depth < 32 && current > 0 && seen.Add(current); depth++) {
+            if (current == rootProcessId) return true;
+            if (!parents.TryGetValue(current, out current)) return false;
+        }
+        return false;
+    }
+
+    static bool TryFindReadyWpfWindow(int launcherPid, out string detail) {
+        detail = null;
+        Dictionary<int, int> parents = SnapshotProcessParents();
+        bool found = false;
+        string foundDetail = null;
+        EnumWindowsCallback callback = delegate(IntPtr window, IntPtr parameter) {
+            try {
+                uint processId;
+                if (GetWindowThreadProcessId(window, out processId) == 0 || processId == 0) return true;
+                if (!IsProcessDescendant((int)processId, launcherPid, parents)) return true;
+                if (!IsWindowVisible(window) || !IsWindowEnabled(window)) return true;
+                var className = new StringBuilder(256);
+                if (GetClassName(window, className, className.Capacity) <= 0) return true;
+                // 主界面和首次使用声明均为 WPF HwndWrapper；启动失败弹框是 Win32 #32770，
+                // 不能把“错误提示成功弹出”误判成新版已经可用。枚举全部顶层窗口而不是只读
+                // Process.MainWindowHandle：PowerShell 还可能有隐藏控制台/辅助窗口，后者会遮住
+                // 真正的 WPF 主窗口并造成健康检查误报超时。
+                if (!className.ToString().StartsWith("HwndWrapper[", StringComparison.Ordinal)) return true;
+                var title = new StringBuilder(512);
+                GetWindowText(window, title, title.Capacity);
+                foundDetail = "已出现可交互 WPF 窗口（PID " + processId +
+                    (title.Length == 0 ? "" : "，" + title) + "）";
+                found = true;
+                return false;
+            } catch (Exception) { return true; }
+        };
+        bool completed = EnumWindows(callback, IntPtr.Zero);
+        if (!completed && !found)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法枚举新版顶层窗口");
+        detail = foundDetail;
+        return found;
+    }
+
+    // 更新不能只以 CreateProcess 成功作为“安装成功”：启动器、EngineHost、PowerShell GUI
+    // 任何一层都可能在窗口出现前退出。旧版本保留到这里通过后才提交。
+    public static bool WaitForStartupReadiness(string dest, int launcherPid, out string detail) {
+        if (TestStartupHealthFailure(dest)) { detail = "测试注入：新版窗口未就绪"; return false; }
+        if (TestNoLaunch(dest)) { detail = "测试模式通过启动健康检查"; return true; }
+        if (launcherPid <= 0) { detail = "启动器没有返回进程 ID"; return false; }
+        DateTime deadline = DateTime.UtcNow.AddSeconds(60);
+        int missingLauncherPolls = 0;
+        while (DateTime.UtcNow < deadline) {
+            try {
+                if (TryFindReadyWpfWindow(launcherPid, out detail)) return true;
+            } catch (Exception ex) { detail = "启动健康检查异常：" + ex.Message; return false; }
+            try { using (Process launcher = Process.GetProcessById(launcherPid)) { if (launcher.HasExited) missingLauncherPolls++; else missingLauncherPolls = 0; } }
+            catch (ArgumentException) { missingLauncherPolls++; }
+            catch (Exception) { }
+            if (missingLauncherPolls >= 8) { detail = "启动器在主界面出现前退出"; return false; }
+            Thread.Sleep(250);
+        }
+        detail = "等待新版可交互窗口超时（60 秒）";
+        return false;
     }
 
     static bool HasWriteRights(FileSystemRights rights) {
@@ -1924,15 +2101,51 @@ static class Installer {
             throw new IOException("事务目录路径身份不匹配：" + path);
     }
 
-    static void ValidateRollbackBeforeUse(string rollback, string parent, string leaf, string id) {
-        AssertTransactionPath(rollback, parent, leaf, id, "rollback");
-        if (!Directory.Exists(rollback)) throw new IOException("事务 rollback 目录不存在");
-        EnsureNoReparseExistingPath(rollback);
-        if (Directory.GetFileSystemEntries(rollback).Length == 0) return;
+    static void ValidateTransactionCopyBeforeUse(string path, string parent, string leaf, string id, string kind) {
+        AssertTransactionPath(path, parent, leaf, id, kind);
+        if (!Directory.Exists(path)) throw new IOException("事务 " + kind + " 目录不存在");
+        EnsureNoReparseExistingPath(path);
+        if (Directory.GetFileSystemEntries(path).Length == 0) return;
         string launcherHash, reason;
-        if (!TryReadInstallIdentity(rollback, out launcherHash, out reason))
-            throw new IOException("事务 rollback 产品身份无效：" + reason);
-        EnsureProtectedInstallTree(rollback);
+        if (!TryReadInstallIdentity(path, out launcherHash, out reason))
+            throw new IOException("事务 " + kind + " 产品身份无效：" + reason);
+        EnsureProtectedInstallTree(path);
+    }
+
+    static void ValidateRollbackBeforeUse(string rollback, string parent, string leaf, string id) {
+        ValidateTransactionCopyBeforeUse(rollback, parent, leaf, id, "rollback");
+    }
+
+    static void RestoreTransactionCopy(string full, string saved, string stage,
+        string parent, string leaf, string id, string savedKind) {
+        ValidateTransactionCopyBeforeUse(saved, parent, leaf, id, savedKind);
+        AssertTransactionPath(stage, parent, leaf, id, "stage");
+        if (Directory.Exists(stage) || File.Exists(stage)) throw new IOException("恢复旧版时 staging 已被占用：" + stage);
+        bool newMovedAside = false;
+        if (Directory.Exists(full)) {
+            ValidateExistingInstallTarget(full);
+            MoveDirectoryWithRetry(full, stage);
+            newMovedAside = true;
+        }
+        try {
+            MoveDirectoryWithRetry(saved, full);
+            ValidateExistingInstallTarget(full);
+        } catch {
+            if (newMovedAside && !Directory.Exists(full) && Directory.Exists(stage))
+                MoveDirectoryWithRetry(stage, full);
+            throw;
+        }
+        if (newMovedAside && Directory.Exists(stage)) {
+            try {
+                string launcherHash, reason;
+                if (!TryReadInstallIdentity(stage, out launcherHash, out reason))
+                    throw new IOException("待清理新版产品身份无效：" + reason);
+                EnsureProtectedInstallTree(stage);
+                SafeDeleteTree(stage);
+            } catch (Exception ex) {
+                LastMigrationNote = "旧版本已恢复；未通过启动验证的新版目录已安全保留：" + stage + "；原因：" + ex.Message;
+            }
+        }
     }
 
     static void CreateProtectedTransactionStage(string stage) {
@@ -1964,6 +2177,24 @@ static class Installer {
     }
 
     static void RecoverInterruptedRollback(string full, string parent, string leaf) {
+        string pendingPrefix = "." + leaf + ".dfb-pending-";
+        var pending = new List<string[]>();
+        foreach (string candidate in Directory.GetDirectories(parent, pendingPrefix + "*", SearchOption.TopDirectoryOnly)) {
+            string name = Path.GetFileName(candidate);
+            if (!name.StartsWith(pendingPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+            string id = name.Substring(pendingPrefix.Length);
+            if (id.Length != 32 || !System.Text.RegularExpressions.Regex.IsMatch(id, "^[0-9a-fA-F]{32}$"))
+                throw new IOException("发现命名异常的待验证旧版本，已停止自动恢复：" + candidate);
+            ValidateTransactionCopyBeforeUse(candidate, parent, leaf, id, "pending");
+            pending.Add(new string[] { candidate, id });
+        }
+        if (pending.Count > 1) throw new IOException("发现多份待验证旧版本，已停止自动选择，请保留现场");
+        if (pending.Count == 1) {
+            string stage = Path.Combine(parent, "." + leaf + ".dfb-stage-" + pending[0][1]);
+            RestoreTransactionCopy(full, pending[0][0], stage, parent, leaf, pending[0][1], "pending");
+            LastMigrationNote = "检测到上次更新在启动验证前中断，已先恢复旧版本再继续安装";
+        }
+
         string prefix = "." + leaf + ".dfb-rollback-";
         var valid = new List<string[]>();
         foreach (string candidate in Directory.GetDirectories(parent, prefix + "*", SearchOption.TopDirectoryOnly)) {
@@ -2026,6 +2257,14 @@ static class Installer {
     }
 
     public static void Install(string dest, Action<int, int, string> onProgress, string migrationSource) {
+        InstallCore(dest, onProgress, migrationSource, false);
+    }
+
+    public static DeferredInstall InstallForLaunchValidation(string dest, Action<int, int, string> onProgress, string migrationSource) {
+        return InstallCore(dest, onProgress, migrationSource, true);
+    }
+
+    static DeferredInstall InstallCore(string dest, Action<int, int, string> onProgress, string migrationSource, bool deferCommit) {
         string requested = Path.GetFullPath(dest.Trim());
         string secure = CheckSecureInstallLocation(requested);
         if (secure != null) throw new UnauthorizedAccessException(secure);
@@ -2046,13 +2285,18 @@ static class Installer {
         CleanupCompletedStaging(parent, leaf);
         string id = Guid.NewGuid().ToString("N");
         string stage = Path.Combine(parent, "." + leaf + ".dfb-stage-" + id);
-        string rollback = Path.Combine(parent, "." + leaf + ".dfb-rollback-" + id);
+        string savedKind = deferCommit ? "pending" : "rollback";
+        string rollback = Path.Combine(parent, "." + leaf + ".dfb-" + savedKind + "-" + id);
         AssertTransactionPath(stage, parent, leaf, id, "stage");
-        AssertTransactionPath(rollback, parent, leaf, id, "rollback");
+        AssertTransactionPath(rollback, parent, leaf, id, savedKind);
         if (Directory.Exists(stage) || File.Exists(stage) || Directory.Exists(rollback) || File.Exists(rollback))
             throw new IOException("随机事务目录已存在，安装已停止");
+        var receipt = new DeferredInstall {
+            Full = full, Parent = parent, Leaf = leaf, Id = id, Stage = stage, Pending = rollback
+        };
         bool oldMoved = false;
         bool newMoved = false;
+        string migrationFull = null;
         try {
             CreateProtectedTransactionStage(stage);
             EnsureNoReparseExistingPath(stage);
@@ -2062,9 +2306,9 @@ static class Installer {
                 EnsureTreeHasNoReparsePoints(full);
                 CopyUserData(full, stage);
             }
-            string migrationFull = null;
             if (!string.IsNullOrEmpty(migrationSource)) {
                 migrationFull = Path.GetFullPath(migrationSource.Trim());
+                receipt.MigrationFull = migrationFull;
                 // legacy 源对普通用户可写，管理员安装器不从中递归复制；原用户上下文负责将
                 // 明确白名单数据迁到 LocalAppData，旧目录随后仅原子改名保留。
             }
@@ -2081,31 +2325,83 @@ static class Installer {
                 ValidateExistingInstallTarget(full);
                 MoveDirectoryWithRetry(full, rollback);
                 oldMoved = true;
-                ValidateRollbackBeforeUse(rollback, parent, leaf, id);
+                receipt.HadPrevious = true;
+                ValidateTransactionCopyBeforeUse(rollback, parent, leaf, id, savedKind);
             }
             if (injectedFailure == "after-old-move") throw new IOException("测试注入：after-old-move");
             MoveDirectoryWithRetry(stage, full);
             newMoved = true;
+            if (injectedFailure == "after-new-move") throw new IOException("测试注入：after-new-move");
             if (layout.IsCustomAnchor) ValidateCustomAnchor(layout.InstallRoot);
 
-            if (oldMoved) {
+            if (oldMoved && !deferCommit) {
                 try { ValidateRollbackBeforeUse(rollback, parent, leaf, id); SafeDeleteTree(rollback); }
                 catch (Exception ex) { LastMigrationNote = "旧版本 rollback 已安全保留，未递归清理：" + rollback + "；原因：" + ex.Message; }
             }
-            if (!string.IsNullOrEmpty(migrationFull) && Directory.Exists(migrationFull) &&
+            if (!deferCommit && !string.IsNullOrEmpty(migrationFull) && Directory.Exists(migrationFull) &&
                 !string.Equals(migrationFull.TrimEnd('\\'), full.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) {
                 QuarantineLegacyInstall(migrationFull);
             }
-        } catch {
-            if (oldMoved && !newMoved && !Directory.Exists(full) && Directory.Exists(rollback)) {
-                ValidateRollbackBeforeUse(rollback, parent, leaf, id);
-                MoveDirectoryWithRetry(rollback, full);
-            }
-            if (Directory.Exists(stage)) {
-                try { AssertTransactionPath(stage, parent, leaf, id, "stage"); SafeDeleteTree(stage); } catch (Exception) { }
+            return receipt;
+        } catch (Exception installError) {
+            try {
+                if (oldMoved && Directory.Exists(rollback)) {
+                    if (newMoved) RestoreTransactionCopy(full, rollback, stage, parent, leaf, id, savedKind);
+                    else if (!Directory.Exists(full)) {
+                        ValidateTransactionCopyBeforeUse(rollback, parent, leaf, id, savedKind);
+                        MoveDirectoryWithRetry(rollback, full);
+                    }
+                } else if (!oldMoved && newMoved && Directory.Exists(full) && !Directory.Exists(stage)) {
+                    ValidateExistingInstallTarget(full);
+                    MoveDirectoryWithRetry(full, stage);
+                }
+                if (Directory.Exists(stage)) {
+                    try { AssertTransactionPath(stage, parent, leaf, id, "stage"); SafeDeleteTree(stage); } catch (Exception) { }
+                }
+            } catch (Exception restoreError) {
+                throw new AggregateException("安装失败且旧版本自动恢复失败", installError, restoreError);
             }
             throw;
         }
+    }
+
+    public static string RollbackDeferredInstall(DeferredInstall receipt) {
+        if (receipt == null) throw new ArgumentNullException("receipt");
+        if (receipt.Completed) return "更新事务已经结束";
+        if (!receipt.HadPrevious) {
+            receipt.Completed = true;
+            return "首次安装没有旧版本可恢复，已保留新版文件供诊断";
+        }
+        RestoreTransactionCopy(receipt.Full, receipt.Pending, receipt.Stage,
+            receipt.Parent, receipt.Leaf, receipt.Id, "pending");
+        receipt.Completed = true;
+        return "旧版本已完整恢复";
+    }
+
+    public static string CommitDeferredInstall(DeferredInstall receipt) {
+        if (receipt == null) throw new ArgumentNullException("receipt");
+        if (receipt.Completed) return "更新事务已经结束";
+        string note = null;
+        if (receipt.HadPrevious && Directory.Exists(receipt.Pending)) {
+            string committed = Path.Combine(receipt.Parent, "." + receipt.Leaf + ".dfb-rollback-" + receipt.Id);
+            try {
+                ValidateTransactionCopyBeforeUse(receipt.Pending, receipt.Parent, receipt.Leaf, receipt.Id, "pending");
+                AssertTransactionPath(committed, receipt.Parent, receipt.Leaf, receipt.Id, "rollback");
+                if (Directory.Exists(committed) || File.Exists(committed)) throw new IOException("提交后的 rollback 路径已存在");
+                MoveDirectoryWithRetry(receipt.Pending, committed);
+                try { ValidateRollbackBeforeUse(committed, receipt.Parent, receipt.Leaf, receipt.Id); SafeDeleteTree(committed); }
+                catch (Exception ex) { note = "新版已通过启动验证；旧版本 rollback 已安全保留，稍后自动清理：" + committed + "；原因：" + ex.Message; }
+            } catch (Exception ex) {
+                note = "新版已通过启动验证；旧版本副本提交清理失败，已原样保留：" + receipt.Pending + "；原因：" + ex.Message;
+            }
+        }
+        if (!string.IsNullOrEmpty(receipt.MigrationFull) && Directory.Exists(receipt.MigrationFull) &&
+            !string.Equals(receipt.MigrationFull.TrimEnd('\\'), receipt.Full.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) {
+            QuarantineLegacyInstall(receipt.MigrationFull);
+        }
+        receipt.Completed = true;
+        if (!string.IsNullOrEmpty(note)) LastMigrationNote = note;
+        return note;
     }
 
     public static string LastMenuDir;
