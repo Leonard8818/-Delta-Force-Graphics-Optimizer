@@ -141,17 +141,86 @@ try {
   Assert-True ($mainPreset.Items -notcontains 'nv-autoopt-off') '用户可写 NVIDIA 配置文件不得进入提权主推方案'
   Assert-True ($mainPreset.Items -contains 'gpu-name-spoof') '主推方案应包含显卡型号伪装，执行仍由 -Risky 契约拦截'
   Assert-True (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='NVIDIA' })) 'NVIDIA 主显卡应启用显卡型号伪装'
-  Assert-True (-not (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='AMD' }))) 'AMD 主显卡必须禁用显卡型号伪装'
+  Assert-True (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='AMD' })) 'AMD 主显卡应重新启用显卡型号伪装'
   Assert-True (-not (Test-GpuNameSpoofSupported ([pscustomobject]@{ MainGpuVendor='Intel' }))) 'Intel 主显卡必须禁用显卡型号伪装'
   Assert-True (-not (Test-GpuNameSpoofSupported $null)) '显卡未识别时必须禁用显卡型号伪装'
   $spoofModels = @(Get-GpuSpoofModels)
-  Assert-True ($spoofModels.Count -eq 2 -and
+  Assert-True ($spoofModels.Count -eq 5 -and
     $spoofModels[0] -eq 'NVIDIA GeForce GTX 750 Ti' -and
-    $spoofModels[1] -eq 'NVIDIA GeForce GTX 1050 Ti') '显卡型号伪装下拉选项必须使用 GTX 750 Ti/1050 Ti'
+    $spoofModels[1] -eq 'NVIDIA GeForce GTX 1050 Ti' -and
+    $spoofModels[2] -eq 'NVIDIA GeForce RTX 2050' -and
+    $spoofModels[3] -eq 'NVIDIA GeForce RTX 2060' -and
+    $spoofModels[4] -eq 'AMD Radeon RX560') '显卡型号伪装下拉选项不完整或顺序漂移'
+  Assert-True ((Test-RecommendedGpuSpoofModel $spoofModels[0]) -and
+    (Test-RecommendedGpuSpoofModel $spoofModels[1]) -and
+    (-not (Test-RecommendedGpuSpoofModel $spoofModels[2])) -and
+    (-not (Test-RecommendedGpuSpoofModel $spoofModels[3])) -and
+    (Test-RecommendedGpuSpoofModel $spoofModels[4])) '推荐星标必须只覆盖 750 Ti/1050 Ti/RX560'
   Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 3060 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') 'RTX 30 系默认应伪装为 GTX 750 Ti'
   Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 4070' $false) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 40 系默认应伪装为 GTX 1050 Ti'
   Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 5060 Laptop GPU' $true) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 50 系笔记本默认应伪装为 GTX 1050 Ti'
   Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce GTX 1660 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') '其他台式 N 卡兜底应伪装为 GTX 750 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'AMD Radeon RX 7900 XTX' $false 'AMD') -eq 'AMD Radeon RX560') 'AMD 默认应伪装为 AMD Radeon RX560'
+  Assert-True ((Get-GpuVendor 'PCI\VEN_1002&DEV_744C\GPU0' 'NVIDIA GeForce RTX 2060') -eq 'AMD') 'AMD 设备伪装成 GeForce 后不得改变真实厂商判定'
+
+  $originalGetRegValue = ${function:Get-RegValue}
+  try {
+    $script:TestGpuClassGuid = '{4d36e968-e325-11ce-bfc1-08002be10318}'
+    function Get-RegValue([string]$Path, [string]$Name) {
+      if ($Name -eq 'ClassGUID') { return $script:TestGpuClassGuid }
+      if ($Name -eq 'Driver') { return '{4d36e968-e325-11ce-bfc1-08002be10318}\0007' }
+      if ($Name -eq 'DriverDesc') { return 'AMD Radeon RX 7900 XTX' }
+      $null
+    }
+    $amdHw = [pscustomobject]@{
+      MainGpuVendor='AMD'; MainGpuPnp='PCI\VEN_1002&DEV_744C\GPU0'; MainGpuPciMatched=$false
+      Gpus=@([pscustomobject]@{Vendor='AMD';Pnp='PCI\VEN_1002&DEV_744C\GPU0'})
+    }
+    Assert-True ((Get-GpuNameEnumPath $amdHw) -eq 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_1002&DEV_744C\GPU0') 'AMD DeviceDesc 必须使用精确主显卡 Enum 路径'
+    Assert-True ((Get-GpuDriverDescription $amdHw.MainGpuPnp 'AMD') -eq 'AMD Radeon RX 7900 XTX') 'AMD 真实型号必须从对应显示驱动 Class 键恢复'
+    $script:TestGpuClassGuid = '{4d36e96c-e325-11ce-bfc1-08002be10318}'
+    Assert-True ($null -eq (Get-GpuNameEnumPath $amdHw)) '非显示适配器 ClassGUID 不得进入显卡型号伪装'
+  } finally {
+    Set-Item -LiteralPath Function:\Get-RegValue -Value $originalGetRegValue
+  }
+  Assert-True (Test-AllowedBackupRegTarget ([pscustomobject]@{Path='HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_1002&DEV_744C\GPU0';Name='DeviceDesc'})) 'AMD DeviceDesc 必须进入签名备份白名单以支持完整还原'
+
+  $thinkPad = Resolve-ComputerBrand 'LENOVO' 'ThinkPad X1 Carbon' 'LENOVO'
+  $hp = Resolve-ComputerBrand 'HP' 'OMEN 16' 'HP'
+  $asusBoard = Resolve-ComputerBrand 'To Be Filled By O.E.M.' 'System Product Name' 'ASUSTeK COMPUTER INC.'
+  Assert-True ($thinkPad.Key -eq 'thinkpad' -and (Get-BiosEntryInstruction $thinkPad.Key $true) -like '*F1*') 'ThinkPad BIOS 教程必须提示 F1'
+  Assert-True ($hp.Key -eq 'hp' -and (Get-BiosEntryInstruction $hp.Key $true) -like '*Esc*F10*') '惠普 BIOS 教程必须提示 Esc 后 F10'
+  Assert-True ($asusBoard.Key -eq 'asus' -and (Get-BiosEntryInstruction $asusBoard.Key $false) -like '*Del*') '华硕台式机/主板 BIOS 教程必须提示 Del'
+  $brandTutorial = Get-XmpBiosTutorial ([pscustomobject]@{ComputerBrand='惠普';ComputerModel='OMEN 16';ComputerBrandKey='hp';IsLaptop=$true})
+  Assert-True ($brandTutorial -like '*检测到电脑：惠普 · OMEN 16*' -and $brandTutorial -like '*Esc*F10*') 'XMP/EXPO 教程必须显示检测品牌和对应 BIOS 进入步骤'
+  Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon RX 7900 XTX') -eq 'high') 'RX 7900 XTX 应归入高性能 A 卡'
+  Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon RX 7600') -eq 'mid') 'RX 7600 应归入主流 A 卡'
+  Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon RX 6500 XT') -eq 'entry') 'RX 6500 XT 应归入入门 A 卡'
+  Assert-True ((Get-AmdGpuPerformanceClass 'AMD Radeon 780M Graphics') -eq 'integrated-or-legacy') 'Radeon 780M 应归入核显/较早型号'
+  $amdHighGuide = Get-GpuGuideText 'AMD' 'AMD Radeon RX 7900 XTX' $false ([pscustomobject]@{
+    DisplayWidth=1920;DisplayHeight=1080;DisplayRefreshHz=240;RamGB=32
+  })
+  Assert-True ($amdHighGuide -like '*【方案一：原推荐方案】*' -and
+    $amdHighGuide -like '*Radeon Anti-Lag = 开*' -and
+    $amdHighGuide -like '*纹理过滤质量 = 性能*') 'AMD 原推荐方案必须原样保留'
+  Assert-True ($amdHighGuide -like '*【方案二：按本机配置推荐】*' -and
+    $amdHighGuide -like '*1920×1080 @ 240Hz*' -and
+    $amdHighGuide -like '*Anti-Lag = 开；Chill / Boost = 关*' -and
+    $amdHighGuide -like '*VSR 2560×1440*' -and
+    $amdHighGuide -like '*237 FPS*') '高性能 A 卡的 1080P/高刷配置推荐不正确'
+  $amdMidGuide = Get-AmdConfiguredGuideText ([pscustomobject]@{
+    DisplayWidth=2560;DisplayHeight=1440;DisplayRefreshHz=165;RamGB=16
+  }) 'AMD Radeon RX 7600' $false
+  Assert-True ($amdMidGuide -like '*主流 A 卡*' -and
+    $amdMidGuide -like '*纹理过滤质量 = 标准*' -and
+    $amdMidGuide -like '*RSR / VSR = 关*') '主流 A 卡配置推荐不正确'
+  $amdLaptopGuide = Get-AmdConfiguredGuideText ([pscustomobject]@{
+    DisplayWidth=1920;DisplayHeight=1080;DisplayRefreshHz=60;RamGB=8
+  }) 'AMD Radeon 780M Graphics' $true
+  Assert-True ($amdLaptopGuide -like '*入门、核显或较早型号*' -and
+    $amdLaptopGuide -like '*纹理过滤质量 = 性能*' -and
+    $amdLaptopGuide -like '*笔记本补充*' -and
+    $amdLaptopGuide -like '*少于 16 GB*') '核显低内存笔记本配置推荐不正确'
   $noChange = [pscustomobject]@{ Ok=$true; Skipped=$false; Msg='已写入' }
   [void](Set-ApplyResultChangeState $noChange $false)
   Assert-True (-not $noChange.Changed -and $noChange.Skipped -and $noChange.Msg -like '无需修改*') '0 个 applied WAL 的成功项必须标记 Changed=false/Skipped=true'

@@ -1,7 +1,10 @@
 ﻿<#
-  DeltaForceBooster 核心脚本 — v0.17
+  DeltaForceBooster 核心脚本 — v0.17.1
   三角洲行动 一键画面/帧率优化：硬件检测 + Windows 系统优化 + 显卡驱动指引。
 
+  v0.17.1：显卡型号伪装新增 RTX 2050/2060/RX560，并恢复 AMD 主显卡支持；AMD
+        驱动指引新增按本机配置推荐方案；新增电脑品牌检测，XMP/EXPO 的 BIOS 进入步骤
+        按品牌区分。
   v0.17：备份升级为受保护目录中的严格 schema + HMAC 写前日志，新增核心互斥与可靠退出码；
         修复混合/多显卡匹配、计划任务覆盖、无效 MMCSS 值、缓存重解析点和外部工具信任问题。
   v0.16.4：着色器缓存项改名为「解决掉帧：清理着色器缓存」——用户搜的问的都是
@@ -70,7 +73,8 @@ param(
   [string]$UserSid,
   [string]$UserLocalAppData,
   [string]$UserStateRoot,
-  [ValidateSet('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti')]
+  [ValidateSet('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti',
+               'NVIDIA GeForce RTX 2050', 'NVIDIA GeForce RTX 2060', 'AMD Radeon RX560')]
   [string]$GpuSpoofModel,
   [switch]$Risky,
   [switch]$Json
@@ -834,18 +838,28 @@ function Remove-BcdEntryValue([string]$Name) {
   if ($actual -ne 'absent') { throw "删除引导配置失败：$Name（退出码 $code，实际仍为 $actual；bcdedit 原话：$(("$out").Trim())）" }
 }
 
-# 独显在 Enum\PCI 下的实例路径。同一个 VEN_10DE 下还挂着 HD Audio 控制器等非显卡设备，
-# 必须按驱动服务名 nvlddmkm 认显卡，不能只看厂商 ID。
+# 独显在 Enum\PCI 下的实例路径。同一厂商 ID 下还挂着音频等非显卡设备，不能只看 VEN。
+# MainGpuPnp 来自 Win32_VideoController 的精确设备实例，再复验厂商 ID 与显示适配器 ClassGUID；
+# NVIDIA 多卡还必须已由 PCI BDF 与 NVML 对齐，避免真实型号恢复后选错同厂商设备。
 # 实测（RTX 3070 Laptop / Win11 26200）：该键 Owner=BUILTIN\Administrators 且管理员组
 # FullControl，管理员可直接读写，无需 takeown/改 ACL——与电源方案键（只有 SYSTEM 可写）不同。
-function Get-NvidiaGpuEnumPath($Hw) {
-  if (-not $Hw -or $Hw.MainGpuVendor -ne 'NVIDIA' -or -not $Hw.MainGpuPnp) { return $null }
-  $nvCount = @($Hw.Gpus | Where-Object Vendor -eq 'NVIDIA').Count
-  if ($nvCount -gt 1 -and -not $Hw.MainGpuPciMatched) { return $null }
-  if ("$($Hw.MainGpuPnp)" -notmatch '^PCI\\VEN_10DE&') { return $null }
+function Get-GpuNameEnumPath($Hw) {
+  if (-not $Hw -or "$($Hw.MainGpuVendor)" -notin @('NVIDIA','AMD') -or -not $Hw.MainGpuPnp) { return $null }
+  if ($Hw.MainGpuVendor -eq 'NVIDIA') {
+    $sameVendorCount = @($Hw.Gpus | Where-Object Vendor -eq 'NVIDIA').Count
+    if ($sameVendorCount -gt 1 -and -not $Hw.MainGpuPciMatched) { return $null }
+  }
+  $vendorId = $(if ($Hw.MainGpuVendor -eq 'NVIDIA') { '10DE' } else { '1002' })
+  if ("$($Hw.MainGpuPnp)" -notmatch "^PCI\\VEN_$vendorId&") { return $null }
   $path = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Hw.MainGpuPnp)"
-  if ("$(Get-RegValue $path 'Service')" -notmatch '(?i)^nvlddmkm$') { return $null }
+  if ("$(Get-RegValue $path 'ClassGUID')" -ine '{4d36e968-e325-11ce-bfc1-08002be10318}') { return $null }
   $path
+}
+
+# 保留旧函数名供既有调用方使用；新逻辑统一由厂商感知的实现完成。
+function Get-NvidiaGpuEnumPath($Hw) {
+  if (-not $Hw -or "$($Hw.MainGpuVendor)" -ne 'NVIDIA') { return $null }
+  Get-GpuNameEnumPath $Hw
 }
 
 # 显卡控制面板入口检测。装了才给按钮，没装只给下载页——按钮点了没反应比没有按钮更糟。
@@ -1141,10 +1155,103 @@ function Get-NvAutoOptStatus {
 # ---------- 硬件与游戏检测 ----------
 
 function Get-GpuVendor([string]$Pnp, [string]$Name) {
-  if     ($Pnp -match 'VEN_10DE' -or $Name -match 'NVIDIA|GeForce|RTX|GTX') { 'NVIDIA' }
-  elseif ($Pnp -match 'VEN_1002' -or $Name -match 'AMD|Radeon')             { 'AMD' }
-  elseif ($Pnp -match 'VEN_8086' -or $Name -match 'Intel|Arc|UHD|Iris')     { 'Intel' }
+  # 型号伪装会改变 Name，PCI 厂商 ID 必须优先，否则 A 卡伪装成 GeForce 后会被误认成 N 卡。
+  if     ($Pnp -match 'VEN_10DE') { 'NVIDIA' }
+  elseif ($Pnp -match 'VEN_1002') { 'AMD' }
+  elseif ($Pnp -match 'VEN_8086') { 'Intel' }
+  elseif ($Name -match 'NVIDIA|GeForce|RTX|GTX') { 'NVIDIA' }
+  elseif ($Name -match 'AMD|Radeon')             { 'AMD' }
+  elseif ($Name -match 'Intel|Arc|UHD|Iris')     { 'Intel' }
   else   { 'Unknown' }
+}
+
+# Enum 设备键的 Driver 值一一指向显示适配器 Class 键；这里读取不会被 DeviceDesc
+# 伪装覆盖的 DriverDesc，为 AMD 恢复真实型号显示与后续主卡选择。
+function Get-GpuDriverDescription([string]$PnpDeviceId, [string]$Vendor) {
+  if (-not $PnpDeviceId -or $Vendor -notin @('NVIDIA','AMD')) { return $null }
+  $enumPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$PnpDeviceId"
+  $driver = "$(Get-RegValue $enumPath 'Driver')"
+  if ($driver -notmatch '^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\\d{4}$') { return $null }
+  $name = "$(Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$driver" 'DriverDesc')".Trim()
+  if (-not $name -or (Get-GpuVendor $PnpDeviceId $name) -ne $Vendor) { return $null }
+  $name
+}
+
+function Resolve-ComputerBrand([string]$Manufacturer, [string]$Model, [string]$BaseBoardManufacturer) {
+  $text = "$Manufacturer $Model $BaseBoardManufacturer"
+  if ($text -match '(?i)Surface')                         { return [pscustomobject]@{ Key='surface'; Name='Microsoft Surface' } }
+  if ($text -match '(?i)Alienware')                       { return [pscustomobject]@{ Key='alienware'; Name='Alienware' } }
+  if ($text -match '(?i)ThinkPad')                        { return [pscustomobject]@{ Key='thinkpad'; Name='联想 ThinkPad' } }
+  if ($text -match '(?i)ROG|Republic of Gamers')          { return [pscustomobject]@{ Key='asus'; Name='华硕 ROG' } }
+  if ($text -match '(?i)Hewlett[- ]Packard|(^|\W)HP(\W|$)|OMEN') { return [pscustomobject]@{ Key='hp'; Name='惠普' } }
+  if ($text -match '(?i)Dell')                            { return [pscustomobject]@{ Key='dell'; Name='戴尔' } }
+  if ($text -match '(?i)Lenovo|Legion|IdeaPad|ThinkCentre') { return [pscustomobject]@{ Key='lenovo'; Name='联想' } }
+  if ($text -match '(?i)ASUSTeK|(^|\W)ASUS(\W|$)')       { return [pscustomobject]@{ Key='asus'; Name='华硕' } }
+  if ($text -match '(?i)Acer')                            { return [pscustomobject]@{ Key='acer'; Name='宏碁' } }
+  if ($text -match '(?i)Micro-Star|(^|\W)MSI(\W|$)')     { return [pscustomobject]@{ Key='msi'; Name='微星' } }
+  if ($text -match '(?i)Gigabyte|AORUS')                  { return [pscustomobject]@{ Key='gigabyte'; Name='技嘉 / AORUS' } }
+  if ($text -match '(?i)ASRock')                          { return [pscustomobject]@{ Key='asrock'; Name='华擎' } }
+  if ($text -match '(?i)Colorful|七彩虹')                  { return [pscustomobject]@{ Key='colorful'; Name='七彩虹' } }
+  if ($text -match '(?i)Hasee|神舟')                      { return [pscustomobject]@{ Key='hasee'; Name='神舟' } }
+  if ($text -match '(?i)MECHREVO|机械革命')               { return [pscustomobject]@{ Key='mechrevo'; Name='机械革命' } }
+  if ($text -match '(?i)Huawei|华为')                     { return [pscustomobject]@{ Key='huawei'; Name='华为' } }
+  if ($text -match '(?i)Honor|荣耀')                      { return [pscustomobject]@{ Key='honor'; Name='荣耀' } }
+  if ($text -match '(?i)Xiaomi|Redmi|小米')               { return [pscustomobject]@{ Key='xiaomi'; Name='小米 / Redmi' } }
+  if ($text -match '(?i)Samsung')                         { return [pscustomobject]@{ Key='samsung'; Name='三星' } }
+  if ($text -match '(?i)(^|\W)LG(\W|$)')                 { return [pscustomobject]@{ Key='lg'; Name='LG' } }
+  if ($text -match '(?i)Dynabook|Toshiba')                { return [pscustomobject]@{ Key='dynabook'; Name='Dynabook / 东芝' } }
+  if ($text -match '(?i)CLEVO|TONGFANG')                  { return [pscustomobject]@{ Key='clevo'; Name='蓝天 / 同方模具' } }
+
+  $generic = '(?i)^\s*$|To Be Filled By O\.E\.M\.|System manufacturer|Default string|OEM'
+  $fallback = $(if ("$Manufacturer" -notmatch $generic) { "$Manufacturer".Trim() }
+                elseif ("$BaseBoardManufacturer" -notmatch $generic) { "$BaseBoardManufacturer".Trim() }
+                else { '未知品牌' })
+  [pscustomobject]@{ Key='generic'; Name=$fallback }
+}
+
+function Get-BiosEntryInstruction([string]$BrandKey, [bool]$IsLaptop) {
+  switch ($BrandKey) {
+    'surface'    { '完全关机后按住音量加键，再短按电源键；看到 Surface 标志后松开音量加键，进入 UEFI' }
+    'hp'         { '开机出现惠普标志时连续按 Esc，进入启动菜单后按 F10' }
+    'thinkpad'   { '开机出现 ThinkPad 标志时连续按 F1；功能键模式开启时用 Fn+F1' }
+    'lenovo'     { '开机出现联想标志时连续按 F2；功能键模式开启时用 Fn+F2，有 NOVO 小孔的机型也可关机后按 NOVO' }
+    'dell'       { '开机出现 Dell 标志时连续按 F2' }
+    'alienware'  { '开机出现 Alienware 标志时连续按 F2' }
+    'acer'       { '开机出现 Acer 标志时连续按 F2' }
+    'asus'       { $(if ($IsLaptop) { '开机出现 ASUS/ROG 标志时连续按 F2' } else { '开机自检时连续按 Del（也可尝试 F2）' }) }
+    'msi'        { '开机出现 MSI 标志时连续按 Del' }
+    'gigabyte'   { $(if ($IsLaptop) { '开机出现 GIGABYTE/AORUS 标志时连续按 F2' } else { '开机自检时连续按 Del' }) }
+    'asrock'     { '开机自检时连续按 F2 或 Del' }
+    'colorful'   { '开机自检时连续按 Del' }
+    'hasee'      { '开机出现神舟标志时连续按 F2' }
+    'mechrevo'   { '开机出现机械革命标志时连续按 F2' }
+    'huawei'     { '开机出现华为标志时连续按 F2' }
+    'honor'      { '开机出现荣耀标志时连续按 F2' }
+    'xiaomi'     { '开机出现小米/Redmi 标志时连续按 F2' }
+    'samsung'    { '开机出现 Samsung 标志时连续按 F2' }
+    'lg'         { '开机出现 LG 标志时连续按 F2' }
+    'dynabook'   { '开机出现 Dynabook/东芝标志时连续按 F2' }
+    'clevo'      { '开机出现品牌标志时连续按 F2' }
+    default      { '开机自检画面出现时连续按 Del 或 F2；若无效，再按屏幕提示尝试 F1/F10' }
+  }
+}
+
+function Get-XmpBiosTutorial($Hw) {
+  $brand = $(if ($Hw -and $Hw.ComputerBrand) { "$($Hw.ComputerBrand)" } else { '未知品牌' })
+  $model = $(if ($Hw -and $Hw.ComputerModel) { "$($Hw.ComputerModel)" } else { '型号未识别' })
+  $key = $(if ($Hw) { "$($Hw.ComputerBrandKey)" } else { 'generic' })
+  $laptop = [bool]($Hw -and $Hw.IsLaptop)
+  $entry = Get-BiosEntryInstruction $key $laptop
+  @(
+    'XMP（Intel 平台叫法）/ EXPO 或 DOCP（AMD 平台叫法）是内存条出厂标定的高频档位。不开启时内存跑在保守的 JEDEC 基准频率上；开启后的提升因 CPU、内存和游戏而异。'
+    ''
+    "检测到电脑：$brand · $model"
+    '开启步骤（BIOS 设置只能手动进入）：'
+    "1. $entry；"
+    '2. 找到内存/超频页面：Intel 平台找 XMP，AMD 平台找 EXPO 或 DOCP，选择 Profile 1/档位 1；品牌整机或部分笔记本若没有该选项，表示厂商 BIOS 未开放，不要刷非官方 BIOS 强开；'
+    '3. 按 F10 保存并退出；'
+    '4. 若开启后不能正常启动，等待主板自动训练并回退；仍未恢复时重新进入 BIOS，选择 Load Optimized Defaults/恢复默认设置。'
+  ) -join "`n"
 }
 
 # Win32_VideoController 的返回顺序没有「独显优先」保证，AMD 核显经常排在 NVIDIA
@@ -1243,6 +1350,7 @@ function Get-HardwareInfo {
   $os   = Get-CimInstance Win32_OperatingSystem
   $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
   $cs   = Get-CimInstance Win32_ComputerSystem
+  $board = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
   $nvidiaIds = @(Get-NvidiaGpuIdentities)
   $video = @(Get-CimInstance Win32_VideoController)
   $nvidiaWmiCount = @($video | Where-Object { (Get-GpuVendor $_.PNPDeviceID "$($_.Name)") -eq 'NVIDIA' }).Count
@@ -1250,7 +1358,7 @@ function Get-HardwareInfo {
     $reportedName = "$($_.Name)".Trim()
     $vendor = Get-GpuVendor $_.PNPDeviceID $reportedName
     $realName = $reportedName
-    $verified = ($vendor -ne 'NVIDIA')
+    $verified = ($vendor -notin @('NVIDIA','AMD'))
     $pciLocation = $(if ($vendor -eq 'NVIDIA') { Get-PciBusLocation "$($_.PNPDeviceID)" } else { $null })
     $pciMatched = $false
     if ($vendor -eq 'NVIDIA') {
@@ -1258,6 +1366,9 @@ function Get-HardwareInfo {
       # 单卡机器不存在错配歧义，SetupAPI 属性缺失时仍可安全一一对应；多卡必须按 PCI BDF 命中。
       if (-not $match -and $nvidiaWmiCount -eq 1 -and $nvidiaIds.Count -eq 1) { $match = $nvidiaIds[0] }
       if ($match) { $realName = "$($match.Name)".Trim(); $verified = [bool]$realName; $pciMatched = $true }
+    } elseif ($vendor -eq 'AMD') {
+      $driverName = Get-GpuDriverDescription "$($_.PNPDeviceID)" $vendor
+      if ($driverName) { $realName = $driverName; $verified = $true }
     }
     [pscustomobject]@{
       Name         = $realName
@@ -1265,6 +1376,9 @@ function Get-HardwareInfo {
       NameVerified = $verified
       Vendor       = $vendor
       Driver       = $_.DriverVersion
+      DisplayWidth = $(if ([int64]$_.CurrentHorizontalResolution -ge 640 -and [int64]$_.CurrentHorizontalResolution -le 16384) { [int]$_.CurrentHorizontalResolution } else { 0 })
+      DisplayHeight = $(if ([int64]$_.CurrentVerticalResolution -ge 480 -and [int64]$_.CurrentVerticalResolution -le 8640) { [int]$_.CurrentVerticalResolution } else { 0 })
+      DisplayRefreshHz = $(if ([int64]$_.CurrentRefreshRate -ge 24 -and [int64]$_.CurrentRefreshRate -le 1000) { [int]$_.CurrentRefreshRate } else { 0 })
       Pnp          = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
       PciLocation  = $pciLocation
       PciMatched   = $pciMatched
@@ -1272,9 +1386,16 @@ function Get-HardwareInfo {
   })
   # 双显卡（核显+独显）机器以独显为主，不能依赖 WMI 的未定义返回顺序
   $main = Select-MainGpu $gpus
+  # 双显卡笔记本的显示输出常挂在核显上，独显分辨率字段为空；此时从所有活动显示适配器
+  # 中选择像素数最高的一项作为当前桌面口径，仅用于生成文字建议，不参与显卡身份判断。
+  $display = @($gpus | Where-Object { $_.DisplayWidth -gt 0 -and $_.DisplayHeight -gt 0 } |
+               Sort-Object @{Expression={ [int64]$_.DisplayWidth * [int64]$_.DisplayHeight };Descending=$true},
+                           @{Expression='DisplayRefreshHz';Descending=$true} | Select-Object -First 1)
+  if ($display.Count -gt 0) { $display = $display[0] } else { $display = $null }
 
   # 笔记本判定：有电池即笔记本。部分优化项（电源计划 DC 档、显卡型号）取值按机型区分
   $isLaptop = [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
+  $brand = Resolve-ComputerBrand "$($cs.Manufacturer)" "$($cs.Model)" "$($board.Manufacturer)"
 
   [pscustomobject]@{
     OS            = $os.Caption
@@ -1283,6 +1404,12 @@ function Get-HardwareInfo {
     Cores         = $cpu.NumberOfCores
     Threads       = $cpu.NumberOfLogicalProcessors
     RamGB         = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+    ComputerBrandKey = $brand.Key
+    ComputerBrand = $brand.Name
+    ComputerModel = "$($cs.Model)".Trim()
+    BaseBoardManufacturer = "$($board.Manufacturer)".Trim()
+    BaseBoardProduct = "$($board.Product)".Trim()
+    BiosEntryHint = Get-BiosEntryInstruction $brand.Key $isLaptop
     Gpus          = $gpus
     MainGpuVendor = $(if ($main) { $main.Vendor } else { 'Unknown' })
     MainGpuName   = $(if ($main) { $main.Name } else { '未检测到' })
@@ -1291,6 +1418,9 @@ function Get-HardwareInfo {
     MainGpuPnp    = $(if ($main) { $main.Pnp } else { $null })
     MainGpuPciLocation = $(if ($main) { $main.PciLocation } else { $null })
     MainGpuPciMatched = $(if ($main) { [bool]$main.PciMatched } else { $false })
+    DisplayWidth   = $(if ($display) { [int]$display.DisplayWidth } else { 0 })
+    DisplayHeight  = $(if ($display) { [int]$display.DisplayHeight } else { 0 })
+    DisplayRefreshHz = $(if ($display) { [int]$display.DisplayRefreshHz } else { 0 })
     IsLaptop      = $isLaptop
     IsAdmin       = Test-Admin
   }
@@ -1573,18 +1703,24 @@ $script:SubUsb  = '2a737441-1930-4402-8d77-b2bebba308a3'
 $script:SubProc = '54533251-82be-4824-96c1-47b60b740d00'
 
 function Get-GpuSpoofModels {
-  @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti')
+  @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti',
+    'NVIDIA GeForce RTX 2050', 'NVIDIA GeForce RTX 2060', 'AMD Radeon RX560')
+}
+
+function Test-RecommendedGpuSpoofModel([string]$Model) {
+  $Model -in @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti', 'AMD Radeon RX560')
 }
 
 function Test-GpuNameSpoofSupported($Hw) {
-  # DeviceDesc 伪装只实现了 NVIDIA PCI Enum 路径。AMD / Intel 主显卡既没有
-  # 对应的可靠写入与还原契约，也不应在主推方案里出现一个实际不会生效的选项。
-  [bool]($Hw -and "$($Hw.MainGpuVendor)" -eq 'NVIDIA')
+  [bool]($Hw -and "$($Hw.MainGpuVendor)" -in @('NVIDIA','AMD'))
 }
 
-function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop) {
+function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop, [string]$GpuVendor = '') {
+  if ($GpuVendor -eq 'AMD' -or (-not $GpuVendor -and "$GpuName" -match '(?i)AMD|Radeon')) {
+    return 'AMD Radeon RX560'
+  }
   # 按用户实机经验做代际映射：RTX 30 系默认伪装为 750 Ti，40/50 系默认 1050 Ti。
-  # 其他型号保留原先的机型兜底逻辑，界面仍允许用户手动切换两种目标型号。
+  # 其他 N 卡保留原先的机型兜底逻辑，界面可手动切换全部五种目标型号。
   if ("$GpuName" -match '(?i)RTX\s*30\d{2}') { return 'NVIDIA GeForce GTX 750 Ti' }
   if ("$GpuName" -match '(?i)RTX\s*(?:40|50)\d{2}') { return 'NVIDIA GeForce GTX 1050 Ti' }
   if ($IsLaptop) { return 'NVIDIA GeForce GTX 1050 Ti' }
@@ -1814,14 +1950,14 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   # FullControl，直接写即可，无需 takeown 或改 ACL；写入即时生效（WMI 立刻改口径），
   # 写回原字符串后逐字节一致、WMI 同步复原——所以备份/还原走通用 reg 通路就够。
   if (Test-GpuNameSpoofSupported $hw) {
-    $nvEnum = Get-NvidiaGpuEnumPath $hw
+    $gpuEnum = Get-GpuNameEnumPath $hw
     $spoofModels = @(Get-GpuSpoofModels)
     $fakeGpu = $(if ($GpuSpoofModel -and $spoofModels -contains $GpuSpoofModel) { $GpuSpoofModel }
-                 else { Get-DefaultGpuSpoofModel $hw.MainGpuName $hw.IsLaptop })
+                 else { Get-DefaultGpuSpoofModel $hw.MainGpuName $hw.IsLaptop $hw.MainGpuVendor })
     $items += @{ Id = 'gpu-name-spoof'; Tier = 'risky'; Name = '★ 显卡型号伪装'; SpoofModel = $fakeGpu; Admin = $true; Default = $false; Kind = 'multi'
-                 Ops = $(if ($nvEnum) { @(@{ Kind = 'reg'; Path = $nvEnum; Name = 'DeviceDesc'; Value = $fakeGpu
+                 Ops = $(if ($gpuEnum) { @(@{ Kind = 'reg'; Path = $gpuEnum; Name = 'DeviceDesc'; Value = $fakeGpu
                                              Kind2 = 'String'; Label = '显卡型号' }) })
-                 Note = '让游戏以为你是低端卡从而走低配渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。仅 N 卡可用，备份原值可完整还原。' }
+                 Note = '让游戏以为你是另一款显卡从而选择不同渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。支持 NVIDIA 与 AMD 主显卡，备份原值可完整还原。' }
   }
 
   # N 卡进阶：用户自行下载 NVIDIA Profile Inspector 放进 tools\ 后才出现此项
@@ -1846,7 +1982,7 @@ function Get-BuiltinPresets {
       # Items 顺序刻意按依赖关系排列：
       # ①电源深度定制（一切的前置）→ ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层
       Id = 'main'; Name = '主推全套'; Builtin = $true
-      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行；仅 NVIDIA 主显卡显示并包含显卡型号伪装（执行前单独二次确认），AMD / Intel 显卡自动禁用该项。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
+      Note = '按电源→优先级→中断绑核→系统精简→显卡层的顺序全套执行；NVIDIA / AMD 主显卡显示并包含显卡型号伪装（执行前单独二次确认），Intel 显卡自动禁用该项。代价：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高（笔记本更耗电）。不关引导虚拟化，WSL/模拟器不受影响。'
       Items = @('power-ultimate','power-tuning','powerplan-lock',
                 'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',
@@ -2062,7 +2198,69 @@ function Get-ItemState($Item) {
 # ---------- 显卡驱动指引 ----------
 
 # 只讲驱动层设置：游戏内那部分已有独立的「游戏内设置参考」页，重复写只会让人两头对不上
-function Get-GpuGuideText([string]$Vendor, [string]$GpuName, [bool]$IsLaptop) {
+function Get-AmdGpuPerformanceClass([string]$GpuName) {
+  if ("$GpuName" -notmatch '(?i)Radeon\s+RX\s*\d{4}') { return 'integrated-or-legacy' }
+  if ("$GpuName" -match '(?i)RX\s*(?:68|69|78|79)\d{2}|RX\s*90[78]\d') { return 'high' }
+  if ("$GpuName" -match '(?i)RX\s*(?:56|57|66|67|76|77)\d{2}|RX\s*90[56]\d') { return 'mid' }
+  'entry'
+}
+
+function Get-AmdConfiguredGuideText($Hw, [string]$GpuName, [bool]$IsLaptop) {
+  $class = Get-AmdGpuPerformanceClass $GpuName
+  $width = $(if ($Hw -and $Hw.PSObject.Properties['DisplayWidth'] -and $Hw.DisplayWidth) { [int]$Hw.DisplayWidth } else { 0 })
+  $height = $(if ($Hw -and $Hw.PSObject.Properties['DisplayHeight'] -and $Hw.DisplayHeight) { [int]$Hw.DisplayHeight } else { 0 })
+  $refresh = $(if ($Hw -and $Hw.PSObject.Properties['DisplayRefreshHz'] -and $Hw.DisplayRefreshHz) { [int]$Hw.DisplayRefreshHz } else { 0 })
+  $ram = $(if ($Hw -and $Hw.PSObject.Properties['RamGB'] -and $Hw.RamGB) { [double]$Hw.RamGB } else { 0 })
+  $displayText = $(if ($width -gt 0 -and $height -gt 0) {
+      "$width×$height$(if ($refresh -gt 0) { " @ ${refresh}Hz" } else { '' })"
+    } else { '分辨率未检测到' })
+  $deviceText = $(if ($IsLaptop) { '笔记本' } else { '台式机' })
+  $ramText = $(if ($ram -gt 0) { "，内存 $ram GB" } else { '' })
+  $lines = New-Object Collections.Generic.List[string]
+  $lines.Add("检测依据：$GpuName · $deviceText · $displayText$ramText")
+  $lines.Add('AMD Software → 游戏 → 三角洲行动：Anti-Lag = 开；Chill / Boost = 关；等待垂直刷新 = 关闭，除非应用程序指定；表面格式优化 = 开。')
+  $lines.Add('三角洲已有游戏内超分辨率，优先用游戏内 AMD FSR 2「质量优先」；使用 FSR 时关闭 RSR，避免重复放大。')
+
+  switch ($class) {
+    'high' {
+      if ($height -eq 0) {
+        $lines.Add('定位：高性能 A 卡；当前未检测到屏幕分辨率，先保持原生分辨率。确认是 1080P 且有性能余量后，才把 VSR 2560×1440 作为可选清晰度方案。')
+        $lines.Add('纹理过滤质量 = 标准；Radeon Image Sharpening = 20–40；RSR = 关；VSR = 默认关。')
+      } elseif ($height -le 1080) {
+        $lines.Add('定位：显卡性能余量较大、屏幕偏向 1080P；以原生分辨率为基准。想提高远处清晰度时，可单独试 VSR 2560×1440，帧率或 1% Low 明显下降就关闭。')
+        $lines.Add('纹理过滤质量 = 标准；Radeon Image Sharpening = 30–40 起步；RSR = 关；VSR = 可选。')
+      } else {
+        $lines.Add('定位：中高分辨率高性能显卡；优先原生分辨率，不叠加 RSR/VSR。帧率不足时只开启游戏内 FSR 2「质量优先」。')
+        $lines.Add('纹理过滤质量 = 标准；Radeon Image Sharpening = 关或 10–30；RSR / VSR = 关。')
+      }
+      $lines.Add('AFMF 2.1 = 竞技默认关；只在更看重观感流畅、基础帧率稳定时作为可选项测试。')
+    }
+    'mid' {
+      $lines.Add('定位：主流 A 卡；优先稳定帧和清晰度平衡。原生帧率够用就保持原生，不够再开游戏内 FSR 2「质量优先」。')
+      $lines.Add('纹理过滤质量 = 标准；Radeon Image Sharpening = 30–40；RSR / VSR = 关。')
+      $lines.Add('RX 6000 系及更新型号可试 AFMF 2.1，但竞技模式仍默认关闭；启用时按 AMD 要求同时关闭驱动和游戏内垂直同步。')
+    }
+    default {
+      $lines.Add('定位：入门、核显或较早型号；优先降低 GPU 压力，不建议用 VSR 提高渲染分辨率。')
+      $lines.Add('纹理过滤质量 = 性能；Radeon Image Sharpening = 20–40；RSR / VSR / AFMF = 关。帧率不足时使用游戏内 FSR 2「质量优先」，仍不足再试「均衡」。')
+    }
+  }
+
+  if ($IsLaptop) {
+    $lines.Add('笔记本补充：插电并使用厂商性能模式；温度或功耗受限时先关闭 VSR/AFMF，不建议靠提高功耗上限硬撑。')
+  }
+  if ($refresh -ge 120) {
+    $lines.Add("显示器补充：若屏幕支持 FreeSync 则开启，并把游戏帧率上限设为约 $([math]::Max(30, $refresh - 3)) FPS，避免长期顶到刷新率上限。")
+  } elseif ($refresh -gt 0) {
+    $lines.Add('显示器补充：若屏幕支持 FreeSync 则开启；不要为了显示更高的生成帧数而默认开启 AFMF。')
+  }
+  if ($ram -gt 0 -and $ram -lt 16) {
+    $lines.Add('内存补充：当前内存少于 16 GB，卡顿可能来自内存压力；显卡面板设置对此帮助有限。')
+  }
+  $lines -join "`n"
+}
+
+function Get-GpuGuideText([string]$Vendor, [string]$GpuName, [bool]$IsLaptop, $Hw = $null) {
   switch ($Vendor) {
     'NVIDIA' { @(
       $(if ($IsLaptop) {
@@ -2086,12 +2284,16 @@ function Get-GpuGuideText([string]$Vendor, [string]$GpuName, [bool]$IsLaptop) {
       '进阶：NVIDIA Profile Inspector 放进本工具 tools\ 目录后可一键导入驱动配置档。'
     ) -join "`n" }
     'AMD' { @(
+      '【方案一：原推荐方案】'
       'AMD Software (Adrenalin) → 游戏 → 三角洲行动：'
       '  1. Radeon Anti-Lag = 开'
       '  2. Radeon Chill / Boost = 关'
       '  3. 等待垂直刷新 = 关闭，除非应用程序指定'
       '  4. 纹理过滤质量 = 性能'
       '  5. 表面格式优化 = 开'
+      ''
+      '【方案二：按本机配置推荐】'
+      (Get-AmdConfiguredGuideText $Hw $GpuName $IsLaptop)
     ) -join "`n" }
     'Intel' { @(
       'Intel 显卡控制中心 → 游戏 → 三角洲行动：'
@@ -2155,7 +2357,7 @@ function Test-AllowedBackupRegTarget($Op) {
       $name -ieq 'DisableDynamicPstate') { return $true }
   if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\PCI\\VEN_(10DE|1002)&[^\\]+\\[^\\]+\\Device Parameters\\Interrupt Management\\Affinity Policy$' -and
       $name -iin @('DevicePolicy','AssignmentSetOverride')) { return $true }
-  if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\PCI\\VEN_10DE&[^\\]+\\[^\\]+$' -and $name -ieq 'DeviceDesc') { return $true }
+  if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\PCI\\VEN_(10DE|1002)&[^\\]+\\[^\\]+$' -and $name -ieq 'DeviceDesc') { return $true }
   if ($name -ieq 'Attributes') {
     $allowedPowerPaths = @(
       "$script:PsRoot\$script:SubUsb\d4e98f31-5ffe-4ce1-be31-1b38b384c009",
@@ -2458,7 +2660,7 @@ function Invoke-DetectReport([string]$GamePath) {
     Hardware = $hw
     GamePath = $GamePath
     Items    = $states
-    GpuGuide = Get-GpuGuideText $hw.MainGpuVendor $hw.MainGpuName $hw.IsLaptop
+    GpuGuide = Get-GpuGuideText $hw.MainGpuVendor $hw.MainGpuName $hw.IsLaptop $hw
   }
 }
 

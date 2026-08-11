@@ -640,7 +640,7 @@ if ($TestBuild) {
 # scripts\updater.ps1 的白名单内，否则老客户端会拒绝下载。
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
-$manifestNotes = '内置一键更新现在会保留旧版本，直到新版出现可交互窗口；新版启动失败或安装器在验证阶段中断时，会自动恢复旧版本。\n上传完整诊断前新增问题与改善效果多选页，可标记掉帧、卡顿、过热、涨帧和 1% Low 改善等情况。\n游戏内设置参考新增按截图整理的性能优先推荐方案。官网实时数据的在线口径由 15 分钟调整为 60 分钟。'
+$manifestNotes = '内置一键更新现在会保留旧版本，直到新版出现可交互窗口；新版启动失败或安装器在验证阶段中断时，会自动恢复旧版本。\n上传完整诊断前新增问题与改善效果多选页，可标记掉帧、卡顿、过热、涨帧和 1% Low 改善等情况。\n显卡型号伪装新增 RTX 2050、RTX 2060 与 RX560；AMD 显卡恢复支持并默认选择 RX560，750 Ti、1050 Ti、RX560 标记为推荐项。\nAMD 驱动设置指引保留原推荐方案，并新增按显卡性能、屏幕分辨率与刷新率、设备类型和内存生成的个性化方案。\n新增电脑品牌检测，XMP/EXPO 的 BIOS 进入教程会按检测到的品牌显示对应按键。'
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
   # 「已是最新」和「有新版本」的判定跟着版本号写法漂

@@ -33,6 +33,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
@@ -742,11 +743,31 @@ static class Installer {
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass,
         IntPtr tokenInformation, int tokenInformationLength, out int returnLength);
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
-        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
-        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+    static extern bool InitializeProcThreadAttributeList(IntPtr attributeList, int attributeCount,
+        int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool UpdateProcThreadAttribute(IntPtr attributeList, uint flags, IntPtr attribute,
+        ref IntPtr value, IntPtr valueSize, IntPtr previousValue, IntPtr returnSize);
+    [DllImport("kernel32.dll")]
+    static extern void DeleteProcThreadAttributeList(IntPtr attributeList);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CreateProcessW(string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFOEX startupInfo,
+        out PROCESS_INFORMATION processInformation);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder path,
+        ref int pathLength);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("userenv.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
@@ -789,6 +810,12 @@ static class Installer {
         public IntPtr hStdInput;
         public IntPtr hStdOutput;
         public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct STARTUPINFOEX {
+        public STARTUPINFO StartupInfo;
+        public IntPtr lpAttributeList;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -907,9 +934,63 @@ static class Installer {
         return sum;
     }
 
-    static int StartWithDesktopShellToken(string exe, string originSid) {
-        IntPtr processHandle = IntPtr.Zero, tokenHandle = IntPtr.Zero, environment = IntPtr.Zero, integrity = IntPtr.Zero;
+    static void VerifySuspendedDesktopChild(IntPtr processHandle, int processId, string exe, string originSid) {
+        IntPtr tokenHandle = IntPtr.Zero, integrity = IntPtr.Zero;
+        try {
+            var imagePath = new StringBuilder(32768);
+            int imagePathLength = imagePath.Capacity;
+            if (!QueryFullProcessImageNameW(processHandle, 0, imagePath, ref imagePathLength))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法复验新版启动器路径");
+            string expectedPath = Path.GetFullPath(exe);
+            string actualPath = Path.GetFullPath(imagePath.ToString());
+            if (!string.Equals(expectedPath, actualPath, StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("Windows 创建的进程不是本次安装的启动器");
+
+            using (Process child = Process.GetProcessById(processId)) {
+                if (child.SessionId != Process.GetCurrentProcess().SessionId)
+                    throw new UnauthorizedAccessException("新版启动器不属于当前交互会话");
+            }
+            const uint TOKEN_QUERY = 0x0008;
+            if (!OpenProcessToken(processHandle, TOKEN_QUERY, out tokenHandle) || tokenHandle == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法复验新版启动器 token");
+            string childSid;
+            using (var childIdentity = new WindowsIdentity(tokenHandle)) {
+                childSid = childIdentity.User == null ? null : childIdentity.User.Value;
+            }
+            if (!string.Equals(NormalizeSid(originSid), NormalizeSid(childSid), StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("新版启动器用户与安装前用户不一致");
+
+            const int TokenIntegrityLevel = 25;
+            const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
+            int integritySize;
+            GetTokenInformation(tokenHandle, TokenIntegrityLevel, IntPtr.Zero, 0, out integritySize);
+            if (integritySize <= IntPtr.Size)
+                throw new UnauthorizedAccessException("无法读取新版启动器完整性级别");
+            integrity = Marshal.AllocHGlobal(integritySize);
+            if (!GetTokenInformation(tokenHandle, TokenIntegrityLevel, integrity, integritySize, out integritySize))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取新版启动器完整性级别");
+            IntPtr integritySid = Marshal.ReadIntPtr(integrity);
+            IntPtr countPointer = integritySid == IntPtr.Zero ? IntPtr.Zero : GetSidSubAuthorityCount(integritySid);
+            byte count = countPointer == IntPtr.Zero ? (byte)0 : Marshal.ReadByte(countPointer);
+            IntPtr ridPointer = count == 0 ? IntPtr.Zero : GetSidSubAuthority(integritySid, (uint)(count - 1));
+            if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID)
+                throw new UnauthorizedAccessException("新版启动器不是 medium token");
+        } finally {
+            if (integrity != IntPtr.Zero) Marshal.FreeHGlobal(integrity);
+            if (tokenHandle != IntPtr.Zero) CloseHandle(tokenHandle);
+        }
+    }
+
+    // CreateProcessWithTokenW / CreateProcessAsUserW 需要调用者具备额外 token 权限；本机
+    // RID-500 管理员实测分别返回 5/1314，导致每次更新在“新版已落盘”后启动失败。Windows
+    // 支持把已复验的 Explorer 设为逻辑父进程，子进程会继承 Explorer 的 medium token，
+    // 且 CreateProcessW 会直接返回可用于后续 WPF 健康检查的 PID。先以挂起态创建，再复验
+    // 精确映像路径、会话、SID 和完整性级别，全部通过后才允许新版执行。
+    static int StartWithDesktopShellParent(string exe, string originSid) {
+        IntPtr shellProcess = IntPtr.Zero, shellToken = IntPtr.Zero, environment = IntPtr.Zero;
+        IntPtr shellIntegrity = IntPtr.Zero, attributeList = IntPtr.Zero;
         PROCESS_INFORMATION processInformation = new PROCESS_INFORMATION();
+        bool resumed = false;
         try {
             IntPtr shellWindow = GetShellWindow();
             if (shellWindow == IntPtr.Zero) throw new InvalidOperationException("未找到当前桌面的 Windows shell");
@@ -920,59 +1001,92 @@ static class Installer {
                 if (shell.SessionId != Process.GetCurrentProcess().SessionId)
                     throw new UnauthorizedAccessException("Windows shell 不属于当前交互会话");
             }
+
+            const uint PROCESS_CREATE_PROCESS = 0x0080;
             const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
-            const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
-            const uint TOKEN_DUPLICATE = 0x0002;
             const uint TOKEN_QUERY = 0x0008;
-            processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, shellPid);
-            if (processHandle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法打开当前桌面的 Windows shell");
-            if (!OpenProcessToken(processHandle, TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY, out tokenHandle) || tokenHandle == IntPtr.Zero)
+            shellProcess = OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_QUERY_LIMITED_INFORMATION, false, shellPid);
+            if (shellProcess == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法打开当前桌面的 Windows shell");
+            if (!OpenProcessToken(shellProcess, TOKEN_QUERY, out shellToken) || shellToken == IntPtr.Zero)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取当前桌面的 Windows shell token");
             string shellSid;
-            using (var shellIdentity = new WindowsIdentity(tokenHandle)) {
+            using (var shellIdentity = new WindowsIdentity(shellToken)) {
                 shellSid = shellIdentity.User == null ? null : shellIdentity.User.Value;
             }
             if (!string.Equals(NormalizeSid(originSid), NormalizeSid(shellSid), StringComparison.OrdinalIgnoreCase))
                 throw new UnauthorizedAccessException("当前桌面普通用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）");
+
             const int TokenIntegrityLevel = 25;
             const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
             int integritySize;
-            GetTokenInformation(tokenHandle, TokenIntegrityLevel, IntPtr.Zero, 0, out integritySize);
-            if (integritySize <= IntPtr.Size) throw new UnauthorizedAccessException("无法读取当前桌面的 Windows shell 完整性级别");
-            integrity = Marshal.AllocHGlobal(integritySize);
-            if (!GetTokenInformation(tokenHandle, TokenIntegrityLevel, integrity, integritySize, out integritySize))
+            GetTokenInformation(shellToken, TokenIntegrityLevel, IntPtr.Zero, 0, out integritySize);
+            if (integritySize <= IntPtr.Size)
+                throw new UnauthorizedAccessException("无法读取当前桌面的 Windows shell 完整性级别");
+            shellIntegrity = Marshal.AllocHGlobal(integritySize);
+            if (!GetTokenInformation(shellToken, TokenIntegrityLevel, shellIntegrity, integritySize, out integritySize))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取当前桌面的 Windows shell 完整性级别");
-            IntPtr integritySid = Marshal.ReadIntPtr(integrity);
+            IntPtr integritySid = Marshal.ReadIntPtr(shellIntegrity);
             IntPtr countPointer = integritySid == IntPtr.Zero ? IntPtr.Zero : GetSidSubAuthorityCount(integritySid);
             byte count = countPointer == IntPtr.Zero ? (byte)0 : Marshal.ReadByte(countPointer);
             IntPtr ridPointer = count == 0 ? IntPtr.Zero : GetSidSubAuthority(integritySid, (uint)(count - 1));
             if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID)
                 throw new UnauthorizedAccessException("当前桌面的 Windows shell 不是 medium token");
-            if (!CreateEnvironmentBlock(out environment, tokenHandle, false))
+            if (!CreateEnvironmentBlock(out environment, shellToken, false))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建普通用户启动环境");
-            STARTUPINFO startupInfo = new STARTUPINFO();
-            startupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-            startupInfo.lpDesktop = "winsta0\\default";
-            const uint LOGON_WITH_PROFILE = 0x00000001;
+
+            IntPtr attributeListSize = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeListSize);
+            if (attributeListSize == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法计算 Explorer 父进程属性大小");
+            attributeList = Marshal.AllocHGlobal(attributeListSize);
+            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeListSize))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建 Explorer 父进程属性");
+            const int PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000;
+            IntPtr parentProcess = shellProcess;
+            if (!UpdateProcThreadAttribute(attributeList, 0,
+                    new IntPtr(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS), ref parentProcess,
+                    new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法绑定 Explorer 父进程属性");
+
+            STARTUPINFOEX startupInfo = new STARTUPINFOEX();
+            startupInfo.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+            startupInfo.StartupInfo.lpDesktop = "winsta0\\default";
+            startupInfo.lpAttributeList = attributeList;
+            const uint CREATE_SUSPENDED = 0x00000004;
             const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+            const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
             var commandLine = new StringBuilder("\"" + exe + "\"");
-            if (!CreateProcessWithTokenW(tokenHandle, LOGON_WITH_PROFILE, exe, commandLine,
-                    CREATE_UNICODE_ENVIRONMENT, environment, Environment.SystemDirectory,
-                    ref startupInfo, out processInformation))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法以当前桌面普通用户启动软件");
+            if (!CreateProcessW(exe, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                    environment, Environment.SystemDirectory, ref startupInfo, out processInformation))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法由当前桌面 Explorer 启动新版");
+
+            VerifySuspendedDesktopChild(processInformation.hProcess, processInformation.dwProcessId, exe, originSid);
+            if (ResumeThread(processInformation.hThread) == UInt32.MaxValue)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法恢复新版启动器线程");
+            resumed = true;
             return processInformation.dwProcessId;
+        } catch {
+            if (!resumed && processInformation.hProcess != IntPtr.Zero)
+                TerminateProcess(processInformation.hProcess, 1);
+            throw;
         } finally {
             if (processInformation.hThread != IntPtr.Zero) CloseHandle(processInformation.hThread);
             if (processInformation.hProcess != IntPtr.Zero) CloseHandle(processInformation.hProcess);
+            if (attributeList != IntPtr.Zero) {
+                DeleteProcThreadAttributeList(attributeList);
+                Marshal.FreeHGlobal(attributeList);
+            }
             if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
-            if (integrity != IntPtr.Zero) Marshal.FreeHGlobal(integrity);
-            if (tokenHandle != IntPtr.Zero) CloseHandle(tokenHandle);
-            if (processHandle != IntPtr.Zero) CloseHandle(processHandle);
+            if (shellIntegrity != IntPtr.Zero) Marshal.FreeHGlobal(shellIntegrity);
+            if (shellToken != IntPtr.Zero) CloseHandle(shellToken);
+            if (shellProcess != IntPtr.Zero) CloseHandle(shellProcess);
         }
     }
 
     // 安装器写受保护程序目录时处于 elevated token；asInvoker 启动器若直接继承该 token，
-    // 会被启动器安全策略拒绝。使用已复验的当前桌面 medium token 精确启动安装后的启动器。
+    // 会被启动器安全策略拒绝。使用已复验的当前桌面 Explorer 作为父进程启动新版。
     public static string StartInstalledApplication(string dest, string originSid) {
         int ignored;
         return StartInstalledApplication(dest, originSid, out ignored);
@@ -987,7 +1101,7 @@ static class Installer {
         if (TestNoLaunch(dest))
             return "测试模式跳过启动: " + exe;
         if (IsElevated()) {
-            processId = StartWithDesktopShellToken(exe, originSid);
+            processId = StartWithDesktopShellParent(exe, originSid);
             return "已由当前桌面普通用户启动";
         }
         using (Process process = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true })) {

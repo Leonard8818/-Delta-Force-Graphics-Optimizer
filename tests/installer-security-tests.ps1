@@ -15,9 +15,20 @@ function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERT: $Message" }
 }
 $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
-Assert-True ($setupSource -match 'CreateProcessWithTokenW') 'elevated installer does not use the verified desktop medium token for run-after'
+Assert-True ($setupSource -match 'PROC_THREAD_ATTRIBUTE_PARENT_PROCESS' -and
+  $setupSource -match 'PROCESS_CREATE_PROCESS' -and $setupSource -match 'EXTENDED_STARTUPINFO_PRESENT') `
+  'elevated run-after does not create through the verified desktop Explorer parent'
+Assert-True ($setupSource -match 'CREATE_SUSPENDED' -and
+  $setupSource -match '(?s)VerifySuspendedDesktopChild\(processInformation\.hProcess.*?\).*?ResumeThread') `
+  'run-after executes the child before exact path/session/SID/integrity verification'
+Assert-True ($setupSource -match 'QueryFullProcessImageNameW' -and
+  $setupSource -match '新版启动器用户与安装前用户不一致' -and
+  $setupSource -match '新版启动器不是 medium token') `
+  'run-after no longer verifies the exact created image and medium desktop identity'
+Assert-True ($setupSource -notmatch 'static\s+extern\s+bool\s+CreateProcessWithTokenW|static\s+extern\s+bool\s+CreateProcessAsUserW|TokenLinkedToken\s*=') `
+  'run-after still relies on token APIs that fail on RID-500 with errors 5/1314'
 Assert-True ($setupSource -match 'CreateEnvironmentBlock') 'run-after does not build the original desktop user environment'
-Assert-True ($setupSource -match 'StartWithDesktopShellToken\(exe, originSid\)') 'run-after is not connected to the desktop token launcher'
+Assert-True ($setupSource -match 'StartWithDesktopShellParent\(exe, originSid\)') 'run-after is not connected to the desktop parent launcher'
 Assert-True ($setupSource -notmatch 'FileName\s*=\s*explorer') 'run-after still delegates through explorer.exe and may inherit the elevated installer token'
 Assert-True ($setupSource -match 'InstallForLaunchValidation' -and $setupSource -match 'WaitForStartupReadiness' -and
   $setupSource -match 'RollbackDeferredInstall') 'run-after no longer retains the old version through startup validation'

@@ -85,7 +85,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
   - `main` 主推全套（界面显示为「★ 主推全套」且启动默认选中）：按依赖顺序排列——
     ①电源深度定制 → ②进程/IO 优先级 → ③中断绑核 → ④系统精简 → ⑤显卡驱动层。
     代价要如实告知：鼠标手感变直、休眠/快速启动没了、Windows 搜索变慢、待机功耗升高、
-    笔记本更耗电；其中唯一的 risky 项是「显卡型号伪装」，只对 NVIDIA 主显卡显示，AMD / Intel
+    笔记本更耗电；其中唯一的 risky 项是「显卡型号伪装」，对 NVIDIA / AMD 主显卡显示，Intel
     主显卡自动禁用。GUI 会单独二次确认，CLI 套用 `main` 必须显式加 `-Risky`；不含关引导虚拟化，
     WSL/模拟器不受影响。
   - `balanced` 均衡推荐（20 项，副作用小）：不改桌面外观和鼠标手感、不禁用服务、不动休眠。
@@ -195,7 +195,7 @@ risky 档（默认不勾；`main` 会选中但仍要求独立确认 / `-Risky`�
 
 | Id | 作用 | 风险 |
 |---|---|---|
-| gpu-name-spoof | 显卡型号伪装（`Enum\PCI\VEN_10DE&...\DeviceDesc`）：RTX 30 系默认写成 GTX 750 Ti，RTX 40/50 系默认写成 GTX 1050 Ti；GUI 可手动切换目标型号 | 有实测反例：有人改完帧数不升反降；重装/更新显卡驱动后失效；系统上报型号与真实硬件不一致，反作弊如何对待未知。仅 N 卡可用，原值完整备份、还原逐字节写回 |
+| gpu-name-spoof | 显卡型号伪装（`Enum\PCI\VEN_10DE/1002&...\DeviceDesc`）：RTX 30 系默认 GTX 750 Ti，RTX 40/50 系默认 GTX 1050 Ti，AMD 默认 RX560；GUI 可选 GTX 750 Ti、GTX 1050 Ti、RTX 2050、RTX 2060、RX560，其中 750 Ti、1050 Ti、RX560 标 ★ | 有实测反例：有人改完帧数不升反降；重装/更新显卡驱动后失效；系统上报型号与真实硬件不一致，反作弊如何对待未知。支持 NVIDIA / AMD，原值完整备份、还原逐字节写回 |
 
 `power-tuning` 涉及的电源项默认被 Windows 隐藏，脚本会先用 `powercfg -attributes`
 解除隐藏再写入，原隐藏状态一并进备份；CPU 不支持的项（如非大小核 CPU 的调度策略）

@@ -6,7 +6,9 @@
 
   v0.21.6：①更新安装器在新版出现可交互窗口前保留旧版本；新版启动失败或安装器在验证
         阶段中断时自动恢复旧版本；②上传完整诊断前新增问题与改善效果多选页；③游戏内
-        设置参考新增按用户截图整理的性能优先推荐方案，并突出显示在对照表第一列。
+        设置参考新增性能优先方案；④显卡型号伪装新增 RTX 2050/2060/RX560 并恢复 AMD
+        支持；⑤AMD 驱动指引新增按本机配置推荐方案；⑥新增电脑品牌检测，XMP/EXPO 的
+        BIOS 进入教程按品牌区分。
   v0.21.5：修复非中文区域设置（ACP≠936）的机器上软件完全无法启动：QueryFullProcessImageName
         的 P/Invoke 缺 CharSet.Unicode，绑到 ANSI 变体后「启动优化工具.exe」被转成 ??????.exe，
         .NET Framework 的 Path.GetFullPath 拒绝 ? 通配符，EngineHost 启动即死。卸载宿主同病同修。
@@ -1597,15 +1599,25 @@ function New-ItemRow($Item, $State, [bool]$Last) {
     $modelBox.Style = $window.FindResource('TacCombo')
     $modelBox.Width = 220
     $modelBox.Margin = New-Object Windows.Thickness 0, 0, 8, 0
-    foreach ($model in @(Get-GpuSpoofModels)) { [void]$modelBox.Items.Add($model) }
-    $selectedModel = $(if ($script:SelectedGpuSpoofModel -and $modelBox.Items.Contains($script:SelectedGpuSpoofModel)) {
+    $models = @(Get-GpuSpoofModels)
+    $selectedModel = $(if ($script:SelectedGpuSpoofModel -and $models -contains $script:SelectedGpuSpoofModel) {
                          $script:SelectedGpuSpoofModel
                        } else { $Item.SpoofModel })
-    $modelBox.SelectedItem = $selectedModel
+    $selectedOption = $null
+    foreach ($model in $models) {
+      $option = New-Object Windows.Controls.ComboBoxItem
+      $option.Content = "$(if (Test-RecommendedGpuSpoofModel $model) { '★ ' })$model"
+      $option.Tag = $model
+      [void]$modelBox.Items.Add($option)
+      if ($model -eq $selectedModel) { $selectedOption = $option }
+    }
+    $modelBox.SelectedItem = $selectedOption
     $script:SelectedGpuSpoofModel = "$selectedModel"
-    $modelBox.ToolTip = '选择要向系统和游戏上报的显卡型号'
+    $modelBox.ToolTip = '选择要向系统和游戏上报的显卡型号；★ 为推荐项'
     $modelBox.Add_SelectionChanged({
-      if ($this.SelectedItem) { $script:SelectedGpuSpoofModel = "$($this.SelectedItem)" }
+      if ($this.SelectedItem -and $this.SelectedItem.Tag) {
+        $script:SelectedGpuSpoofModel = "$($this.SelectedItem.Tag)"
+      }
     })
     $tail.Children.Add($modelBox) | Out-Null
   }
@@ -1680,15 +1692,7 @@ $script:CheckHelp = @{
   }
   'xmp-check' = @{
     Title = '内存 XMP/EXPO 未开启'
-    Tutorial = @(
-      'XMP（Intel 平台叫法）/ EXPO 或 DOCP（AMD 平台叫法）是内存条出厂标定的高频档位。不开启时内存跑在保守的 JEDEC 基准频率上，等于放着买好的频率不用；开启后帧数一般会有提升，幅度因 CPU/内存/游戏而异，无法承诺具体数字。'
-      ''
-      '开启步骤（BIOS 设置只能手动进，任何软件都改不了）：'
-      '1. 重启电脑，开机自检画面出现时反复按 Del 或 F2 进入 BIOS（部分品牌是 F1/F10）；'
-      '2. 找到内存/超频页面：Intel 主板找 XMP，AMD 主板找 EXPO 或 DOCP，选档位 1 开启；'
-      '3. 按 F10 保存并退出；'
-      '4. 万一开启后开不了机：多数主板会自动回退重启；不行就再进 BIOS 恢复默认设置（Load Optimized Defaults），恢复后与改动前完全一致，不会造成损坏。'
-    ) -join "`n"
+    Tutorial = $null # Build-HealthDialog 按检测到的品牌实时生成
     Links = @()
   }
 }
@@ -1754,6 +1758,8 @@ function Build-HealthDialog($AttResults) {
   $panel = $dlg.FindName('ListPanel')
   foreach ($r in @($AttResults)) {
     $help = $script:CheckHelp["$($r.Id)"]
+    $tutorial = $(if ("$($r.Id)" -eq 'xmp-check') { Get-XmpBiosTutorial $script:HardwareInfo }
+                  elseif ($help) { $help.Tutorial } else { $null })
     $card = New-Object Windows.Controls.Border
     $card.Background = New-Brush $script:C.Panel
     $card.BorderBrush = New-Brush $script:C.Line
@@ -1767,8 +1773,8 @@ function Build-HealthDialog($AttResults) {
     $ms = New-WrapText "检测结果：$($r.Msg)" $script:C.TextSec 11
     $ms.Margin = New-Object Windows.Thickness 0, 5, 0, 0
     $csp.Children.Add($ms) | Out-Null
-    if ($help -and $help.Tutorial) {
-      $tu = New-WrapText $help.Tutorial $script:C.TextMut 11
+    if ($tutorial) {
+      $tu = New-WrapText $tutorial $script:C.TextMut 11
       $tu.LineHeight = 18
       $tu.Margin = New-Object Windows.Thickness 0, 7, 0, 0
       $csp.Children.Add($tu) | Out-Null
@@ -4026,6 +4032,7 @@ function New-DiagnosticReport($Feedback) {
   try {
     $hw = Get-HardwareInfo
     $lines.Add("系统：$($hw.OS)（Build $($hw.Build)）")
+    $lines.Add("电脑：$($hw.ComputerBrand) $($hw.ComputerModel)（主板 $($hw.BaseBoardManufacturer) $($hw.BaseBoardProduct)）")
     $lines.Add("CPU：$($hw.CPU)（$($hw.Cores) 核 $($hw.Threads) 线程）")
     $lines.Add("内存：$($hw.RamGB) GB")
     foreach ($g in $hw.Gpus) {
@@ -4214,7 +4221,7 @@ function Build-GpuGuideDialog($Hw) {
     $banner = "检测到双显卡：$allGpuNames`n以下按独显 $($Hw.MainGpuName) 给出"
   }
   $dlg.FindName('BannerTxt').Text = $banner
-  $dlg.FindName('MsgTxt').Text = Get-GpuGuideText $Hw.MainGpuVendor $Hw.MainGpuName $Hw.IsLaptop
+  $dlg.FindName('MsgTxt').Text = Get-GpuGuideText $Hw.MainGpuVendor $Hw.MainGpuName $Hw.IsLaptop $Hw
 
   $panel = $dlg.FindName('AppPanel')
   foreach ($app in @(Get-GuiGpuPanelApps $Hw.MainGpuVendor)) {
@@ -5383,7 +5390,8 @@ $window.Add_ContentRendered({
     $cpuShort = ($hw.CPU -replace '^\d+th Gen ', '' -replace '\(R\)|\(TM\)', '' -replace '\s*@.*$', '').Trim()
     $ui.HwGrid.Children.Add((New-HwCard 'CPU' $cpuShort "$($hw.Cores)核 / $($hw.Threads)线程")) | Out-Null
     $ui.HwGrid.Children.Add((New-HwCard 'GPU' $gpu.Name "$($gpu.Vendor) · $(if (@($hw.Gpus).Count -gt 1) { '双显卡' } else { '单显卡' })" -Ribbon)) | Out-Null
-    $ui.HwGrid.Children.Add((New-HwCard 'MEMORY' "$($hw.RamGB) GB" "$(if ($hw.IsLaptop) { '笔记本' } else { '台式机' }) / Build $($hw.Build)")) | Out-Null
+    $systemName = "$($hw.ComputerBrand) $($hw.ComputerModel)".Trim()
+    $ui.HwGrid.Children.Add((New-HwCard 'SYSTEM' $systemName "$($hw.RamGB) GB · $(if ($hw.IsLaptop) { '笔记本' } else { '台式机' }) · Build $($hw.Build)")) | Out-Null
 
     Write-Log '开始检测硬件与系统状态…'
     $script:TargetExe = Find-GamePath

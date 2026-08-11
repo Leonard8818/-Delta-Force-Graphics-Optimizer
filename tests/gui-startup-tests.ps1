@@ -42,6 +42,16 @@ Assert-True ($raw.Contains('function Show-DiagnosticFeedbackDialog') -and
   $raw.Contains("Id = 'fps_gain'; Label = '平均帧率提升（涨帧）'") -and
   $raw.Contains("Id = 'one_percent_gain'; Label = '1% Low 提升 / 掉帧减少'")) `
   'diagnostic feedback page is missing required multi-select problem/improvement choices'
+Assert-True ($raw.Contains('New-Object Windows.Controls.ComboBoxItem') -and
+  $raw.Contains("Test-RecommendedGpuSpoofModel `$model") -and
+  $raw.Contains("`$this.SelectedItem.Tag")) `
+  'GPU model selector does not render recommendation stars separately from the registry value'
+Assert-True ($raw.Contains("Get-XmpBiosTutorial `$script:HardwareInfo") -and
+  $raw.Contains("New-HwCard 'SYSTEM' `$systemName") -and
+  $raw.Contains('电脑：$($hw.ComputerBrand) $($hw.ComputerModel)')) `
+  'computer brand is not displayed or the BIOS tutorial is not brand-aware'
+Assert-True ($raw.Contains('Get-GpuGuideText $Hw.MainGpuVendor $Hw.MainGpuName $Hw.IsLaptop $Hw')) `
+  'GPU guide does not pass detected hardware into the configuration-aware recommendation'
 Assert-True ($raw.Contains("`$lines.Add('== 用户反馈选择 ==')") -and
   $raw.Contains('New-DiagnosticReport -Feedback $feedback') -and
   $raw.Contains("if ((`$issueChoices.Count + `$benefitChoices.Count) -eq 0)")) `
