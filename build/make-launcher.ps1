@@ -393,17 +393,11 @@ $hashRowsText
     }
 
     static WorkerResult RunUserWorker(string root, string action, string payload) {
-        if (action != "MigrateLegacyData" && action != "ClearShaderCache" && action != "GetGpuPanelApps" &&
-            action != "GetNvAutoOptStatus")
+        if (action != "MigrateLegacyData" && action != "ClearShaderCache" &&
+            action != "GetNvidiaPanelApps" && action != "GetAmdPanelApps" &&
+            action != "GetIntelPanelApps" && action != "GetNvAutoOptStatus")
             throw new InvalidOperationException("原用户 worker 动作不在白名单");
-        if (action == "GetGpuPanelApps") {
-            payload = (payload ?? "").Trim();
-            if (String.Equals(payload, "NVIDIA", StringComparison.OrdinalIgnoreCase)) payload = "NVIDIA";
-            else if (String.Equals(payload, "AMD", StringComparison.OrdinalIgnoreCase)) payload = "AMD";
-            else if (String.Equals(payload, "Intel", StringComparison.OrdinalIgnoreCase)) payload = "Intel";
-            else throw new InvalidOperationException("显卡厂商不在白名单");
-        }
-        if (action != "GetGpuPanelApps" && !String.IsNullOrEmpty(payload))
+        if (!String.IsNullOrEmpty(payload))
             throw new InvalidOperationException("原用户 worker 动作不接受参数");
         string workerSession = RandomHex();
         string workerPipeName = "DeltaForceBooster.UserWorker." + RandomHex();
@@ -512,8 +506,9 @@ $hashRowsText
     }
 
     static WorkerResult HandleLowRequest(string root, string action, string payload) {
-        if (action == "MigrateLegacyData" || action == "ClearShaderCache" || action == "GetGpuPanelApps" ||
-            action == "GetNvAutoOptStatus")
+        if (action == "MigrateLegacyData" || action == "ClearShaderCache" ||
+            action == "GetNvidiaPanelApps" || action == "GetAmdPanelApps" ||
+            action == "GetIntelPanelApps" || action == "GetNvAutoOptStatus")
             return RunUserWorker(root, action, payload);
         if (action == "OpenUrl") { OpenAllowedUrl(payload); return new WorkerResult { Ok = true, Payload = "" }; }
         if (action == "OpenGpuPanel") { OpenGpuPanel(payload); return new WorkerResult { Ok = true, Payload = "" }; }

@@ -7,7 +7,7 @@
 #>
 #requires -Version 5.1
 param(
-  [Parameter(Mandatory)][ValidateSet('MigrateLegacyData','ClearShaderCache','GetGpuPanelApps','GetNvAutoOptStatus')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('MigrateLegacyData','ClearShaderCache','GetNvidiaPanelApps','GetAmdPanelApps','GetIntelPanelApps','GetNvAutoOptStatus')][string]$Action,
   [string]$Payload = '',
   [Parameter(Mandatory)][string]$ReplyPipe,
   [Parameter(Mandatory)][string]$Session
@@ -188,7 +188,9 @@ try {
   $result = $(switch ($Action) {
     'MigrateLegacyData' { Invoke-WorkerLegacyMigration }
     'ClearShaderCache' { Invoke-WorkerShaderCache }
-    'GetGpuPanelApps' { Get-WorkerGpuPanelApps $Payload }
+    'GetNvidiaPanelApps' { Get-WorkerGpuPanelApps 'NVIDIA' }
+    'GetAmdPanelApps' { Get-WorkerGpuPanelApps 'AMD' }
+    'GetIntelPanelApps' { Get-WorkerGpuPanelApps 'Intel' }
     'GetNvAutoOptStatus' { Get-WorkerNvAutoOptStatus }
   })
   $payload = $result | ConvertTo-Json -Depth 6 -Compress

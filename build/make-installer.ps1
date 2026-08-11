@@ -641,16 +641,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 新增「掉帧修复」页面，按 NVIDIA、AMD、Intel 显卡提供专项排查方案。
-- 支持直接清理着色器缓存、设置高性能 GPU、检查 VC++ 运行库，并显示执行进度。
-
-- 「还原设置」新增单选、多选、全选及全部复原，并增加后续修改冲突保护和失败回滚。
-- 优化页「全选」现已包含显卡型号伪装，执行前仍保留二次确认。
-- 内存频率体检增加星标和快捷入口，可直接查看对应电脑品牌及平台的 BIOS 教程。
-- 修复达到标称内存频率后仍被误报为未开启 XMP、EXPO、DOCP 的问题。
-- 修复电源计划切换出现 Null 错误、着色器缓存清理路径异常、显卡厂商识别失败等问题。
-- 修复部分电脑首次打开软件被权限状态误判的问题，提升启动和版本更新后的可用性。
-- 「AI定制优化（敬请期待）」
+- 修复部分电脑无法正确检测 NVIDIA、AMD、Intel 显卡控制软件的问题。
+- 诊断反馈新增「游戏内部分区域黑屏 / 黑块」选项。
+- 修复异常或不完整的性能采样被误判为有效记录的问题。
 '@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让

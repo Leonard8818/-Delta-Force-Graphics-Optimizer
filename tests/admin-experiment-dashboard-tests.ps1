@@ -16,7 +16,15 @@ foreach($needle in @(
   'data-main-tab="usage"','data-main-tab="experiments"','id="usageView"','id="experimentsView"',
   'role="tablist"','role="tabpanel"','function selectMainTab','function renderExperiments',
   'data.experiments','id="expItemSets"','id="expItems"','id="expEnvironments"',
-  'TRAINING READINESS','ENVIRONMENT MATRIX','结构化操作','还原验证结果'
+  'id="expConfigurations"','id="expDiagnosticReports"','id="expDiagnosticIssues"',
+  'id="expDiagnosticErrors"','id="expDiagnosticConfigs"','id="expDiagnosticIssueEnvironments"',
+  'id="expDiagnosticProcesses"','id="expDiagnosticIssueProcesses"',
+  'id="expDiagnosticPanelApps"','id="expDiagnosticVersions"',
+  'id="expPerfContextComplete"','id="expPerfContextIncomplete"','id="expPerfItemSets"',
+  'id="expTuningEnrichedHint"','validEnrichedRuns','gpuDriverVersion','gpuModelVerified',
+  'data.performanceOptimization','DESCRIPTIVE ONLY','普通游戏会话没有固定地图',
+  'TRAINING READINESS','ENVIRONMENT MATRIX','DIAGNOSTIC SIGNALS','结构化操作','还原验证结果',
+  '诊断报告是用户遇到问题或观察到变化后主动提交的有偏样本','历史性能记录仅作描述性参考'
 )){Assert-True $raw.Contains($needle) "experiment dashboard is missing: $needle"}
 
 $ids=@([regex]::Matches($raw,'\bid="([A-Za-z][A-Za-z0-9_-]*)"')|ForEach-Object{$_.Groups[1].Value})

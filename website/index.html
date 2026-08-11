@@ -86,10 +86,10 @@
     <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
     <a class="cta alt" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer">GitHub 仓库</a>
   </p>
-  <p class="ver">当前版本 v0.22.0 · 仅支持 Windows 10/11 · 提供最新版与历史版本安装包</p>
+  <p class="ver">当前版本 v0.22.1 · 仅支持 Windows 10/11 · 提供最新版与历史版本安装包</p>
   <div class="downloads" aria-label="版本下载">
-    <a class="download-link" href="DeltaForceBooster-Setup-v0.22.0.exe"><strong>v0.22.0</strong><span>最新版</span></a>
-    <a class="download-link" href="DeltaForceBooster-Setup-v0.21.6.exe"><strong>v0.21.6</strong><span>历史版本</span></a>
+    <a class="download-link" href="DeltaForceBooster-Setup-v0.22.1.exe"><strong>v0.22.1</strong><span>最新版</span></a>
+    <a class="download-link" href="DeltaForceBooster-Setup-v0.22.0.exe"><strong>v0.22.0</strong><span>历史版本</span></a>
   </div>
 
   <section class="proof" aria-labelledby="proofTitle">
@@ -125,7 +125,15 @@
   <div class="card">
     <h2>更新记录</h2>
     <div class="release">
-      <div class="release-ver">v0.22.0<small>2026-08-11</small><span class="latest">LATEST</span></div>
+      <div class="release-ver">v0.22.1<small>2026-08-12</small><span class="latest">LATEST</span></div>
+      <ul>
+        <li>修复部分电脑无法正确检测 NVIDIA、AMD、Intel 显卡控制软件的问题。</li>
+        <li>诊断反馈新增「游戏内部分区域黑屏 / 黑块」选项。</li>
+        <li>修复异常或不完整的性能采样被误判为有效记录的问题。</li>
+      </ul>
+    </div>
+    <div class="release">
+      <div class="release-ver">v0.22.0<small>2026-08-11</small></div>
       <ul>
         <li>新增「掉帧修复」页面，按 NVIDIA、AMD、Intel 显卡提供专项排查方案。</li>
         <li>支持直接清理着色器缓存、设置高性能 GPU、检查 VC++ 运行库，并显示执行进度。</li>
@@ -335,7 +343,7 @@
       <li>本工具没有购买代码签名证书，Windows 会提示「未知发布者」，需要点「更多信息 → 仍要运行」。</li>
       <li>因为要修改注册表和系统服务，部分杀毒软件可能误报，介意请勿使用。</li>
       <li>所有改动在写入前都会备份到 backup 目录，界面上点「撤离还原」即可完整回退。</li>
-      <li>同意使用声明后会发送匿名版本、硬件概况、启动/优化/还原汇总及粗粒度优化强度；不发送具体勾选项、自存方案名称、用户名、机器名、游戏路径或诊断日志，可在本地配置中停用。</li>
+      <li>同意使用声明后会发送匿名版本、硬件概况、启动/优化/还原汇总、粗粒度优化强度及当前由工具管理的公开项目 ID；自存方案只记匿名类别，不发送方案名称、用户名、机器名、游戏路径、注册表内容或诊断日志，可在本地配置中停用。</li>
       <li>优化效果因机器而异，不保证一定涨帧；建议改完自己实测对比。</li>
     </ul>
   </div>

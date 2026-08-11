@@ -562,7 +562,8 @@ $hashRowsText
                             string action = reader.ReadString();
                             string payload = reader.ReadString();
                             if ((action != "MigrateLegacyData" && action != "ClearShaderCache" &&
-                                 action != "GetGpuPanelApps" && action != "GetNvAutoOptStatus" &&
+                                 action != "GetNvidiaPanelApps" && action != "GetAmdPanelApps" &&
+                                 action != "GetIntelPanelApps" && action != "GetNvAutoOptStatus" &&
                                  action != "OpenUrl" && action != "OpenGpuPanel") || payload.Length > 4096)
                                 throw new InvalidOperationException("GUI broker 动作或参数不在白名单");
                             WorkerResult result = launcher.Request(action, payload);

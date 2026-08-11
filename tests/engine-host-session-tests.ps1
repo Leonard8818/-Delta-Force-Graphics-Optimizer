@@ -32,7 +32,7 @@ function Parse-PowerShell([string]$Path) {
 }
 
 $guiAst = Parse-PowerShell $guiPath
-$null = Parse-PowerShell $enginePath
+$engineAst = Parse-PowerShell $enginePath
 $null = Parse-PowerShell $updaterPath
 $null = Parse-PowerShell $workerPath
 $null = Parse-PowerShell $hostBuildPath
@@ -53,6 +53,31 @@ $tokenValidation = Read-Utf8 $tokenValidationPath
 $uninstallHostSource = Read-Utf8 $uninstallHostSourcePath
 $uninstallLauncherSource = Read-Utf8 $uninstallLauncherSourcePath
 $bat = Read-Utf8 $batPath
+
+function Find-EngineFunction([string]$Name) {
+  $matches = @($engineAst.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+  }, $true))
+  Assert-True ($matches.Count -eq 1) "engine helper missing or duplicated: $Name"
+  $matches[0]
+}
+
+$virtualDisplayFunction = Find-EngineFunction 'Test-VirtualDisplayAdapter'
+$gpuPreferenceFunction = Find-EngineFunction 'Get-GpuPreferenceScore'
+Invoke-Expression $virtualDisplayFunction.Extent.Text
+Invoke-Expression $gpuPreferenceFunction.Extent.Text
+Assert-True (Test-VirtualDisplayAdapter '' 'ToDesk Virtual Display') 'known remote display adapter is not classified'
+Assert-True (-not (Test-VirtualDisplayAdapter 'PCI\VEN_10DE' 'NVIDIA GeForce RTX 4070')) 'physical GPU was classified as a virtual display'
+Assert-True ((Get-GpuPreferenceScore ([pscustomobject]@{ Name='GameViewer Virtual Display'; Vendor='Unknown'; IsVirtualDisplay=$true })) -eq -1000) `
+  'virtual display adapter can still win primary-GPU selection'
+Assert-True ($engine.Contains("`$verified = (`$vendor -eq 'Intel')") -and
+  -not $engine.Contains("`$verified = (`$vendor -notin @('NVIDIA','AMD'))")) `
+  'unknown or virtual display adapters are still marked as verified physical GPUs'
+Assert-True ($engine.Contains('$processors = @(Get-CimInstance Win32_Processor)') -and
+  $engine.Contains('Measure-Object -Sum') -and $engine.Contains('CpuPackages   = $processors.Count') -and
+  $engine.Contains('MemoryModuleCount = $memory.Count') -and $engine.Contains('AutomaticManagedPagefile')) `
+  'hardware analysis fields do not use the complete OS-visible topology and memory/pagefile state'
 
 # UAC 边界与 full-lifetime session。
 Assert-True ($hostBuild -match 'requestedExecutionLevel level="requireAdministrator"') 'EngineHost manifest is not requireAdministrator'
@@ -131,22 +156,32 @@ Assert-True ($launcherBuild -match 'EnvironmentVariables\["SystemDrive"\] = Path
   $launcherBuild -match 'EnvironmentVariables\["ProgramData"\] = commonAppData' -and
   $launcherBuild -match 'EnvironmentVariables\["ALLUSERSPROFILE"\] = commonAppData') `
   'original-user worker clears SystemDrive/CommonApplicationData aliases, causing GetFolderPath to fail'
-foreach ($action in 'MigrateLegacyData','ClearShaderCache','GetGpuPanelApps','GetNvAutoOptStatus','OpenUrl','OpenGpuPanel') {
+foreach ($action in 'MigrateLegacyData','ClearShaderCache','GetNvidiaPanelApps','GetAmdPanelApps','GetIntelPanelApps','GetNvAutoOptStatus','OpenUrl','OpenGpuPanel') {
   Assert-True ($gui.Contains($action) -and $hostBuild.Contains($action) -and $launcherBuild.Contains($action)) `
     "broker allowlist is inconsistent: $action"
 }
+foreach ($action in 'GetNvidiaPanelApps','GetAmdPanelApps','GetIntelPanelApps') {
+  Assert-True $worker.Contains($action) "GPU software worker action is missing: $action"
+}
+Assert-True (-not ($gui.Contains('GetGpuPanelApps') -or $worker.Contains('GetGpuPanelApps') -or
+  $hostBuild.Contains('GetGpuPanelApps') -or $launcherBuild.Contains('GetGpuPanelApps'))) `
+  'legacy free-text GPU vendor action is still reachable across a broker boundary'
 Assert-True ($launcherBuild -match 'UriSchemeHttps' -and $launcherBuild -match 'Array\.IndexOf\(allowed, host\)') `
   'URL broker is not constrained to fixed HTTPS hosts'
 foreach ($key in 'nv-cpl','nv-app','amd-sw','intel-gcc') {
   Assert-True ($gui.Contains($key) -and $launcherBuild.Contains($key)) "GPU panel key is not end-to-end allowlisted: $key"
 }
 Assert-True ($gui -match 'Key = \$app\.Key') 'GPU panel button drops the allowlisted key'
-Assert-True ($worker -match 'Get-AppxPackage' -and $gui -match 'Get-GuiGpuPanelApps' -and
+Assert-True ($worker -match 'Get-AppxPackage' -and $gui -match 'Get-GuiGpuPanelInventory' -and
   $engine -match 'if \(Test-Admin\) \{ return \$null \}') 'AppX detection can observe the approval administrator instead of the original user'
-Assert-True ($gui -match 'ToUpperInvariant\(\)' -and $worker -match 'ToUpperInvariant\(\)' -and
-  $launcherBuild -match 'StringComparison\.OrdinalIgnoreCase' -and
-  $launcherBuild -match 'payload = \(payload \?\? ""\)\.Trim\(\)') `
-  'GPU vendor key is not normalized consistently across GUI/launcher/worker boundaries'
+Assert-True ($gui -match "'NVIDIA' \{ 'GetNvidiaPanelApps' \}" -and
+  $gui -match "'AMD'\s+\{ 'GetAmdPanelApps' \}" -and
+  $gui -match "'INTEL'\s+\{ 'GetIntelPanelApps' \}" -and
+  $worker -match "'GetNvidiaPanelApps' \{ Get-WorkerGpuPanelApps 'NVIDIA' \}" -and
+  $worker -match "'GetAmdPanelApps' \{ Get-WorkerGpuPanelApps 'AMD' \}" -and
+  $worker -match "'GetIntelPanelApps' \{ Get-WorkerGpuPanelApps 'Intel' \}" -and
+  $launcherBuild -match 'if \(!String\.IsNullOrEmpty\(payload\)\)') `
+  'GPU vendor identity is not encoded as fixed zero-payload actions end to end'
 Assert-True ($engine -match 'Registry::HKEY_USERS\\\$script:TargetUserSid.*Uninstall') `
   'game discovery does not enumerate the original user HKEY_USERS uninstall hive'
 

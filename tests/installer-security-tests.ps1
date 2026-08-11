@@ -17,8 +17,8 @@ function Assert-True([bool]$Condition, [string]$Message) {
 $installerBuildSource = [IO.File]::ReadAllText((Join-Path $root 'build\make-installer.ps1'))
 $releaseManifest = Get-Content -LiteralPath (Join-Path $root 'build\update-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.21\.6'" -and
-  "$($releaseManifest.version)" -eq '0.22.0' -and "$($releaseManifest.minimumSupportedVersion)" -eq '0.21.6') `
-  'release policy must force versions below v0.21.6 to upgrade to v0.22.0 while keeping v0.21.6 optional'
+  "$($releaseManifest.version)" -eq '0.22.1' -and "$($releaseManifest.minimumSupportedVersion)" -eq '0.21.6') `
+  'release policy must force versions below v0.21.6 to upgrade to v0.22.1 while keeping v0.21.6 optional'
 $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
 Assert-True ($setupSource -match 'PROC_THREAD_ATTRIBUTE_PARENT_PROCESS' -and
   $setupSource -match 'PROCESS_CREATE_PROCESS' -and $setupSource -match 'EXTENDED_STARTUPINFO_PRESENT') `

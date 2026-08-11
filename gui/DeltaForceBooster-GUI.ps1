@@ -1,9 +1,12 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.22.0
+  DeltaForceBooster 图形界面 — v0.22.1
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.22.1：①修复部分电脑无法正确检测 NVIDIA、AMD、Intel 显卡控制软件的问题；
+        ②诊断反馈新增「游戏内部分区域黑屏 / 黑块」；③修复异常或不完整的性能采样
+        被误判为有效记录的问题。
   v0.22.0：①「还原设置」支持按项目单选、多选和全选精确复原，并保护用户后续修改；
         ②新增「掉帧修复」页及可直接执行的缓存清理、高性能 GPU 和运行库体检入口；
         ③修复电源计划空操作崩溃、部分电脑首次启动受阻和显卡厂商识别失败；④内存频率
@@ -190,7 +193,7 @@ try {
 
 function Invoke-EngineHostUserAction {
   param(
-    [Parameter(Mandatory)][ValidateSet('MigrateLegacyData','ClearShaderCache','GetGpuPanelApps','GetNvAutoOptStatus','OpenUrl','OpenGpuPanel')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('MigrateLegacyData','ClearShaderCache','GetNvidiaPanelApps','GetAmdPanelApps','GetIntelPanelApps','GetNvAutoOptStatus','OpenUrl','OpenGpuPanel')][string]$Action,
     [string]$Payload = ''
   )
   if ($script:RepairOnlySession) { throw 'UAC 修复会话不提供普通用户动作' }
@@ -462,7 +465,7 @@ catch {
 }
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.22.0'
+$script:GuiVersion = '0.22.1'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -841,7 +844,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.22.0 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.22.1 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1404,7 +1407,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.22.0 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.22.1 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2310,7 +2313,7 @@ function Get-DisclaimerText {
     '- 会修改注册表、电源计划、系统服务等系统级设置；可还原的设置改动会先写入受保护备份，可点「还原设置」回退；纯检测项和明确标注不可还原的操作不生成备份，还原也不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
-    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（平均帧率、1% 低帧率、GPU 占用率、温度、功耗）；配置只上传未使用/轻量/均衡/深度四档，不发送具体勾选项、自存方案名称、用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。统计来自客户端自动采样，会做令牌、重放和异常值过滤，但不是独立实验室测量。'
+    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（平均帧率、1% 低帧率、GPU 占用率、温度、功耗）；性能汇总会附带当前由工具管理的公开优化项目 ID、匿名方案类别和未使用/轻量/均衡/深度档位，自存方案只记为 custom，不发送方案名称或内容，也不发送用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。统计来自客户端自动采样，会做令牌、重放和异常值过滤，但不是独立实验室测量。'
     '- 服务端定时清理：诊断报告保留 30 天、性能会话保留 90 天、匿名安装标识与按日使用明细保留 180 天。'
     '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
     ''
@@ -2514,28 +2517,77 @@ function Get-TelemetryInstallId {
   $id = [guid]::NewGuid().ToString()
   $cfg = [ordered]@{
     Enabled = $true; InstallId = $id; CreatedAt = (Get-Date).ToUniversalTime().ToString('o')
-    ConfigTier = 'baseline'; DeviceToken = ''; TokenExpiresAt = 0
+    ConfigTier = 'baseline'; OptimizationScheme = 'baseline'; OptimizationItemIds = @()
+    OptimizationItemSetHash = ''; OptimizationItemsComplete = $true
+    DeviceToken = ''; TokenExpiresAt = 0
   }
   if (Get-Command Write-DfbTelemetryConfigAtomic -ErrorAction SilentlyContinue) { Write-DfbTelemetryConfigAtomic $path $cfg }
   else { [IO.File]::WriteAllText($path, ($cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding($true))) }
   $id
 }
 
-# 只记录粗粒度强度，不记录具体勾选项、自存方案名称或方案内容。
-# 同一台匿名设备可据此把优化前后的性能会话配对，避免按每个人的独特配置拆分。
-function Get-TelemetryConfigTier {
-  try {
-    $path = Join-Path $script:UserConfigDir 'telemetry.json'
-    if (-not (Test-Path -LiteralPath $path)) { return 'baseline' }
-    $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    $tier = "$($cfg.ConfigTier)".ToLowerInvariant()
-    if ($tier -in 'baseline','light','balanced','full') { return $tier }
-  } catch {}
-  'baseline'
+# 普通性能会话记录当前由工具管理的公开项目 ID 与匿名方案类别；自存方案只记为 custom，
+# 不上传方案名称或内容。项目集合由受保护还原目录回推，历史备份缺少项目归属时会明确
+# 标成不完整，避免把未知旧改动误当成基线或某个具体方案。
+function ConvertTo-TelemetryOptimizationItemIds([object[]]$Values) {
+  @($Values | ForEach-Object { "$_".Trim().ToLowerInvariant() } |
+    Where-Object { $_ -match '^[a-z0-9][a-z0-9-]{0,63}$' } | Sort-Object -Unique)
 }
 
-function Set-TelemetryConfigTier([string]$Tier, [switch]$Force) {
-  if ($Tier -notin 'baseline','light','balanced','full') { return }
+function Get-TelemetryOptimizationItemSetHash([object[]]$Values) {
+  $ids = @(ConvertTo-TelemetryOptimizationItemIds $Values)
+  if ($ids.Count -eq 0) { return '' }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($ids -join ','))
+    ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+  } finally { $sha.Dispose() }
+}
+
+function Get-TelemetryOptimizationContext {
+  $result = [ordered]@{
+    ConfigTier = 'baseline'; Scheme = 'baseline'; ItemIds = @(); ItemSetHash = ''; ItemsComplete = $true
+  }
+  try {
+    $path = Join-Path $script:UserConfigDir 'telemetry.json'
+    if (-not (Test-Path -LiteralPath $path)) { return [pscustomobject]$result }
+    $cfg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $tier = "$($cfg.ConfigTier)".ToLowerInvariant()
+    if ($tier -in 'baseline','light','balanced','full') { $result.ConfigTier = $tier }
+    $hasIds = [bool]$cfg.PSObject.Properties['OptimizationItemIds']
+    $ids = @(ConvertTo-TelemetryOptimizationItemIds @($cfg.OptimizationItemIds))
+    $scheme = "$($cfg.OptimizationScheme)".ToLowerInvariant()
+    if ($scheme -notin 'baseline','main','balanced','safe-only','custom','manual','frame-fix','auto-tuning','mixed','legacy-unknown','unknown') {
+      $scheme = $(if ($result.ConfigTier -eq 'baseline') { 'baseline' } else { 'legacy-unknown' })
+    }
+    $complete = [bool]($cfg.PSObject.Properties['OptimizationItemsComplete'] -and
+      $cfg.OptimizationItemsComplete -is [bool] -and [bool]$cfg.OptimizationItemsComplete)
+    if (-not $hasIds) {
+      $complete = ($result.ConfigTier -eq 'baseline')
+      $scheme = $(if ($complete) { 'baseline' } else { 'legacy-unknown' })
+    }
+    if ($complete) {
+      $result.ConfigTier = Get-SelectedTelemetryConfigTier $ids.Count
+      if ($ids.Count -eq 0) { $scheme = 'baseline' }
+    }
+    $result.Scheme = $scheme
+    $result.ItemIds = @($ids)
+    $result.ItemSetHash = Get-TelemetryOptimizationItemSetHash $ids
+    $result.ItemsComplete = [bool]$complete
+  } catch {}
+  [pscustomobject]$result
+}
+
+function Get-TelemetryConfigTier { (Get-TelemetryOptimizationContext).ConfigTier }
+
+function Set-TelemetryOptimizationContext {
+  param(
+    [object[]]$ItemIds = @(),
+    [ValidateSet('baseline','main','balanced','safe-only','custom','manual','frame-fix','auto-tuning','mixed','legacy-unknown','unknown')]
+    [string]$Scheme = 'unknown',
+    [bool]$ItemsComplete = $true,
+    [string]$FallbackTier = ''
+  )
   $mutex = $null; $locked = $false
   try {
     $mutex = New-Object Threading.Mutex($false, 'Local\DeltaForceBooster.Telemetry.Config')
@@ -2547,7 +2599,7 @@ function Set-TelemetryConfigTier([string]$Tier, [switch]$Force) {
     $enabled = $true
     $installId = [guid]::NewGuid().ToString()
     $createdAt = (Get-Date).ToUniversalTime().ToString('o')
-    $current = 'baseline'
+    $currentTier = 'baseline'
     $deviceToken = ''
     $tokenExpiresAt = 0L
     if (Test-Path -LiteralPath $path) {
@@ -2558,13 +2610,22 @@ function Set-TelemetryConfigTier([string]$Tier, [switch]$Force) {
       if ("$($cfg.DeviceToken)" -match '^v1\.') { $deviceToken = "$($cfg.DeviceToken)" }
       try { $tokenExpiresAt = [long]$cfg.TokenExpiresAt } catch {}
       if ("$($cfg.ConfigTier)".ToLowerInvariant() -in 'baseline','light','balanced','full') {
-        $current = "$($cfg.ConfigTier)".ToLowerInvariant()
+        $currentTier = "$($cfg.ConfigTier)".ToLowerInvariant()
       }
     }
-    $rank = @{ baseline = 0; light = 1; balanced = 2; full = 3 }
-    if (-not $Force -and $rank[$current] -gt $rank[$Tier]) { $Tier = $current }
+    $ids = @(ConvertTo-TelemetryOptimizationItemIds $ItemIds)
+    $tier = Get-SelectedTelemetryConfigTier $ids.Count
+    if (-not $ItemsComplete -and $ids.Count -eq 0) {
+      $fallback = "$FallbackTier".ToLowerInvariant()
+      $tier = $(if ($fallback -in 'baseline','light','balanced','full') { $fallback } else { $currentTier })
+    }
+    if ($ItemsComplete -and $ids.Count -eq 0) { $Scheme = 'baseline' }
+    elseif (-not $ItemsComplete -and $ids.Count -eq 0 -and $Scheme -eq 'baseline') { $Scheme = 'legacy-unknown' }
     $out = [ordered]@{
-      Enabled = $enabled; InstallId = $installId; CreatedAt = $createdAt; ConfigTier = $Tier
+      Enabled = $enabled; InstallId = $installId; CreatedAt = $createdAt; ConfigTier = $tier
+      OptimizationScheme = $Scheme; OptimizationItemIds = @($ids)
+      OptimizationItemSetHash = Get-TelemetryOptimizationItemSetHash $ids
+      OptimizationItemsComplete = [bool]$ItemsComplete
       DeviceToken = $deviceToken; TokenExpiresAt = $tokenExpiresAt
     }
     if (Get-Command Write-DfbTelemetryConfigAtomic -ErrorAction SilentlyContinue) { Write-DfbTelemetryConfigAtomic $path $out }
@@ -2684,6 +2745,49 @@ function New-OptimizationTelemetryOperation {
   }
 }
 
+function Update-TelemetryOptimizationContextFromCatalog {
+  param(
+    [Parameter(Mandatory)]$Catalog,
+    [string]$RequestedScheme = 'unknown',
+    [object[]]$RequestedItemIds = @(),
+    [object[]]$KnownChangedItemIds = @(),
+    [switch]$MutationIncomplete
+  )
+  $before = Get-TelemetryOptimizationContext
+  $ids = @(ConvertTo-TelemetryOptimizationItemIds @($Catalog.ActiveItemIds))
+  $hasActive = [bool]$Catalog.HasActiveChanges
+  $complete = (-not $MutationIncomplete -and [int]$Catalog.LegacyBackupCount -eq 0)
+  $scheme = "$RequestedScheme".ToLowerInvariant()
+  if ($scheme -notin 'main','balanced','safe-only','custom','manual','frame-fix','auto-tuning') { $scheme = 'unknown' }
+  if ($MutationIncomplete) {
+    # 备份写入中断时，目录只包含成功落盘的那部分操作。Reply.Results 中仍可确定
+    # 哪些项目已经实际改变，把这些 ID 合并进来但保持 incomplete，避免误报为基线。
+    $ids = @(ConvertTo-TelemetryOptimizationItemIds (@($ids) + @($KnownChangedItemIds)))
+  }
+  if (-not $hasActive) {
+    if ($MutationIncomplete) {
+      $scheme = $(if ($ids.Count -gt 0 -and $scheme -ne 'unknown') { $scheme } else { 'legacy-unknown' })
+      $complete = $false
+    } elseif (-not [bool]$before.ItemsComplete) {
+      # 空目录只证明“没有可由当前目录精确还原的记录”，并不能证明旧版或备份失败
+      # 留下的未知改动已经消失。保留不完整上下文，避免重启后把它洗成基线样本。
+      $ids = @($before.ItemIds); $scheme = "$($before.Scheme)"; $complete = $false
+    } else {
+      $ids = @(); $scheme = 'baseline'; $complete = $true
+    }
+  } elseif ($ids.Count -eq 0) {
+    $scheme = 'legacy-unknown'; $complete = $false
+  } elseif (-not $complete) {
+    $scheme = 'mixed'
+  } elseif ($scheme -ne 'unknown') {
+    $targets = @(ConvertTo-TelemetryOptimizationItemIds $RequestedItemIds)
+    if ($targets.Count -eq 0 -or @($ids | Where-Object { $targets -notcontains $_ }).Count -gt 0) { $scheme = 'mixed' }
+  } elseif ($before.ItemSetHash -eq (Get-TelemetryOptimizationItemSetHash $ids)) {
+    $scheme = "$($before.Scheme)"
+  } else { $scheme = 'mixed' }
+  Set-TelemetryOptimizationContext -ItemIds $ids -Scheme $scheme -ItemsComplete $complete -FallbackTier "$($before.ConfigTier)"
+}
+
 function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed = 0, $Operation = $null) {
   try {
     if (-not $Hw -or $Event -notin 'launch','apply','restore') { return }
@@ -2705,6 +2809,16 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
       displayMode = Get-TelemetryDisplayMode $Hw
       ramGb      = [double]$Hw.RamGB
       deviceType = $(if ($Hw.IsLaptop) { 'laptop' } else { 'desktop' })
+      cpuCores   = [math]::Max(0, [int]$Hw.Cores)
+      cpuThreads = [math]::Max(0, [int]$Hw.Threads)
+      cpuPackages = [math]::Max(0, [int]$Hw.CpuPackages)
+      memoryType = "$($Hw.MemoryType)"
+      memoryConfiguredMhz = [math]::Max(0, [int]$Hw.MemoryConfiguredMHz)
+      memoryRatedMhz = [math]::Max(0, [int]$Hw.MemoryRatedMHz)
+      memoryModuleCount = [math]::Max(0, [int]$Hw.MemoryModuleCount)
+      virtualDisplayCount = [math]::Min(16, [math]::Max(0, [int]$Hw.VirtualDisplayCount))
+      pagefileAutoManaged = [bool]$Hw.AutomaticManagedPagefile
+      gpuReportedModelDiffers = [bool]("$($Hw.MainGpuReportedName)" -ne "$($Hw.MainGpuName)")
       ok         = [math]::Max(0, $Ok)
       failed     = [math]::Max(0, $Failed)
     }
@@ -2749,8 +2863,10 @@ $script:PerformanceCaptureWorker = {
   param($GamePid, $PresentMon, $SessionFile, $TelemetryModule, $TelemetryConfigPath,
         $UploadUrl, $InstallId, $Version,
         $GpuVendor, $GpuModel, $GpuVerified, $GpuPciLocation, $NvidiaSmi,
-        $ConfigTier, $WarmupSeconds, $SampleSeconds, $CaptureMode)
+        $ConfigTier, $OptimizationScheme, $OptimizationItemSetHash, $OptimizationItemIdsCsv,
+        $OptimizationItemsComplete, $WarmupSeconds, $SampleSeconds, $CaptureMode)
   $ErrorActionPreference = 'SilentlyContinue'
+  $OptimizationItemIds = @("$OptimizationItemIdsCsv" -split ',' | Where-Object { $_ })
 
   function Get-Number([object]$Value) {
     $n = 0.0
@@ -2793,11 +2909,14 @@ $script:PerformanceCaptureWorker = {
     [pscustomobject][ordered]@{
       recordedAt = [DateTime]::UtcNow.ToString('o'); startedAt = [DateTime]::UtcNow.ToString('o')
       completedAt = [DateTime]::UtcNow.ToString('o'); durationSec = 0; frameCount = 0
-      gpuModel = "$GpuModel"; configTier = "$ConfigTier"; avgFps = 0.0; fps1Low = 0.0
+      gpuModel = "$GpuModel"; configTier = "$ConfigTier"; optimizationScheme = "$OptimizationScheme"
+      optimizationItemSetHash = "$OptimizationItemSetHash"; optimizationItemIds = @($OptimizationItemIds)
+      optimizationItemsComplete = [bool]$OptimizationItemsComplete; avgFps = 0.0; fps1Low = 0.0
       p99FrameMs = 0.0; frameTimeMadMs = 0.0; stutter50Ms = 0; stutter100Ms = 0
       stuttersPerMin = 0.0; focusLostSec = 0.0; gpuUtilAvg = 0.0; gpuUtilMax = 0.0
       gpuTempAvg = 0.0; gpuTempMax = 0.0; gpuPowerAvg = 0.0; gpuPowerMax = 0.0
       presentMonExitCode = -1; gameExitedEarly = [bool]$Exited; captureFailed = $true; captureError = $Reason
+      validity = 'invalid'; invalidReason = $(if ($Exited) { 'game_exited' } else { 'capture_failed' })
     }
   }
 
@@ -2912,7 +3031,9 @@ public static class DfbForegroundWindow {
   $session = [pscustomobject][ordered]@{
     recordedAt = $completedUtc.ToString('o'); startedAt = $startedUtc.ToString('o'); completedAt = $completedUtc.ToString('o')
     durationSec = [int]$durationSec; frameCount = [int]$frameMs.Count
-    gpuModel = "$GpuModel"; configTier = "$ConfigTier"; avgFps = $avgFps; fps1Low = $fps1Low
+    gpuModel = "$GpuModel"; configTier = "$ConfigTier"; optimizationScheme = "$OptimizationScheme"
+    optimizationItemSetHash = "$OptimizationItemSetHash"; optimizationItemIds = @($OptimizationItemIds)
+    optimizationItemsComplete = [bool]$OptimizationItemsComplete; avgFps = $avgFps; fps1Low = $fps1Low
     p99FrameMs = $p99; frameTimeMadMs = $mad; stutter50Ms = [int]$stutter50; stutter100Ms = [int]$stutter100
     stuttersPerMin = $(if ($durationSec -gt 0) { [math]::Round($stutter50 * 60.0 / $durationSec, 2) } else { 0.0 })
     focusLostSec = [math]::Round($focusLostSec, 1)
@@ -2924,9 +3045,22 @@ public static class DfbForegroundWindow {
     captureError = $(if ($frameMs.Count -eq 0) { 'PresentMon 未返回帧数据' } elseif ($presentMonExitCode -ne 0) { "PresentMon 退出码 $presentMonExitCode" } else { '' })
   }
 
+  # 普通性能会话过去只在“帧率和 GPU 占用同时为 0”时丢弃，因此 0 FPS、低帧率 0
+  # 但仍有 GPU 占用的失败捕获会被上传并污染建议样本。按 Beta 已验证的质量门槛标记，
+  # 无效会话保留在本地诊断中解释失败原因，但只有 valid 会话进入服务器性能样本。
+  $invalidReason = ''
+  if ([bool]$session.captureFailed) { $invalidReason = 'capture_failed' }
+  elseif ([bool]$session.gameExitedEarly) { $invalidReason = 'game_exited' }
+  elseif ([int]$session.durationSec -lt 90) { $invalidReason = 'sample_too_short' }
+  elseif ([int64]$session.frameCount -lt 1000 -or [double]$session.avgFps -le 0 -or [double]$session.fps1Low -le 0) {
+    $invalidReason = 'insufficient_frames'
+  }
+  elseif ([double]$session.focusLostSec -gt 5) { $invalidReason = 'focus_lost' }
+  $session | Add-Member -NotePropertyName validity -NotePropertyValue $(if ($invalidReason) { 'invalid' } else { 'valid' })
+  $session | Add-Member -NotePropertyName invalidReason -NotePropertyValue $invalidReason
+
   # Beta 返回显式结果，不写普通 performance_sessions，也不发 performance 事件。
   if ($CaptureMode -eq 'experiment') { Write-Output $session; return }
-  if ($session.avgFps -le 0 -and $session.gpuUtilAvg -le 0) { return }
 
   $sessionMutex = $null; $sessionLocked = $false; $sessionTemp = $null; $sessionBackup = $null
   try {
@@ -2958,12 +3092,15 @@ public static class DfbForegroundWindow {
     if ($sessionMutex) { $sessionMutex.Dispose() }
   }
 
-  if ($InstallId -and $GpuVerified) {
+  if ($InstallId -and $GpuVerified -and $session.validity -eq 'valid') {
     try {
       $payload = [ordered]@{
         installId = $InstallId; event = 'performance'; version = $Version
         gpuVendor = $GpuVendor; gpuModel = $GpuModel; gpuModelVerified = [bool]$GpuVerified
-        configTier = $ConfigTier; durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
+        configTier = $ConfigTier; optimizationScheme = $OptimizationScheme
+        optimizationItemSetHash = $OptimizationItemSetHash; optimizationItemIds = @($OptimizationItemIds)
+        optimizationItemsComplete = [bool]$OptimizationItemsComplete
+        durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
         gpuUtilAvg = $session.gpuUtilAvg; gpuUtilMax = $session.gpuUtilMax
         gpuTempAvg = $session.gpuTempAvg; gpuTempMax = $session.gpuTempMax
         gpuPowerAvg = $session.gpuPowerAvg; gpuPowerMax = $session.gpuPowerMax
@@ -2978,11 +3115,14 @@ public static class DfbForegroundWindow {
 function Add-PerformanceWorkerArguments($PowerShell, [int]$GamePid, $Hw, [string]$Mode, [int]$WarmupSeconds) {
   $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
   $nvidiaSmi = $(if ($Hw.MainGpuVendor -eq 'NVIDIA') { Get-NvidiaSmiPath } else { $null })
+  $optimization = Get-TelemetryOptimizationContext
   foreach ($arg in @($GamePid, $presentMon, (Join-Path $script:UserConfigDir 'performance-sessions.json'),
                       $script:TelemetryClientPath, (Join-Path $script:UserConfigDir 'telemetry.json'),
                       $script:TelemetryUploadUrl, (Get-TelemetryInstallId), $script:GuiVersion,
                       "$($Hw.MainGpuVendor)", "$($Hw.MainGpuName)", [bool]$Hw.MainGpuNameVerified,
-                      "$($Hw.MainGpuPciLocation)", "$nvidiaSmi", (Get-TelemetryConfigTier),
+                      "$($Hw.MainGpuPciLocation)", "$nvidiaSmi", "$($optimization.ConfigTier)",
+                      "$($optimization.Scheme)", "$($optimization.ItemSetHash)", (@($optimization.ItemIds) -join ','),
+                      [bool]$optimization.ItemsComplete,
                       $WarmupSeconds, $script:PerformanceSampleSeconds, $Mode)) {
     [void]$PowerShell.AddArgument($arg)
   }
@@ -3288,6 +3428,11 @@ function New-TuningTelemetryPayload {
     gpuVendor="$($Hw.MainGpuVendor)";gpuModel="$($Hw.MainGpuName)";gpuModelVerified=[bool]$Hw.MainGpuNameVerified
     driverVersion=$driverVersion;gpuCount=[math]::Min(16,@($Hw.Gpus).Count);displayMode=$displayMode
     ramGb=[double]$Hw.RamGB;deviceType=$(if($Hw.IsLaptop){'laptop'}else{'desktop'})
+    cpuCores=[math]::Max(0,[int]$Hw.Cores);cpuThreads=[math]::Max(0,[int]$Hw.Threads);cpuPackages=[math]::Max(0,[int]$Hw.CpuPackages)
+    memoryType="$($Hw.MemoryType)";memoryConfiguredMhz=[math]::Max(0,[int]$Hw.MemoryConfiguredMHz)
+    memoryRatedMhz=[math]::Max(0,[int]$Hw.MemoryRatedMHz);memoryModuleCount=[math]::Max(0,[int]$Hw.MemoryModuleCount)
+    virtualDisplayCount=[math]::Min(16,[math]::Max(0,[int]$Hw.VirtualDisplayCount));pagefileAutoManaged=[bool]$Hw.AutomaticManagedPagefile
+    gpuReportedModelDiffers=[bool]("$($Hw.MainGpuReportedName)" -ne "$($Hw.MainGpuName)")
     tuningType=$TuningType;experimentId="$($State.experimentId)"
   }
   switch($TuningType){
@@ -3437,6 +3582,13 @@ function Complete-GuiTuningExperimentTerminal([bool]$AutoRollback) {
     -Result ([pscustomobject]@{autoRollback=$AutoRollback}) -DeferFlush -RequirePersistence
   Save-TuningExperiment -Terminal
   Start-TuningTelemetryOutboxFlush
+  # 实验结束后普通性能采样会重新开放；先按真实活动备份刷新当前项目集合，避免后续
+  # 会话仍沿用实验前的档位。已有普通优化与实验胜出组并存时会明确记为 mixed。
+  try {
+    $tuningIds = @($state.currentBestGroups | ForEach-Object { @((Get-TuningCandidate "$_").ItemIds) })
+    $catalog = Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems
+    Update-TelemetryOptimizationContextFromCatalog -Catalog $catalog -RequestedScheme 'auto-tuning' -RequestedItemIds $tuningIds
+  } catch {}
   Update-TuningUi
 }
 
@@ -4122,7 +4274,8 @@ $script:DiagnosticIssueChoices = @(
   [pscustomobject]@{ Id = 'low_one_percent'; Label = '1% Low 偏低（画面不流畅）' }
   [pscustomobject]@{ Id = 'input_latency'; Label = '输入延迟高 / 操作粘滞' }
   [pscustomobject]@{ Id = 'slow_loading'; Label = '游戏加载慢 / 切换场景卡' }
-  [pscustomobject]@{ Id = 'game_crash'; Label = '游戏闪退 / 黑屏 / 无响应' }
+  [pscustomobject]@{ Id = 'game_crash'; Label = '游戏闪退 / 全屏黑屏 / 无响应' }
+  [pscustomobject]@{ Id = 'partial_black_screen'; Label = '游戏内部分区域黑屏 / 黑块' }
   [pscustomobject]@{ Id = 'system_lag'; Label = '电脑整体卡顿 / 响应慢' }
   [pscustomobject]@{ Id = 'cpu_heat'; Label = 'CPU 占用或温度过高' }
   [pscustomobject]@{ Id = 'gpu_heat'; Label = 'GPU 占用或温度过高' }
@@ -4303,15 +4456,47 @@ function Protect-ReportText([string]$Text) {
   $originalProfile = Split-Path -Parent (Split-Path -Parent $script:OriginalUserLocalAppData)
   $originalUserName = if ($originalProfile) { Split-Path -Leaf $originalProfile } else { '' }
   foreach ($pair in @(@($originalUserName, '<user>'), @([Environment]::MachineName, '<pc>'))) {
-    if ("$($pair[0])".Length -ge 2) { $t = $t -replace [regex]::Escape($pair[0]), $pair[1] }
+    # 只替换完整 token；原来的全局子串替换会把 Windows 注册表项
+    # FilterAdministratorToken 错写成 Filter<user>Token（用户名恰为 Administrator）。
+    if ("$($pair[0])".Length -ge 2) {
+      $tokenPattern = '(?<![A-Za-z0-9_])' + [regex]::Escape("$($pair[0])") + '(?![A-Za-z0-9_])'
+      $t = $t -replace $tokenPattern, $pair[1]
+    }
   }
   $t
+}
+
+function ConvertTo-DiagnosticFieldValue([object]$Value) {
+  $text = ("$Value" -replace '[\x00-\x1f\x7f]', ' ').Trim()
+  if ($text.Length -gt 256) { $text = $text.Substring(0, 256) }
+  $text
 }
 
 # 报告只放排查需要的：硬件 + 各优化项当前状态 + 运行日志 + 版本号 + 最近备份的项目名。
 # 绝不带备份 JSON 原文——那里面是注册表原值，外传没有意义
 function New-DiagnosticReport($Feedback) {
   $lines = New-Object System.Collections.Generic.List[string]
+  $hw = $null
+  $gpuPanelInventory = [pscustomobject]@{ Status = 'not_checked'; Apps = [object[]]@() }
+  $issueIds = @(); $benefitIds = @()
+  # 只记录固定白名单进程的稳定 key，用于判断局部黑屏/卡顿是否与叠加层、录屏或
+  # 监控软件同现；不采集任意进程名、命令行或路径。
+  $diagnosticProcessMap = [ordered]@{
+    'DeltaForceClient-Win64-Shipping'='game-client'; 'DeltaForce'='game-launcher'
+    'PresentMon'='presentmon'; 'RTSS'='rtss'; 'MSIAfterburner'='msi-afterburner'
+    'obs64'='obs'; 'Discord'='discord'; 'GameBar'='game-bar'
+    'NVIDIA Share'='nvidia-share'; 'WeGame'='wegame'
+  }
+  $runningRelatedProcesses = @(); $runningRelatedProcessKeys = @()
+  try {
+    $runningNames = @(Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique)
+    foreach ($name in $diagnosticProcessMap.Keys) {
+      if ($runningNames -contains "$name") {
+        $runningRelatedProcesses += "$name"
+        $runningRelatedProcessKeys += "$($diagnosticProcessMap[$name])"
+      }
+    }
+  } catch {}
   $lines.Add("DeltaForceBooster 诊断报告")
   $lines.Add("生成时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
   $lines.Add("界面版本：v$script:GuiVersion")
@@ -4338,14 +4523,68 @@ function New-DiagnosticReport($Feedback) {
     $hw = Get-HardwareInfo
     $lines.Add("系统：$($hw.OS)（Build $($hw.Build)）")
     $lines.Add("电脑：$($hw.ComputerBrand) $($hw.ComputerModel)（主板 $($hw.BaseBoardManufacturer) $($hw.BaseBoardProduct)）")
-    $lines.Add("CPU：$($hw.CPU)（$($hw.Cores) 核 $($hw.Threads) 线程）")
-    $lines.Add("内存：$($hw.RamGB) GB")
+    $lines.Add("CPU（Windows 当前可见）：$($hw.CPU)（$($hw.Cores) 核 $($hw.Threads) 线程，$($hw.CpuPackages) 路）")
+    $lines.Add("内存：$($hw.RamGB) GB｜$($hw.MemoryType)｜$($hw.MemoryModuleCount) 条｜当前 $($hw.MemoryConfiguredMHz) MHz｜标称 $($hw.MemoryRatedMHz) MHz")
     foreach ($g in $hw.Gpus) {
-      $lines.Add("显卡（真实）：$($g.Name)（$($g.Vendor)，驱动 $($g.Driver)）")
+      $lines.Add("显卡（真实）：$($g.Name)（$($g.Vendor)，驱动 $($g.Driver)，身份验证 $([bool]$g.NameVerified)，虚拟显示 $([bool]$g.IsVirtualDisplay)）")
       if ($g.ReportedName -and $g.ReportedName -ne $g.Name) { $lines.Add("     系统当前伪装上报：$($g.ReportedName)") }
     }
+    $lines.Add("虚拟/远程显示适配器：$($hw.VirtualDisplayCount) 个")
+    $gpuPanelInventory = Get-GuiGpuPanelInventory "$($hw.MainGpuVendor)"
+    $panelApps = @($gpuPanelInventory.Apps)
+    $lines.Add("显卡软件检测：$($gpuPanelInventory.Status)｜已安装 $(if (@($panelApps | Where-Object Installed).Count) { @($panelApps | Where-Object Installed | ForEach-Object Key) -join ',' } else { 'none' })｜未安装 $(if (@($panelApps | Where-Object { -not $_.Installed }).Count) { @($panelApps | Where-Object { -not $_.Installed } | ForEach-Object Key) -join ',' } else { 'none' })")
     $lines.Add("机型：$(if ($hw.IsLaptop) { '笔记本' } else { '台式机' })")
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
+  $lines.Add('')
+
+  # 机器可读、稳定命名的分析字段。诊断报告属于“遇到问题后主动提交”的有偏样本，
+  # 服务端会与普通使用/性能遥测分开统计；字段本身不含账户、路径或硬件序列号。
+  $lines.Add('== 分析字段（schema v2） ==')
+  $lines.Add('diagnostic_schema=2')
+  $lines.Add("app_version=$(ConvertTo-DiagnosticFieldValue $script:GuiVersion)")
+  $lines.Add("feedback_issue_ids=$(ConvertTo-DiagnosticFieldValue ($issueIds -join ','))")
+  $lines.Add("feedback_benefit_ids=$(ConvertTo-DiagnosticFieldValue ($benefitIds -join ','))")
+  $optimizationContext = Get-TelemetryOptimizationContext
+  $lines.Add("config_tier=$(ConvertTo-DiagnosticFieldValue $optimizationContext.ConfigTier)")
+  $lines.Add("optimization_scheme=$(ConvertTo-DiagnosticFieldValue $optimizationContext.Scheme)")
+  $lines.Add("optimization_item_ids=$(ConvertTo-DiagnosticFieldValue (@($optimizationContext.ItemIds) -join ','))")
+  $lines.Add("optimization_item_set_hash=$(ConvertTo-DiagnosticFieldValue $optimizationContext.ItemSetHash)")
+  $lines.Add("optimization_items_complete=$([bool]$optimizationContext.ItemsComplete)".ToLowerInvariant())
+  $lines.Add("active_related_process_keys=$(ConvertTo-DiagnosticFieldValue ($runningRelatedProcessKeys -join ','))")
+  if ($hw) {
+    $installedPanelKeys = @($gpuPanelInventory.Apps | Where-Object Installed | ForEach-Object Key | Sort-Object -Unique)
+    $missingPanelKeys = @($gpuPanelInventory.Apps | Where-Object { -not $_.Installed } | ForEach-Object Key | Sort-Object -Unique)
+    $lines.Add("cpu_model=$(ConvertTo-DiagnosticFieldValue $hw.CPU)")
+    $lines.Add("cpu_vendor=$(ConvertTo-DiagnosticFieldValue $hw.CpuVendor)")
+    $lines.Add("cpu_visible_cores=$([int]$hw.Cores)")
+    $lines.Add("cpu_visible_threads=$([int]$hw.Threads)")
+    $lines.Add("cpu_packages=$([int]$hw.CpuPackages)")
+    $lines.Add("ram_gb=$([double]$hw.RamGB)")
+    $lines.Add("memory_type=$(ConvertTo-DiagnosticFieldValue $hw.MemoryType)")
+    $lines.Add("memory_configured_mhz=$([int]$hw.MemoryConfiguredMHz)")
+    $lines.Add("memory_rated_mhz=$([int]$hw.MemoryRatedMHz)")
+    $lines.Add("memory_module_count=$([int]$hw.MemoryModuleCount)")
+    $lines.Add("device_type=$(if ($hw.IsLaptop) { 'laptop' } else { 'desktop' })")
+    $lines.Add("gpu_count=$(@($hw.Gpus).Count)")
+    $lines.Add("main_gpu_vendor=$(ConvertTo-DiagnosticFieldValue $hw.MainGpuVendor)")
+    $lines.Add("main_gpu_model=$(ConvertTo-DiagnosticFieldValue $hw.MainGpuName)")
+    $lines.Add("main_gpu_reported_model=$(ConvertTo-DiagnosticFieldValue $hw.MainGpuReportedName)")
+    $lines.Add("main_gpu_driver_version=$(ConvertTo-DiagnosticFieldValue (Get-TelemetryMainGpuDriver $hw))")
+    $lines.Add("main_gpu_model_verified=$([bool]$hw.MainGpuNameVerified)".ToLowerInvariant())
+    $pciMatchedField = $(if ("$($hw.MainGpuVendor)" -eq 'NVIDIA') {
+      "$([bool]$hw.MainGpuPciMatched)".ToLowerInvariant()
+    } else { 'unknown' })
+    $lines.Add("main_gpu_pci_matched=$pciMatchedField")
+    $lines.Add("main_gpu_reported_model_differs=$([bool]("$($hw.MainGpuReportedName)" -ne "$($hw.MainGpuName)"))".ToLowerInvariant())
+    $lines.Add("virtual_display_count=$([int]$hw.VirtualDisplayCount)")
+    $lines.Add("display_mode=$(ConvertTo-DiagnosticFieldValue (Get-TelemetryDisplayMode $hw))")
+    $lines.Add("pagefile_auto_managed=$([bool]$hw.AutomaticManagedPagefile)".ToLowerInvariant())
+    $lines.Add("gpu_panel_status=$(ConvertTo-DiagnosticFieldValue $gpuPanelInventory.Status)")
+    $lines.Add("gpu_panel_installed_keys=$(ConvertTo-DiagnosticFieldValue ($installedPanelKeys -join ','))")
+    $lines.Add("gpu_panel_missing_keys=$(ConvertTo-DiagnosticFieldValue ($missingPanelKeys -join ','))")
+  } else {
+    $lines.Add('hardware_status=read_failed')
+  }
   $lines.Add('')
 
   $lines.Add('== 运行环境与显示 / 音频 ==')
@@ -4355,6 +4594,7 @@ function New-DiagnosticReport($Feedback) {
     $lines.Add("系统启动时间：$boot")
     $lines.Add("会话模式：$(if ($script:NetCafeCompatibilityMode) { '网吧兼容模式（UAC 策略未修改）' } else { '标准 EngineHost 管理员会话' })")
     $lines.Add("UAC：EnableLUA=$(Get-UacEnableLuaValue)；FilterAdministratorToken=$(Get-UacFilterAdministratorTokenValue)")
+    if ($hw) { $lines.Add("页面文件自动管理：$([bool]$hw.AutomaticManagedPagefile)") }
     foreach ($display in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
       $lines.Add("显示输出：$($display.Name)｜$($display.CurrentHorizontalResolution)x$($display.CurrentVerticalResolution) @$($display.CurrentRefreshRate)Hz｜驱动 $($display.DriverVersion)")
     }
@@ -4364,10 +4604,7 @@ function New-DiagnosticReport($Feedback) {
     foreach ($page in @(Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue)) {
       $lines.Add("页面文件：$($page.Name)｜已分配 $($page.AllocatedBaseSize) MB｜当前 $($page.CurrentUsage) MB｜峰值 $($page.PeakUsage) MB")
     }
-    $interesting = @('DeltaForceClient-Win64-Shipping','DeltaForce','PresentMon','RTSS','MSIAfterburner','obs64','Discord','GameBar','NVIDIA Share','WeGame')
-    $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $interesting -contains $_.ProcessName } |
-      Select-Object -ExpandProperty ProcessName -Unique | Sort-Object)
-    $lines.Add("相关进程：$(if ($running.Count) { $running -join '、' } else { '未检测到' })")
+    $lines.Add("相关进程：$(if ($runningRelatedProcesses.Count) { $runningRelatedProcesses -join '、' } else { '未检测到' })")
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
   $lines.Add('')
 
@@ -4404,8 +4641,13 @@ function New-DiagnosticReport($Feedback) {
       $sessions = @(Expand-PerformanceSessions $decodedSessions)
       if ($sessions.Count -gt 5) { $sessions = @($sessions | Select-Object -Last 5) }
       foreach ($s in $sessions) {
+        $validity = $(if ($s.PSObject.Properties['validity']) { "$($s.validity)" }
+          elseif ([double]$s.avgFps -gt 0 -and [double]$s.fps1Low -gt 0 -and [int]$s.durationSec -ge 90) { 'legacy_usable' }
+          else { 'legacy_invalid' })
+        $invalidReason = $(if ($s.PSObject.Properties['invalidReason']) { "$($s.invalidReason)" } else { '' })
         $lines.Add("$($s.recordedAt)｜$($s.gpuModel)｜$($s.durationSec)s｜平均帧率 $($s.avgFps) 帧/秒｜1% 低帧率 $($s.fps1Low) 帧/秒")
         $lines.Add("     GPU 占用 $($s.gpuUtilAvg)% / 峰值 $($s.gpuUtilMax)%｜温度 $($s.gpuTempAvg)°C / 峰值 $($s.gpuTempMax)°C｜功耗 $($s.gpuPowerAvg)W / 峰值 $($s.gpuPowerMax)W")
+        $lines.Add("     有效性 $validity$(if ($invalidReason) { "｜原因 $invalidReason" })｜帧数 $($s.frameCount)｜P99 $($s.p99FrameMs)ms｜MAD $($s.frameTimeMadMs)ms｜焦点丢失 $($s.focusLostSec)s｜50ms+ 卡顿 $($s.stutter50Ms)")
       }
     }
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
@@ -4436,7 +4678,12 @@ function New-DiagnosticReport($Feedback) {
   # 上限按字节算：中文一个字三字节，按字符数截会超
   $bytes = [Text.Encoding]::UTF8.GetBytes($txt)
   if ($bytes.Length -gt $script:ReportMaxBytes) {
-    $keep = [Text.Encoding]::UTF8.GetString($bytes, 0, $script:ReportMaxBytes - 200)
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    $byteCount = $script:ReportMaxBytes - 200
+    while ($byteCount -gt 0) {
+      try { $keep = $strictUtf8.GetString($bytes, 0, $byteCount); break }
+      catch [Text.DecoderFallbackException] { $byteCount-- }
+    }
     $txt = $keep + "`r`n`r`n【注意】报告超过 256KB 上限，以上内容已被截断。"
   }
   $txt
@@ -4461,18 +4708,47 @@ function Open-GpuPanel($App) {
   Invoke-EngineHostUserAction -Action OpenGpuPanel -Payload "$($App.Key)" | Out-Null
 }
 
-function Get-GuiGpuPanelApps([string]$Vendor) {
-  # 硬件对象可能来自 JSON/驱动字符串，入口统一去空白并规范大小写；launcher 的
-  # 白名单使用固定 canonical key，避免 “Nvidia” 在 GUI 通过、到 C# 边界却被拒绝。
-  $vendorKey = switch ("$Vendor".Trim().ToUpperInvariant()) {
-    'NVIDIA' { 'NVIDIA' }
-    'AMD'    { 'AMD' }
-    'INTEL'  { 'Intel' }
+function Get-GuiGpuPanelInventory([string]$Vendor) {
+  # 厂商值不再作为跨进程自由文本参数传递。固定动作从 GUI 到 launcher 再到 worker
+  # 全程表达厂商身份，彻底消除空字符串、引号或大小写在任一边界被误判的问题。
+  if ($script:RepairOnlySession) {
+    return [pscustomobject]@{ Status = 'unavailable_in_compatibility_mode'; Apps = [object[]]@() }
+  }
+  $action = switch ("$Vendor".Trim().ToUpperInvariant()) {
+    'NVIDIA' { 'GetNvidiaPanelApps' }
+    'AMD'    { 'GetAmdPanelApps' }
+    'INTEL'  { 'GetIntelPanelApps' }
     default  { $null }
   }
-  if (-not $vendorKey) { return @() }
-  try { @((Invoke-EngineHostUserAction -Action GetGpuPanelApps -Payload $vendorKey) | ConvertFrom-Json) }
-  catch { Write-Log "显卡软件检测失败：$($_.Exception.Message)"; @() }
+  if (-not $action) {
+    return [pscustomobject]@{ Status = 'unsupported_vendor'; Apps = [object[]]@() }
+  }
+  try {
+    # WinPS 5.1 会把 ConvertFrom-Json 的顶层数组作为一个管道对象返回；先赋值再
+    # 数组化，避免 NVIDIA 的两个条目被包装成一个“Key=nv-cpl nv-app”对象。
+    $decodedApps = (Invoke-EngineHostUserAction -Action $action) | ConvertFrom-Json
+    $apps = @($decodedApps)
+    $expectedKeys = @($(switch ($action) {
+      'GetNvidiaPanelApps' { 'nv-cpl'; 'nv-app' }
+      'GetAmdPanelApps' { 'amd-sw' }
+      'GetIntelPanelApps' { 'intel-gcc' }
+    }))
+    $actualKeys = @($apps | ForEach-Object { "$($_.Key)" } | Sort-Object -Unique)
+    if ($apps.Count -ne $expectedKeys.Count -or
+        ($actualKeys -join ',') -cne (@($expectedKeys | Sort-Object) -join ',') -or
+        @($apps | Where-Object { $_.Installed -isnot [bool] }).Count) {
+      throw "显卡软件检测回复结构无效（期望 $($expectedKeys -join ',')；实际 $($actualKeys -join ',')；数量 $($apps.Count)）"
+    }
+    [pscustomobject]@{ Status = 'ok'; Apps = [object[]]$apps }
+  } catch {
+    Write-Log "显卡软件检测失败：$($_.Exception.Message)"
+    [pscustomobject]@{ Status = 'broker_failed'; Apps = [object[]]@() }
+  }
+}
+
+function Get-GuiGpuPanelApps([string]$Vendor) {
+  $inventory = Get-GuiGpuPanelInventory $Vendor
+  @($inventory.Apps)
 }
 
 function Build-GpuGuideDialog($Hw) {
@@ -5022,8 +5298,14 @@ function Invoke-FrameFixGpuPreference {
     $changed = [bool]($row.PSObject.Properties['Changed'] -and $row.Changed -eq $true)
     if ($changed) {
       $script:TuningConfigGeneration++
-      try { Set-TelemetryConfigTier (Get-SelectedTelemetryConfigTier 1) }
-      catch { Write-Log "高性能 GPU 已设置，但遥测档位保存失败：$($_.Exception.Message)" }
+    }
+    if ($row.Ok) {
+      try {
+        $catalog = Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems
+        Update-TelemetryOptimizationContextFromCatalog -Catalog $catalog -RequestedScheme 'frame-fix' `
+          -RequestedItemIds @('gpu-pref') -KnownChangedItemIds $(if ($changed) { @('gpu-pref') } else { @() }) `
+          -MutationIncomplete:([bool]$reply.BackupError)
+      } catch { Write-Log "高性能 GPU 已设置，但当前优化状态同步失败：$($_.Exception.Message)" }
     }
     $tag = $(if ($row.Ok -and -not $changed) { '[跳过]' } elseif ($row.Ok) { '[成功]' } else { '[失败]' })
     Write-Log "$tag $($row.Name) — $($row.Msg)"
@@ -5483,7 +5765,16 @@ function Invoke-InlineRestoreAction([ValidateSet('selected_items','all')][string
     if ($w -gt 0) { $ui.ProgFill.Width = $w }
     $failN = @($r.Failed).Count
     $skipN = @($r.Skipped).Count
-    if ($Mode -eq 'all' -and $failN -eq 0) { Set-TelemetryConfigTier 'baseline' -Force }
+    try {
+      $updatedCatalog = Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems
+      Update-TelemetryOptimizationContextFromCatalog -Catalog $updatedCatalog
+    } catch {
+      # 列表刷新异常时只做确定性收口：全部复原成功可确认回到基线；其余保留旧上下文，
+      # 避免把仍在生效的项目凭空删除。
+      if ($Mode -eq 'all' -and $failN -eq 0) {
+        Set-TelemetryOptimizationContext -ItemIds @() -Scheme baseline -ItemsComplete $true
+      }
+    }
     try {
       $restoreItemIds = $(if ($Mode -eq 'selected_items') { @($itemIds) } else { @($catalog.ActiveItemIds) })
       $operation = New-OptimizationTelemetryOperation -Event restore -Source restore_manager -Reply $r -ItemIds $restoreItemIds -RestoreMode $Mode
@@ -6316,6 +6607,10 @@ $window.Add_ContentRendered({
     Load-ActiveTuningExperiment
     Update-ItemList
     Update-PresetList
+    try {
+      $startupCatalog = Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems
+      Update-TelemetryOptimizationContextFromCatalog -Catalog $startupCatalog
+    } catch { Write-Log "当前优化项目归属暂未同步：$($_.Exception.Message)" }
     # 启动即默认选中主推方案（实机诉求「进去之后默认直接选择主推全套」）：
     # SelectionChanged 处理器会完成勾选，其中已就绪的项自动跳过不重复勾
     for ($fi = 0; $fi -lt $script:PresetList.Count; $fi++) {
@@ -6610,6 +6905,7 @@ $ui.ApplyBtn.Add_Click({
       Show-ConfirmDialog '未选择优化项' 'NO ITEMS SELECTED' '请先勾选至少一个优化项目，再点击「执行优化」。' '知道了' -InfoOnly | Out-Null
       return
     }
+    $presetIndex = $(if ($ui.PresetBox) { [int]$ui.PresetBox.SelectedIndex } else { -1 })
     $optAll = @(Get-OptItems $script:TargetExe $script:SelectedGpuSpoofModel)
     if ($riskyIds.Count -gt 0) {
       $riskySel = @($optAll | Where-Object { $riskyIds -contains $_.Id })
@@ -6635,6 +6931,15 @@ $ui.ApplyBtn.Add_Click({
     $ui.ProgCount.Text = ''
     Write-Log "开始执行 $($ids.Count) 项优化…"
     $selectedItems = @($optAll | Where-Object { $ids -contains $_.Id })
+    $telemetryScheme = 'manual'
+    $telemetrySchemeItemIds = @($selectedItems | Where-Object { $_.Kind -notin 'check','cache' } | ForEach-Object Id)
+    if ($presetIndex -ge 0 -and $presetIndex -lt $script:PresetList.Count) {
+      $selectedPreset = $script:PresetList[$presetIndex]
+      $telemetryScheme = $(if ($selectedPreset.Builtin -and "$($selectedPreset.Id)" -in 'main','balanced','safe-only') {
+          "$($selectedPreset.Id)"
+        } else { 'custom' })
+      $telemetrySchemeItemIds = @($selectedPreset.Items)
+    }
     $localItems = @($selectedItems | Where-Object { $_.Kind -in 'cache','check' })
     $elevatedIds = @($selectedItems | Where-Object { $_.Kind -notin 'cache','check' } | ForEach-Object { $_.Id })
     $localResults = @()
@@ -6672,13 +6977,28 @@ $ui.ApplyBtn.Add_Click({
     $skipList = @($r.Results | Where-Object { -not $_.Ok -and $_.Skipped })
     $failList = @($r.Results | Where-Object { -not $_.Ok -and -not $_.Skipped -and -not $_.Attention })
     $total = @($r.Results).Count
-    # 档位按本轮真正成功且产生改动的项目数计算，不按预设名/勾选数夸大；检测、缓存、
-    # Attention 与 Skipped 都不算。Set-TelemetryConfigTier 会保留历史上达到过的更高档位。
+    # 当前档位与项目集合按受保护还原目录里的“仍在生效”记录重算，不再沿用历史最高档位；
+    # 检测、缓存、Attention 与 Skipped 都不会进入活动优化集合。
     $changedIds = @($r.Results | Where-Object { $_.Ok -and $_.Changed -eq $true -and -not $_.Attention } |
                     ForEach-Object { $_.Id })
     $changedCount = @($selectedItems | Where-Object { $changedIds -contains $_.Id -and $_.Kind -notin 'check','cache' }).Count
     if ($changedCount -gt 0) { $script:TuningConfigGeneration++ }
-    if ($changedCount -gt 0) { Set-TelemetryConfigTier (Get-SelectedTelemetryConfigTier $changedCount) }
+    if ($elevatedIds.Count -gt 0) {
+      try {
+        $activeCatalog = Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems
+        Update-TelemetryOptimizationContextFromCatalog -Catalog $activeCatalog -RequestedScheme $telemetryScheme `
+          -RequestedItemIds $telemetrySchemeItemIds -KnownChangedItemIds $changedIds `
+          -MutationIncomplete:([bool]$r.BackupError)
+      } catch {
+        # Apply 已返回后状态同步失败时，把可确认的项目并入旧集合但标记为不完整，
+        # 后续启动会再次从受保护目录校正；遥测收尾不影响已经完成的优化结果。
+        $beforeContext = Get-TelemetryOptimizationContext
+        $fallbackIds = @($beforeContext.ItemIds) + @($changedIds)
+        $fallbackScheme = $(if ($beforeContext.ConfigTier -eq 'baseline') { $telemetryScheme } else { 'mixed' })
+        Set-TelemetryOptimizationContext -ItemIds $fallbackIds -Scheme $fallbackScheme -ItemsComplete $false `
+          -FallbackTier "$($beforeContext.ConfigTier)"
+      }
+    }
     try {
       $operation = New-OptimizationTelemetryOperation -Event apply -Source manual_selection -Reply $r -ItemIds @($selectedItems | ForEach-Object Id)
       Send-AnonymousTelemetry 'apply' $script:HardwareInfo $okN $failList.Count $operation

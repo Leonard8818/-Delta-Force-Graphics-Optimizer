@@ -54,6 +54,20 @@ class TelemetryTests(unittest.TestCase):
             "failed": 1,
         }
 
+    def analysis_fields(self):
+        return {
+            "cpuCores": 8,
+            "cpuThreads": 16,
+            "cpuPackages": 1,
+            "memoryType": "DDR5",
+            "memoryConfiguredMhz": 6000,
+            "memoryRatedMhz": 6400,
+            "memoryModuleCount": 2,
+            "virtualDisplayCount": 1,
+            "pagefileAutoManaged": False,
+            "gpuReportedModelDiffers": True,
+        }
+
     def performance_payload(self, install_id, tier="baseline", avg_fps=100, fps_1_low=70):
         data = self.payload(install_id, "performance")
         data.update({
@@ -67,6 +81,23 @@ class TelemetryTests(unittest.TestCase):
             "gpuTempMax": 75,
             "gpuPowerAvg": 150,
             "gpuPowerMax": 170,
+        })
+        return data
+
+    def performance_context_payload(
+        self, install_id, item_ids=None, scheme="baseline", avg_fps=100, fps_1_low=70,
+        complete=True,
+    ):
+        item_ids = sorted(list(item_ids or []))
+        data = self.performance_payload(
+            install_id, SERVER._performance_config_tier(len(item_ids)), avg_fps, fps_1_low,
+        )
+        data.update({
+            "version": "0.22.1",
+            "optimizationScheme": scheme,
+            "optimizationItemSetHash": SERVER._tuning_item_set_hash(item_ids) if item_ids else "",
+            "optimizationItemIds": item_ids,
+            "optimizationItemsComplete": complete,
         })
         return data
 
@@ -440,6 +471,205 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(2, experiments["items"][0]["operations"])
         self.assertNotIn(SERVER._client_hash(install_id), json.dumps(experiments))
 
+    def test_analysis_fields_are_persisted_without_breaking_historical_payloads(self):
+        now = 1786248000
+        install_id = "23232323-2323-4232-8232-232323232323"
+        token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+        operation = self.operation_payload(install_id)
+        operation.update(self.analysis_fields())
+        SERVER._record_telemetry(self.authenticate(operation, now, token), now)
+
+        experiment_id = "exp_analysis_fields"
+        tuning = self.tuning_start_payload(install_id, experiment_id)
+        tuning.update(self.analysis_fields())
+        SERVER._record_telemetry(self.authenticate(tuning, now + 1, token), now + 1)
+        # A later old client payload has no analysis fields and must not erase known values.
+        SERVER._record_telemetry(self.payload(install_id, version="0.19.3"), now + 2)
+
+        conn = SERVER._connect()
+        try:
+            client = dict(conn.execute(
+                "SELECT * FROM clients WHERE client_hash=?", (SERVER._client_hash(install_id),)
+            ).fetchone())
+            recorded_operation = dict(conn.execute(
+                "SELECT * FROM optimization_operations"
+            ).fetchone())
+            recorded_experiment = dict(conn.execute(
+                "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
+            ).fetchone())
+        finally:
+            conn.close()
+        expected = {
+            "cpu_cores": 8, "cpu_threads": 16, "cpu_packages": 1,
+            "memory_type": "DDR5", "memory_configured_mhz": 6000,
+            "memory_rated_mhz": 6400, "memory_module_count": 2,
+            "virtual_display_count": 1, "pagefile_auto_managed": 0,
+            "gpu_reported_model_differs": 1,
+        }
+        for key, value in expected.items():
+            self.assertEqual(value, client[key], key)
+            self.assertEqual(value, recorded_operation[key], key)
+            self.assertEqual(value, recorded_experiment[key], key)
+
+        experiments = SERVER._build_stats(now + 2)["experiments"]
+        configuration = experiments["configurations"][0]
+        self.assertEqual(8, configuration["cpuCores"])
+        self.assertEqual(1, configuration["cpuPackages"])
+        self.assertEqual(6400, configuration["memoryRatedMhz"])
+        self.assertEqual(2, configuration["memoryModuleCount"])
+        self.assertEqual(1, configuration["gpuCount"])
+        self.assertEqual(1, configuration["virtualDisplayCount"])
+        self.assertEqual(0, configuration["pagefileAutoManaged"])
+        self.assertEqual(1, configuration["gpuReportedModelDiffers"])
+
+    def test_diagnostic_analysis_uses_crlf_history_and_keeps_problem_sample_bias_explicit(self):
+        now = 1786248000
+        historical = "\r\n".join((
+            "DeltaForceBooster 诊断报告",
+            "界面版本：v0.20.1",
+            "问题标签：low_fps",
+            "改善标签：none",
+            "== 硬件与系统 ==",
+            "CPU：Example Old CPU（8 核 16 线程）",
+            "内存：32 GB",
+            "显卡（真实）：NVIDIA GeForce RTX 4070（NVIDIA，驱动 599.00）",
+            "机型：台式机",
+            "显示输出：ToDesk Virtual Display｜1920x1080 @60Hz｜驱动 1.0",
+            "== 最近游戏性能记录 ==",
+            "2026-08-01T00:00:00Z｜NVIDIA GeForce RTX 4070｜120s｜平均 100 FPS｜1% Low 60 FPS",
+            "相关进程：RTSS、Discord",
+            "== 运行日志 ==",
+            "执行失败：参数类型不匹配",
+        ))
+        structured = "\r\n".join((
+            "DeltaForceBooster 诊断报告",
+            "界面版本：v0.23.0",
+            "问题标签：partial_black_screen,stutter",
+            "改善标签：none",
+            "== 分析字段（schema v2） ==",
+            "diagnostic_schema=2",
+            "app_version=0.23.0",
+            "feedback_issue_ids=partial_black_screen,stutter",
+            "feedback_benefit_ids=",
+            "config_tier=balanced",
+            "optimization_scheme=balanced",
+            "optimization_item_ids=dvr-off,game-mode,gpu-pref,prio-separation,fso-off,wer-off,mpo-off,transparency-off,paging-exec,game-priority",
+            "optimization_item_set_hash=" + SERVER._tuning_item_set_hash([
+                "dvr-off", "game-mode", "gpu-pref", "prio-separation", "fso-off",
+                "wer-off", "mpo-off", "transparency-off", "paging-exec", "game-priority",
+            ]),
+            "optimization_items_complete=true",
+            "active_related_process_keys=obs,nvidia-share",
+            "cpu_model=Example New CPU",
+            "cpu_vendor=Intel",
+            "cpu_visible_cores=12",
+            "cpu_visible_threads=24",
+            "cpu_packages=1",
+            "ram_gb=31.8",
+            "memory_type=DDR5",
+            "memory_configured_mhz=6000",
+            "memory_rated_mhz=6400",
+            "memory_module_count=2",
+            "main_gpu_vendor=NVIDIA",
+            "main_gpu_model=NVIDIA GeForce RTX 4070 SUPER",
+            "main_gpu_reported_model=NVIDIA GeForce RTX 4070 SUPER",
+            "main_gpu_driver_version=32.0.15.9900",
+            "main_gpu_model_verified=true",
+            "main_gpu_pci_matched=true",
+            "main_gpu_reported_model_differs=false",
+            "gpu_count=2",
+            "device_type=desktop",
+            "virtual_display_count=1",
+            "display_mode=2560x1440@165",
+            "pagefile_auto_managed=true",
+            "gpu_panel_status=broker_failed",
+            "gpu_panel_installed_keys=nv-cpl",
+            "gpu_panel_missing_keys=nv-app",
+            "== 最近游戏性能记录 ==",
+            "2026-08-02T00:00:00Z｜NVIDIA GeForce RTX 4070 SUPER｜120s｜平均帧率 120 帧/秒｜1% 低帧率 80 帧/秒",
+            "     有效性 valid｜帧数 12000｜P99 18ms",
+            "== 运行日志 ==",
+            "显卡软件检测失败：模拟 broker 失败",
+        ))
+        for name, contents, modified in (
+            ("DFB-ABCD.txt", historical, now - 2),
+            ("DFB-EFGH.txt", structured, now - 1),
+        ):
+            path = os.path.join(SERVER.REPORT_DIR, name)
+            with open(path, "w", encoding="utf-8", newline="") as stream:
+                stream.write(contents)
+            os.utime(path, (modified, modified))
+
+        analysis = SERVER._build_diagnostic_analysis(now - 100, now)
+        self.assertEqual(2, analysis["reports"])
+        self.assertEqual(1, analysis["schemaV2Reports"])
+        self.assertEqual(1, analysis["historicalReports"])
+        self.assertEqual(2, analysis["feedbackReports"])
+        self.assertEqual(2, analysis["hardwareReports"])
+        self.assertEqual(2, analysis["virtualDisplayReports"])
+        self.assertEqual(1, analysis["gpuPanelFailures"])
+        self.assertEqual(2, analysis["performanceSessions"])
+        self.assertEqual(1, analysis["qualityMarkedPerformanceSessions"])
+        self.assertEqual(1, analysis["usableHistoricalPerformanceSessions"])
+        self.assertEqual(
+            {"low_fps": 1, "partial_black_screen": 1, "stutter": 1},
+            {row["id"]: row["reports"] for row in analysis["issues"]},
+        )
+        self.assertEqual(
+            {"parameter_type_mismatch": 1, "gpu_panel_detection_failed": 1},
+            {row["id"]: row["reports"] for row in analysis["errorSignals"]},
+        )
+        self.assertEqual({"nv-cpl": 1}, {
+            row["key"]: row["reports"] for row in analysis["gpuPanelInstalled"]
+        })
+        self.assertEqual({"nv-app": 1}, {
+            row["key"]: row["reports"] for row in analysis["gpuPanelMissing"]
+        })
+        self.assertEqual({"rtss": 1, "discord": 1, "obs": 1, "nvidia-share": 1}, {
+            row["processId"]: row["reports"] for row in analysis["relatedProcesses"]
+        })
+        self.assertIn(
+            ("partial_black_screen", "obs", 1),
+            {(row["issueId"], row["processId"], row["reports"])
+             for row in analysis["issueRelatedProcesses"]},
+        )
+        self.assertEqual({"0.20.1": 1, "0.23.0": 1}, {
+            row["version"]: row["reports"] for row in analysis["versions"]
+        })
+        new_config = next(row for row in analysis["configurations"] if row["cpuModel"] == "Example New CPU")
+        self.assertEqual(6400, new_config["memoryRatedMhz"])
+        self.assertEqual(2, new_config["gpuCount"])
+        self.assertTrue(new_config["pagefileAutoManaged"])
+        self.assertEqual("balanced", new_config["configTier"])
+        self.assertEqual("balanced", new_config["optimizationScheme"])
+        self.assertTrue(new_config["optimizationItemsComplete"])
+        self.assertEqual("Intel", new_config["cpuVendor"])
+        self.assertEqual("NVIDIA GeForce RTX 4070 SUPER", new_config["gpuReportedModel"])
+        self.assertEqual("32.0.15.9900", new_config["gpuDriverVersion"])
+        self.assertEqual("2560x1440@165", new_config["displayMode"])
+        self.assertTrue(new_config["gpuModelVerified"])
+        self.assertTrue(new_config["gpuPciMatched"])
+        partial_environment = next(
+            row for row in analysis["issueEnvironments"]
+            if row["issueId"] == "partial_black_screen"
+        )
+        self.assertEqual("balanced", partial_environment["configTier"])
+        self.assertEqual("32.0.15.9900", partial_environment["gpuDriverVersion"])
+        self.assertEqual("2560x1440@165", partial_environment["displayMode"])
+        self.assertFalse(analysis["dataQuality"]["rawReportTextExposed"])
+        self.assertEqual(
+            "descriptive_only_not_causal_training",
+            analysis["dataQuality"]["historicalPerformanceUse"],
+        )
+        self.assertNotIn("模拟 broker 失败", json.dumps(analysis, ensure_ascii=False))
+        no_gpu = SERVER._parse_diagnostic_report("\n".join((
+            "== 分析字段（schema v2） ==", "diagnostic_schema=2",
+            "cpu_model=Example CPU", "main_gpu_model=未检测到",
+            "main_gpu_reported_model=未检测到",
+        )))
+        self.assertEqual("", no_gpu["gpu_model"])
+        self.assertEqual("", no_gpu["gpu_reported_model"])
+
     def test_structured_optimization_operation_requires_auth_and_strict_schema(self):
         now = 1786248000
         install_id = "13131313-1313-4131-8131-131313131313"
@@ -526,6 +756,11 @@ class TelemetryTests(unittest.TestCase):
         with self.assertRaises(SERVER.TelemetryPerformanceError):
             SERVER._record_telemetry(out_of_range, now)
 
+        boolean_metric = self.authenticate(self.performance_payload(install_id), now)
+        boolean_metric["avgFps"] = True
+        with self.assertRaises(SERVER.TelemetryPerformanceError):
+            SERVER._record_telemetry(boolean_metric, now)
+
         token = SERVER._issue_device_token(install_id, now)["deviceToken"]
         for offset in range(SERVER.PERFORMANCE_DAILY_LIMIT):
             data = self.authenticate(self.performance_payload(install_id), now + offset, token)
@@ -533,6 +768,35 @@ class TelemetryTests(unittest.TestCase):
         over_limit = self.authenticate(self.performance_payload(install_id), now + 30, token)
         with self.assertRaises(SERVER.TelemetryDailyLimitError):
             SERVER._record_telemetry(over_limit, now + 30)
+
+    def test_performance_context_is_required_and_cross_validated_from_v0221(self):
+        now = 1786248000
+        install_id = "56565656-5656-4656-8656-565656565656"
+        missing = self.performance_payload(install_id)
+        missing["version"] = "0.22.1"
+        with self.assertRaisesRegex(SERVER.TelemetryPerformanceError, "missing performance optimization context"):
+            SERVER._normalize_telemetry(missing)
+
+        wrong_hash = self.performance_context_payload(
+            install_id, ["gpu-pref"], "frame-fix",
+        )
+        wrong_hash["optimizationItemSetHash"] = "0" * 64
+        with self.assertRaisesRegex(SERVER.TelemetryPerformanceError, "hash mismatch"):
+            SERVER._normalize_telemetry(wrong_hash)
+
+        wrong_tier = self.performance_context_payload(
+            install_id, ["gpu-pref"], "frame-fix",
+        )
+        wrong_tier["configTier"] = "full"
+        with self.assertRaisesRegex(SERVER.TelemetryPerformanceError, "item count and config tier disagree"):
+            SERVER._normalize_telemetry(wrong_tier)
+
+        valid = SERVER._normalize_telemetry(self.performance_context_payload(
+            install_id, ["gpu-pref"], "frame-fix",
+        ))
+        self.assertEqual(["gpu-pref"], valid["item_ids"])
+        self.assertEqual("frame-fix", valid["optimization_scheme"])
+        self.assertEqual(1, valid["item_ids_complete"])
 
     def test_performance_uses_trusted_median_and_minimum_sample(self):
         now = 1786248000
@@ -549,6 +813,25 @@ class TelemetryTests(unittest.TestCase):
         legacy = self.performance_payload(legacy_id, avg_fps=500, fps_1_low=400)
         legacy["version"] = "0.19.3"
         SERVER._record_telemetry(legacy, now + 10)
+        # Preserve the row as historical evidence, but do not let an old failed
+        # capture satisfy sample thresholds or enter recommendation metrics.
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO performance_sessions (
+                           client_hash, recorded_at, day, app_version, gpu_model, config_tier,
+                           duration_sec, avg_fps, fps_1_low, authenticated
+                       ) VALUES (?, ?, ?, '0.22.0', 'NVIDIA GeForce RTX 4070 SUPER',
+                                 'baseline', 120, 0, 0, 1)""",
+                    (
+                        SERVER._client_hash("00000001-0000-4000-8000-000000000001"),
+                        now + 9,
+                        dt.datetime.fromtimestamp(now + 9, SERVER.REPORT_TIMEZONE).date().isoformat(),
+                    ),
+                )
+        finally:
+            conn.close()
         stats = SERVER._build_stats(now + 10)
         self.assertEqual(5, stats["performance"]["sessions"])
         self.assertTrue(stats["performance"]["published"])
@@ -556,6 +839,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(72.0, stats["performance"]["fps1Low"])
         self.assertIsNone(stats["performance"]["gpuTemp"])
         self.assertEqual(1, stats["dataQuality"]["legacyPerformanceSessionsExcluded"])
+        self.assertEqual(1, stats["dataQuality"]["invalidHistoricalPerformanceSessionsExcluded"])
         self.assertEqual(6, stats["performanceByGpu"][0]["sessions"])
         self.assertEqual(5, stats["performanceByGpu"][0]["trustedSessions"])
         self.assertEqual(1, stats["performanceByGpu"][0]["legacySessions"])
@@ -601,6 +885,75 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(1, stats["performance"]["clients"])
         self.assertFalse(stats["performance"]["published"])
         self.assertIsNone(stats["performance"]["avgFps"])
+
+    def test_performance_aggregate_equal_weights_each_independent_device(self):
+        rows = []
+        for index in range(20):
+            rows.append({"client_hash": "frequent", "avg_fps": 500, "fps_1_low": 400,
+                         "gpu_util_avg": 90, "gpu_temp_avg": 80, "gpu_power_avg": 300})
+        for index, value in enumerate((100, 101, 102, 103), 1):
+            rows.append({"client_hash": "device-%d" % index, "avg_fps": value,
+                         "fps_1_low": value - 30, "gpu_util_avg": 70,
+                         "gpu_temp_avg": 65, "gpu_power_avg": 150})
+        aggregate = SERVER._aggregate_performance(rows)
+        self.assertTrue(aggregate["published"])
+        self.assertEqual("clientMedian", aggregate["aggregation"])
+        self.assertEqual(102.0, aggregate["avgFps"])
+
+    def test_performance_aggregate_ignores_non_finite_historical_metrics(self):
+        rows = []
+        for index, value in enumerate((100, 101, 102, 103, 104)):
+            rows.append({"client_hash": "device-%d" % index, "avg_fps": value,
+                         "fps_1_low": value - 30, "gpu_util_avg": 70,
+                         "gpu_temp_avg": 65, "gpu_power_avg": 150})
+        rows.extend([
+            {"client_hash": "device-0", "avg_fps": float("inf"), "fps_1_low": "bad",
+             "gpu_util_avg": None, "gpu_temp_avg": float("nan"), "gpu_power_avg": 150},
+            {"client_hash": "device-0", "avg_fps": "bad", "fps_1_low": float("inf"),
+             "gpu_util_avg": 70, "gpu_temp_avg": 65, "gpu_power_avg": 150},
+        ])
+        aggregate = SERVER._aggregate_performance(rows)
+        self.assertTrue(aggregate["published"])
+        self.assertEqual(102.0, aggregate["avgFps"])
+        self.assertEqual(72.0, aggregate["fps1Low"])
+
+    def test_exact_item_set_performance_is_persisted_and_descriptive_only(self):
+        now = 1786248000
+        item_ids = ["gpu-pref"]
+        for index in range(SERVER.PERFORMANCE_MIN_COMPARISONS):
+            install_id = "%08d-2222-4222-8222-%012d" % (index + 20, index + 20)
+            token = SERVER._issue_device_token(install_id, now)["deviceToken"]
+            baseline = self.authenticate(
+                self.performance_context_payload(install_id, [], "baseline", 100, 60), now, token,
+            )
+            optimized = self.authenticate(
+                self.performance_context_payload(install_id, item_ids, "frame-fix", 112, 68),
+                now + 60, token,
+            )
+            SERVER._record_telemetry(baseline, now)
+            SERVER._record_telemetry(optimized, now + 60)
+
+        stats = SERVER._build_stats(now + 60)
+        view = stats["performanceOptimization"]
+        self.assertTrue(view["associationOnly"])
+        self.assertEqual("descriptive_association_not_causal", view["interpretation"])
+        self.assertEqual(10, view["completeSessions"])
+        optimized = next(row for row in view["rows"] if row["itemIds"] == item_ids)
+        self.assertEqual("frame-fix", optimized["scheme"])
+        self.assertTrue(optimized["comparisonPublished"])
+        self.assertEqual(12.0, optimized["fpsDelta"])
+        self.assertEqual(8.0, optimized["fps1LowDelta"])
+        conn = SERVER._connect()
+        try:
+            stored = conn.execute(
+                "SELECT optimization_scheme, item_set_hash, item_ids_json, item_ids_complete "
+                "FROM performance_sessions WHERE item_ids_complete=1 AND item_ids_json<>'[]'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual("frame-fix", stored["optimization_scheme"])
+        self.assertEqual(SERVER._tuning_item_set_hash(item_ids), stored["item_set_hash"])
+        self.assertEqual(item_ids, json.loads(stored["item_ids_json"]))
 
     def test_paired_improvement_uses_median_and_minimum_comparisons(self):
         now = 1786248000
@@ -905,6 +1258,13 @@ class TelemetryTests(unittest.TestCase):
     def test_rejects_identifying_or_oversized_fields(self):
         with self.assertRaises(ValueError):
             SERVER._record_telemetry(self.payload("not-a-guid"), 1786248000)
+
+        non_finite = self.payload("20202020-2020-4020-8020-202020202020")
+        non_finite["ramGb"] = float("nan")
+        non_finite["cpuCores"] = True
+        normalized = SERVER._normalize_telemetry(non_finite)
+        self.assertEqual(0.0, normalized["ram_gb"])
+        self.assertEqual(0, normalized["cpu_cores"])
         good = self.payload("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", version="0.19.3")
         good["gpuModel"] = "x" * 1000
         SERVER._record_telemetry(good, 1786248000)
@@ -1621,6 +1981,22 @@ class TelemetryTests(unittest.TestCase):
             "presentMonExitCode": 0,
         })
         SERVER._record_telemetry(self.authenticate(run, now + 1, token), now + 1)
+        invalid_run = self.tuning_run_payload(
+            install_id, experiment_id, experiment_id + ".baseline", "run_failed_capture",
+            validity="invalid", invalid_reason="capture_failed", avg_fps=0, fps_1_low=0,
+            p99_frame_ms=0, stutter_50ms=0, run_no=2, sequence_no=2,
+        )
+        invalid_run.update({
+            "frameCount": 0,
+            "frameTimeMadMs": 0,
+            "stuttersPerMin": 0,
+            "focusLostSec": 0,
+            "gpuTempMax": 70,
+            "gameExitedEarly": False,
+            "captureFailed": True,
+            "presentMonExitCode": -1,
+        })
+        SERVER._record_telemetry(self.authenticate(invalid_run, now + 2, token), now + 2)
         conn = SERVER._connect()
         try:
             experiment = dict(conn.execute(
@@ -1640,10 +2016,12 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(1.75, recorded_run["frame_time_mad_ms"])
         self.assertEqual(0, recorded_run["capture_failed"])
         self.assertEqual(0, recorded_run["presentmon_exit_code"])
-        tuning = SERVER._build_stats(now + 1)["experiments"]["tuning"]
+        tuning = SERVER._build_stats(now + 2)["experiments"]["tuning"]
         self.assertEqual(1, tuning["experiments"])
-        self.assertEqual(1, tuning["runs"])
-        self.assertEqual(1, tuning["enrichedRuns"])
+        self.assertEqual(2, tuning["runs"])
+        self.assertEqual(2, tuning["enrichedRuns"])
+        self.assertEqual(1, tuning["validEnrichedRuns"])
+        self.assertEqual(1, tuning["captureFailures"])
         self.assertEqual(1.75, tuning["medianFrameTimeMadMs"])
         self.assertEqual(1.0, tuning["medianStuttersPerMin"])
 
@@ -2784,7 +3162,13 @@ class TelemetryTests(unittest.TestCase):
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_experiments)")}
             run_columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_runs)")}
             self.assertIn("library_version", columns)
-            for name in ("os_name", "os_build", "cpu_model", "gpu_vendor", "ram_gb", "device_type", "gpu_count", "display_mode"):
+            for name in (
+                "os_name", "os_build", "cpu_model", "gpu_vendor", "ram_gb",
+                "device_type", "gpu_count", "display_mode", "cpu_cores", "cpu_threads",
+                "cpu_packages", "memory_type", "memory_configured_mhz",
+                "memory_rated_mhz", "memory_module_count", "virtual_display_count",
+                "pagefile_auto_managed", "gpu_reported_model_differs",
+            ):
                 self.assertIn(name, columns)
             for name in ("frame_count", "frame_time_mad_ms", "stutters_per_min", "focus_lost_sec", "gpu_temp_max", "game_exited_early", "capture_failed", "presentmon_exit_code"):
                 self.assertIn(name, run_columns)
@@ -2841,8 +3225,16 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("driver_version", client_columns)
         self.assertIn("gpu_count", client_columns)
         self.assertIn("display_mode", client_columns)
+        for name in (
+            "cpu_cores", "cpu_threads", "cpu_packages", "memory_type",
+            "memory_configured_mhz", "memory_rated_mhz", "memory_module_count",
+            "virtual_display_count", "pagefile_auto_managed", "gpu_reported_model_differs",
+        ):
+            self.assertIn(name, client_columns)
         self.assertIn("config_tier", performance_columns)
         self.assertIn("authenticated", performance_columns)
+        for name in ("optimization_scheme", "item_set_hash", "item_ids_json", "item_ids_complete"):
+            self.assertIn(name, performance_columns)
         self.assertIn("trusted_launches", daily_columns)
         self.assertIn("restore_ok", daily_columns)
         self.assertIn("telemetry_replays", tables)

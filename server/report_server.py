@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections import deque, namedtuple
+from collections import Counter, deque, namedtuple
 
 
 REPORT_DIR = os.environ.get("DFB_REPORT_DIR", "/opt/df-booster-reports")
@@ -53,6 +53,7 @@ MAINTENANCE_INTERVAL = 6 * 60 * 60
 REGISTRATION_DAILY_LIMIT = 200
 MAX_RATE_BUCKETS = 20000
 TOKEN_REQUIRED_VERSION = (0, 19, 4)
+PERFORMANCE_CONTEXT_REQUIRED_VERSION = (0, 22, 1)
 WEEKLY_SCHEMA_VERSION = 3
 WEEKLY_FILTER_LIMITS = {"version": 24, "gpu": 160, "deviceType": 24}
 CUSTOM_PERIOD_MAX_DAYS = 92
@@ -64,6 +65,23 @@ CONFIG_TIER_LABELS = {
     "light": "轻量（1–9 项）",
     "balanced": "均衡（10–20 项）",
     "full": "深度（21+ 项）",
+}
+PERFORMANCE_SCHEMES = (
+    "baseline", "main", "balanced", "safe-only", "custom", "manual",
+    "frame-fix", "auto-tuning", "mixed", "legacy-unknown", "unknown",
+)
+PERFORMANCE_SCHEME_LABELS = {
+    "baseline": "未使用本工具优化",
+    "main": "主推全套",
+    "balanced": "均衡推荐",
+    "safe-only": "保守方案",
+    "custom": "自存方案（匿名）",
+    "manual": "手动选择",
+    "frame-fix": "掉帧修复",
+    "auto-tuning": "自动调优保留项",
+    "mixed": "混合配置",
+    "legacy-unknown": "历史版本（项目未知）",
+    "unknown": "来源未知",
 }
 TUNING_TYPES = ("experiment_started", "variant_applied", "run_completed", "experiment_completed")
 TUNING_GOALS = ("smoothness", "average_fps", "stutter_reduction", "balanced", "laptop_efficiency")
@@ -347,6 +365,16 @@ def _init_db():
                 display_mode TEXT NOT NULL DEFAULT '',
                 ram_gb REAL NOT NULL DEFAULT 0,
                 device_type TEXT NOT NULL DEFAULT '',
+                cpu_cores INTEGER NOT NULL DEFAULT 0,
+                cpu_threads INTEGER NOT NULL DEFAULT 0,
+                cpu_packages INTEGER NOT NULL DEFAULT 0,
+                memory_type TEXT NOT NULL DEFAULT '',
+                memory_configured_mhz INTEGER NOT NULL DEFAULT 0,
+                memory_rated_mhz INTEGER NOT NULL DEFAULT 0,
+                memory_module_count INTEGER NOT NULL DEFAULT 0,
+                virtual_display_count INTEGER NOT NULL DEFAULT -1,
+                pagefile_auto_managed INTEGER NOT NULL DEFAULT -1,
+                gpu_reported_model_differs INTEGER NOT NULL DEFAULT -1,
                 authenticated_last_seen INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS daily_usage (
@@ -384,6 +412,10 @@ def _init_db():
                 gpu_temp_max REAL NOT NULL DEFAULT 0,
                 gpu_power_avg REAL NOT NULL DEFAULT 0,
                 gpu_power_max REAL NOT NULL DEFAULT 0,
+                optimization_scheme TEXT NOT NULL DEFAULT 'legacy-unknown',
+                item_set_hash TEXT NOT NULL DEFAULT '',
+                item_ids_json TEXT NOT NULL DEFAULT '[]',
+                item_ids_complete INTEGER NOT NULL DEFAULT 0,
                 authenticated INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_performance_day ON performance_sessions(day);
@@ -415,6 +447,16 @@ def _init_db():
                 device_type TEXT NOT NULL DEFAULT '',
                 gpu_count INTEGER NOT NULL DEFAULT 0,
                 display_mode TEXT NOT NULL DEFAULT '',
+                cpu_cores INTEGER NOT NULL DEFAULT 0,
+                cpu_threads INTEGER NOT NULL DEFAULT 0,
+                cpu_packages INTEGER NOT NULL DEFAULT 0,
+                memory_type TEXT NOT NULL DEFAULT '',
+                memory_configured_mhz INTEGER NOT NULL DEFAULT 0,
+                memory_rated_mhz INTEGER NOT NULL DEFAULT 0,
+                memory_module_count INTEGER NOT NULL DEFAULT 0,
+                virtual_display_count INTEGER NOT NULL DEFAULT -1,
+                pagefile_auto_managed INTEGER NOT NULL DEFAULT -1,
+                gpu_reported_model_differs INTEGER NOT NULL DEFAULT -1,
                 item_set_hash TEXT NOT NULL,
                 item_ids_json TEXT NOT NULL,
                 changed_item_ids_json TEXT NOT NULL,
@@ -476,6 +518,16 @@ def _init_db():
                 device_type TEXT NOT NULL DEFAULT '',
                 gpu_count INTEGER NOT NULL DEFAULT 0,
                 display_mode TEXT NOT NULL DEFAULT '',
+                cpu_cores INTEGER NOT NULL DEFAULT 0,
+                cpu_threads INTEGER NOT NULL DEFAULT 0,
+                cpu_packages INTEGER NOT NULL DEFAULT 0,
+                memory_type TEXT NOT NULL DEFAULT '',
+                memory_configured_mhz INTEGER NOT NULL DEFAULT 0,
+                memory_rated_mhz INTEGER NOT NULL DEFAULT 0,
+                memory_module_count INTEGER NOT NULL DEFAULT 0,
+                virtual_display_count INTEGER NOT NULL DEFAULT -1,
+                pagefile_auto_managed INTEGER NOT NULL DEFAULT -1,
+                gpu_reported_model_differs INTEGER NOT NULL DEFAULT -1,
                 baseline_variant_id TEXT,
                 winning_variant_id TEXT,
                 result TEXT NOT NULL DEFAULT '',
@@ -587,6 +639,16 @@ def _init_db():
                 ("driver_version", "TEXT NOT NULL DEFAULT ''"),
                 ("gpu_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("display_mode", "TEXT NOT NULL DEFAULT ''"),
+                ("cpu_cores", "INTEGER NOT NULL DEFAULT 0"),
+                ("cpu_threads", "INTEGER NOT NULL DEFAULT 0"),
+                ("cpu_packages", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_type", "TEXT NOT NULL DEFAULT ''"),
+                ("memory_configured_mhz", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_rated_mhz", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_module_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("virtual_display_count", "INTEGER NOT NULL DEFAULT -1"),
+                ("pagefile_auto_managed", "INTEGER NOT NULL DEFAULT -1"),
+                ("gpu_reported_model_differs", "INTEGER NOT NULL DEFAULT -1"),
             ):
                 if name not in columns:
                     conn.execute("ALTER TABLE clients ADD COLUMN %s %s" % (name, definition))
@@ -601,6 +663,14 @@ def _init_db():
                 conn.execute("ALTER TABLE performance_sessions ADD COLUMN config_tier TEXT NOT NULL DEFAULT 'unknown'")
             if "authenticated" not in performance_columns:
                 conn.execute("ALTER TABLE performance_sessions ADD COLUMN authenticated INTEGER NOT NULL DEFAULT 0")
+            for name, definition in (
+                ("optimization_scheme", "TEXT NOT NULL DEFAULT 'legacy-unknown'"),
+                ("item_set_hash", "TEXT NOT NULL DEFAULT ''"),
+                ("item_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("item_ids_complete", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in performance_columns:
+                    conn.execute("ALTER TABLE performance_sessions ADD COLUMN %s %s" % (name, definition))
             experiment_columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_experiments)")}
             for name, definition in (
                 ("allow_higher_power", "INTEGER NOT NULL DEFAULT 0"),
@@ -616,9 +686,34 @@ def _init_db():
                 ("device_type", "TEXT NOT NULL DEFAULT ''"),
                 ("gpu_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("display_mode", "TEXT NOT NULL DEFAULT ''"),
+                ("cpu_cores", "INTEGER NOT NULL DEFAULT 0"),
+                ("cpu_threads", "INTEGER NOT NULL DEFAULT 0"),
+                ("cpu_packages", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_type", "TEXT NOT NULL DEFAULT ''"),
+                ("memory_configured_mhz", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_rated_mhz", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_module_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("virtual_display_count", "INTEGER NOT NULL DEFAULT -1"),
+                ("pagefile_auto_managed", "INTEGER NOT NULL DEFAULT -1"),
+                ("gpu_reported_model_differs", "INTEGER NOT NULL DEFAULT -1"),
             ):
                 if name not in experiment_columns:
                     conn.execute("ALTER TABLE tuning_experiments ADD COLUMN %s %s" % (name, definition))
+            operation_columns = {row[1] for row in conn.execute("PRAGMA table_info(optimization_operations)")}
+            for name, definition in (
+                ("cpu_cores", "INTEGER NOT NULL DEFAULT 0"),
+                ("cpu_threads", "INTEGER NOT NULL DEFAULT 0"),
+                ("cpu_packages", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_type", "TEXT NOT NULL DEFAULT ''"),
+                ("memory_configured_mhz", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_rated_mhz", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_module_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("virtual_display_count", "INTEGER NOT NULL DEFAULT -1"),
+                ("pagefile_auto_managed", "INTEGER NOT NULL DEFAULT -1"),
+                ("gpu_reported_model_differs", "INTEGER NOT NULL DEFAULT -1"),
+            ):
+                if name not in operation_columns:
+                    conn.execute("ALTER TABLE optimization_operations ADD COLUMN %s %s" % (name, definition))
             variant_columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_variants)")}
             for name, definition in (
                 ("apply_result", "TEXT NOT NULL DEFAULT ''"),
@@ -663,6 +758,8 @@ def _version_tuple(value):
 
 
 def _bounded_int(value, maximum=10000):
+    if isinstance(value, bool):
+        return 0
     try:
         return max(0, min(maximum, int(value)))
     except (TypeError, ValueError):
@@ -670,13 +767,20 @@ def _bounded_int(value, maximum=10000):
 
 
 def _bounded_float(value, maximum=2048):
+    if isinstance(value, bool):
+        return 0.0
     try:
-        return max(0.0, min(float(maximum), round(float(value), 1)))
+        number = float(value)
     except (TypeError, ValueError):
         return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return max(0.0, min(float(maximum), round(number, 1)))
 
 
 def _strict_nonnegative_int(value, maximum):
+    if isinstance(value, bool):
+        raise TelemetryPerformanceError("bad performance number")
     try:
         number = int(value)
     except (TypeError, ValueError):
@@ -689,6 +793,8 @@ def _strict_nonnegative_int(value, maximum):
 def _strict_nonnegative_float(value, maximum):
     if value is None or value == "":
         return 0.0
+    if isinstance(value, bool):
+        raise TelemetryPerformanceError("bad performance number")
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -938,6 +1044,78 @@ def _tuning_item_set_hash(item_ids):
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _performance_config_tier(item_count):
+    if item_count >= 21:
+        return "full"
+    if item_count >= 10:
+        return "balanced"
+    if item_count >= 1:
+        return "light"
+    return "baseline"
+
+
+def _normalize_performance_context(payload, app_version, config_tier):
+    fields = (
+        "optimizationScheme", "optimizationItemSetHash", "optimizationItemIds",
+        "optimizationItemsComplete",
+    )
+    required = _version_tuple(app_version) >= PERFORMANCE_CONTEXT_REQUIRED_VERSION
+    if required and any(field not in payload for field in fields):
+        raise TelemetryPerformanceError("missing performance optimization context")
+    if not any(field in payload for field in fields):
+        return {
+            "optimization_scheme": "legacy-unknown",
+            "item_set_hash": "",
+            "item_ids": [],
+            "item_ids_complete": 0,
+        }
+
+    scheme = payload.get("optimizationScheme")
+    if not isinstance(scheme, str):
+        raise TelemetryPerformanceError("bad optimization scheme")
+    scheme = scheme.strip().lower()
+    if scheme not in PERFORMANCE_SCHEMES:
+        raise TelemetryPerformanceError("unknown optimization scheme")
+    raw_ids = payload.get("optimizationItemIds")
+    if not isinstance(raw_ids, list) or len(raw_ids) > 64:
+        raise TelemetryPerformanceError("bad optimization item ids")
+    item_ids = []
+    for item_id in raw_ids:
+        if not isinstance(item_id, str):
+            raise TelemetryPerformanceError("bad optimization item id")
+        item_id = item_id.strip().lower()
+        if not _optimization_item_id_re.fullmatch(item_id):
+            raise TelemetryPerformanceError("bad optimization item id")
+        item_ids.append(item_id)
+    if len(set(item_ids)) != len(item_ids):
+        raise TelemetryPerformanceError("duplicate optimization item id")
+    item_ids = sorted(item_ids)
+    sent_hash = payload.get("optimizationItemSetHash")
+    if not isinstance(sent_hash, str):
+        raise TelemetryPerformanceError("bad optimization item set hash")
+    expected_hash = _tuning_item_set_hash(item_ids) if item_ids else ""
+    if sent_hash.strip().lower() != expected_hash:
+        raise TelemetryPerformanceError("optimization item set hash mismatch")
+    complete = payload.get("optimizationItemsComplete")
+    if not isinstance(complete, bool):
+        raise TelemetryPerformanceError("bad optimization completeness")
+    if complete:
+        if config_tier != _performance_config_tier(len(item_ids)):
+            raise TelemetryPerformanceError("optimization item count and config tier disagree")
+        if not item_ids and scheme != "baseline":
+            raise TelemetryPerformanceError("empty optimization set must be baseline")
+        if item_ids and scheme in ("baseline", "legacy-unknown"):
+            raise TelemetryPerformanceError("active optimization set has invalid scheme")
+    elif item_ids and scheme == "baseline":
+        raise TelemetryPerformanceError("active optimization set cannot be baseline")
+    return {
+        "optimization_scheme": scheme,
+        "item_set_hash": expected_hash,
+        "item_ids": item_ids,
+        "item_ids_complete": 1 if complete else 0,
+    }
+
+
 def _normalize_tuning(payload):
     tuning_type = _tuning_enum(payload, "tuningType", TUNING_TYPES)
     experiment_id = _tuning_identifier(payload, "experimentId")
@@ -946,6 +1124,9 @@ def _normalize_tuning(payload):
         "gpuModel", "gpuModelVerified", "ramGb", "deviceType", "configTier",
         "ok", "failed", "deviceToken", "eventId", "sentAt", "tuningType",
         "experimentId", "driverVersion", "gpuCount", "displayMode",
+        "cpuCores", "cpuThreads", "cpuPackages", "memoryType",
+        "memoryConfiguredMhz", "memoryRatedMhz", "memoryModuleCount",
+        "virtualDisplayCount", "pagefileAutoManaged", "gpuReportedModelDiffers",
     }
     type_fields = {
         "experiment_started": {
@@ -1157,6 +1338,7 @@ def _normalize_telemetry(payload):
         raise ValueError("bad install id")
     if event not in ("launch", "apply", "restore", "performance", "tuning"):
         raise ValueError("bad event")
+    app_version = _text(payload.get("version"), 24)
     config_tier = _text(payload.get("configTier"), 16).lower()
     if config_tier not in CONFIG_TIERS:
         config_tier = "unknown"
@@ -1170,16 +1352,28 @@ def _normalize_telemetry(payload):
         gpu_temp_max = _strict_nonnegative_float(payload.get("gpuTempMax"), 120)
         gpu_power_avg = _strict_nonnegative_float(payload.get("gpuPowerAvg"), 1500)
         gpu_power_max = _strict_nonnegative_float(payload.get("gpuPowerMax"), 1500)
+        performance_context = _normalize_performance_context(payload, app_version, config_tier)
     else:
         duration_sec = 0
         avg_fps = fps_1_low = 0.0
         gpu_util_avg = gpu_util_max = 0.0
         gpu_temp_avg = gpu_temp_max = 0.0
         gpu_power_avg = gpu_power_max = 0.0
+        performance_context = {
+            "optimization_scheme": "legacy-unknown", "item_set_hash": "",
+            "item_ids": [], "item_ids_complete": 0,
+        }
+    memory_type = _text(payload.get("memoryType"), 16).upper()
+    if memory_type not in ("DDR4", "DDR5"):
+        memory_type = "unknown"
+    pagefile_auto_managed = payload.get("pagefileAutoManaged")
+    pagefile_auto_managed = 1 if pagefile_auto_managed is True else 0 if pagefile_auto_managed is False else -1
+    gpu_reported_model_differs = payload.get("gpuReportedModelDiffers")
+    gpu_reported_model_differs = 1 if gpu_reported_model_differs is True else 0 if gpu_reported_model_differs is False else -1
     result = {
         "install_id": install_id.lower(),
         "event": event,
-        "app_version": _text(payload.get("version"), 24),
+        "app_version": app_version,
         "os_name": _text(payload.get("os"), 96),
         "os_build": _text(payload.get("build"), 24),
         "cpu_model": _text(payload.get("cpu"), 160),
@@ -1192,6 +1386,19 @@ def _normalize_telemetry(payload):
         "config_tier": config_tier,
         "ram_gb": _bounded_float(payload.get("ramGb")),
         "device_type": _text(payload.get("deviceType"), 24),
+        "cpu_cores": _bounded_int(payload.get("cpuCores"), 1024),
+        "cpu_threads": _bounded_int(payload.get("cpuThreads"), 4096),
+        "cpu_packages": _bounded_int(payload.get("cpuPackages"), 64),
+        "memory_type": memory_type,
+        "memory_configured_mhz": _bounded_int(payload.get("memoryConfiguredMhz"), 20000),
+        "memory_rated_mhz": _bounded_int(payload.get("memoryRatedMhz"), 20000),
+        "memory_module_count": _bounded_int(payload.get("memoryModuleCount"), 128),
+        "virtual_display_count": (
+            _bounded_int(payload.get("virtualDisplayCount"), 16)
+            if "virtualDisplayCount" in payload else -1
+        ),
+        "pagefile_auto_managed": pagefile_auto_managed,
+        "gpu_reported_model_differs": gpu_reported_model_differs,
         "ok": _bounded_int(payload.get("ok")),
         "failed": _bounded_int(payload.get("failed")),
         "duration_sec": duration_sec,
@@ -1203,6 +1410,7 @@ def _normalize_telemetry(payload):
         "gpu_temp_max": gpu_temp_max,
         "gpu_power_avg": gpu_power_avg,
         "gpu_power_max": gpu_power_max,
+        **performance_context,
         "device_token": _text(payload.get("deviceToken"), 256),
         "event_id": _text(payload.get("eventId"), 64).lower(),
         "sent_at": payload.get("sentAt"),
@@ -1297,6 +1505,21 @@ def _validate_performance(item, authenticated):
             raise TelemetryPerformanceError("maximum below average")
 
 
+def _stored_performance_usable(row):
+    """Apply the current frame-quality floor when reusing pre-validation rows."""
+    try:
+        duration = int(row.get("duration_sec") or 0)
+        avg_fps = float(row.get("avg_fps") or 0)
+        fps_1_low = float(row.get("fps_1_low") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        PERFORMANCE_MIN_DURATION <= duration <= PERFORMANCE_MAX_DURATION
+        and math.isfinite(avg_fps) and math.isfinite(fps_1_low)
+        and 0 < fps_1_low <= avg_fps <= 1000
+    )
+
+
 def _require_tuning_experiment(conn, experiment_id, client_hash):
     row = conn.execute(
         "SELECT * FROM tuning_experiments WHERE experiment_id=?", (experiment_id,)
@@ -1320,6 +1543,9 @@ def _require_tuning_variant(conn, variant_id, experiment_id):
 
 
 def _tuning_business_hash(item):
+    # This projection is a persisted v0.22 idempotency contract.  New analysis-only
+    # hardware columns stay outside it so delayed outbox replays still match hashes
+    # written before those optional fields existed.
     value = {"tuning": item["tuning"]}
     if item["tuning"]["type"] == "experiment_started":
         value.update({
@@ -1341,6 +1567,8 @@ def _tuning_business_hash(item):
 
 
 def _optimization_business_hash(item):
+    # Keep the persisted v0.22 projection stable for the same delayed-replay reason
+    # as _tuning_business_hash; analysis-only columns are stored but not identity.
     value = {
         "event": item["event"],
         "operation": item["operation"],
@@ -1382,19 +1610,26 @@ def _record_optimization_operation(conn, item, client_hash, now, day):
                operation_id, client_hash, recorded_at, day, action_type, source, result,
                app_version, os_name, os_build, cpu_model, gpu_vendor, gpu_model,
                gpu_model_verified, driver_version, ram_gb, device_type, gpu_count,
-               display_mode, item_set_hash, item_ids_json, changed_item_ids_json,
+               display_mode, cpu_cores, cpu_threads, cpu_packages, memory_type,
+               memory_configured_mhz, memory_rated_mhz, memory_module_count,
+               virtual_display_count, pagefile_auto_managed, gpu_reported_model_differs,
+               item_set_hash, item_ids_json, changed_item_ids_json,
                succeeded_item_ids_json, failed_item_ids_json, skipped_item_ids_json,
                attention_item_ids_json, reboot_item_ids_json, related_operation_ids_json,
                succeeded_unit_count, failed_unit_count, skipped_unit_count, backup_status,
                restore_mode, verification_status, residual_count, payload_hash
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             operation["operation_id"], client_hash, now, day, item["event"],
             operation["source"], operation["result"], item["app_version"],
             item["os_name"], item["os_build"], item["cpu_model"], item["gpu_vendor"],
             item["gpu_model"], item["gpu_model_verified"], item["driver_version"],
             item["ram_gb"], item["device_type"], item["gpu_count"], item["display_mode"],
+            item["cpu_cores"], item["cpu_threads"], item["cpu_packages"], item["memory_type"],
+            item["memory_configured_mhz"], item["memory_rated_mhz"], item["memory_module_count"],
+            item["virtual_display_count"], item["pagefile_auto_managed"],
+            item["gpu_reported_model_differs"],
             _tuning_item_set_hash(operation["item_ids"]), json_value(operation["item_ids"]),
             json_value(operation["changed_item_ids"]), json_value(operation["succeeded_item_ids"]),
             json_value(operation["failed_item_ids"]), json_value(operation["skipped_item_ids"]),
@@ -1709,8 +1944,11 @@ def _record_tuning(conn, item, client_hash, now):
                    allow_reboot, allow_higher_power, max_temp_increase,
                    max_power_increase, library_version, app_version, os_name, os_build,
                    cpu_model, gpu_vendor, game_version, gpu_model, driver_version, ram_gb,
-                   device_type, gpu_count, display_mode, baseline_variant_id, start_payload_hash
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   device_type, gpu_count, display_mode, cpu_cores, cpu_threads, cpu_packages,
+                   memory_type, memory_configured_mhz, memory_rated_mhz, memory_module_count,
+                   virtual_display_count, pagefile_auto_managed, gpu_reported_model_differs,
+                   baseline_variant_id, start_payload_hash
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 experiment_id, client_hash, now, tuning["status"], tuning["goal"],
                 tuning["risk_level"], int(tuning["allow_reboot"]),
@@ -1719,6 +1957,10 @@ def _record_tuning(conn, item, client_hash, now):
                 item["os_name"], item["os_build"], item["cpu_model"], item["gpu_vendor"],
                 tuning["game_version"], item["gpu_model"], item["driver_version"],
                 item["ram_gb"], item["device_type"], item["gpu_count"], item["display_mode"],
+                item["cpu_cores"], item["cpu_threads"], item["cpu_packages"], item["memory_type"],
+                item["memory_configured_mhz"], item["memory_rated_mhz"], item["memory_module_count"],
+                item["virtual_display_count"], item["pagefile_auto_managed"],
+                item["gpu_reported_model_differs"],
                 tuning["baseline_variant_id"], payload_hash,
             ),
         )
@@ -1965,8 +2207,11 @@ def _record_telemetry(payload, now=None):
             INSERT INTO clients (
                 client_hash, first_seen, last_seen, app_version, os_name, os_build,
                 cpu_model, gpu_vendor, gpu_model, gpu_model_verified, driver_version,
-                gpu_count, display_mode, ram_gb, device_type, authenticated_last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                gpu_count, display_mode, ram_gb, device_type, cpu_cores, cpu_threads,
+                cpu_packages, memory_type, memory_configured_mhz, memory_rated_mhz,
+                memory_module_count, virtual_display_count, pagefile_auto_managed,
+                gpu_reported_model_differs, authenticated_last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(client_hash) DO UPDATE SET
                 last_seen=excluded.last_seen,
                 app_version=CASE WHEN excluded.app_version<>'' THEN excluded.app_version ELSE clients.app_version END,
@@ -1983,6 +2228,16 @@ def _record_telemetry(payload, now=None):
                 display_mode=CASE WHEN excluded.display_mode<>'' THEN excluded.display_mode ELSE clients.display_mode END,
                 ram_gb=CASE WHEN excluded.ram_gb>0 THEN excluded.ram_gb ELSE clients.ram_gb END,
                 device_type=CASE WHEN excluded.device_type<>'' THEN excluded.device_type ELSE clients.device_type END,
+                cpu_cores=CASE WHEN excluded.cpu_cores>0 THEN excluded.cpu_cores ELSE clients.cpu_cores END,
+                cpu_threads=CASE WHEN excluded.cpu_threads>0 THEN excluded.cpu_threads ELSE clients.cpu_threads END,
+                cpu_packages=CASE WHEN excluded.cpu_packages>0 THEN excluded.cpu_packages ELSE clients.cpu_packages END,
+                memory_type=CASE WHEN excluded.memory_type IN ('DDR4','DDR5') THEN excluded.memory_type ELSE clients.memory_type END,
+                memory_configured_mhz=CASE WHEN excluded.memory_configured_mhz>0 THEN excluded.memory_configured_mhz ELSE clients.memory_configured_mhz END,
+                memory_rated_mhz=CASE WHEN excluded.memory_rated_mhz>0 THEN excluded.memory_rated_mhz ELSE clients.memory_rated_mhz END,
+                memory_module_count=CASE WHEN excluded.memory_module_count>0 THEN excluded.memory_module_count ELSE clients.memory_module_count END,
+                virtual_display_count=CASE WHEN excluded.virtual_display_count>=0 THEN excluded.virtual_display_count ELSE clients.virtual_display_count END,
+                pagefile_auto_managed=CASE WHEN excluded.pagefile_auto_managed>=0 THEN excluded.pagefile_auto_managed ELSE clients.pagefile_auto_managed END,
+                gpu_reported_model_differs=CASE WHEN excluded.gpu_reported_model_differs>=0 THEN excluded.gpu_reported_model_differs ELSE clients.gpu_reported_model_differs END,
                 authenticated_last_seen=MAX(clients.authenticated_last_seen, excluded.authenticated_last_seen)
             """,
             (
@@ -1990,6 +2245,10 @@ def _record_telemetry(payload, now=None):
                 item["cpu_model"], item["gpu_vendor"], item["gpu_model"],
                 item["gpu_model_verified"], item["driver_version"], item["gpu_count"],
                 item["display_mode"], item["ram_gb"], item["device_type"],
+                item["cpu_cores"], item["cpu_threads"], item["cpu_packages"], item["memory_type"],
+                item["memory_configured_mhz"], item["memory_rated_mhz"], item["memory_module_count"],
+                item["virtual_display_count"], item["pagefile_auto_managed"],
+                item["gpu_reported_model_differs"],
                 now if authenticated else 0,
             ),
         )
@@ -2001,14 +2260,18 @@ def _record_telemetry(payload, now=None):
                     INSERT INTO performance_sessions (
                         client_hash, recorded_at, day, app_version, gpu_model, config_tier, duration_sec,
                         avg_fps, fps_1_low, gpu_util_avg, gpu_util_max, gpu_temp_avg,
-                        gpu_temp_max, gpu_power_avg, gpu_power_max, authenticated
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        gpu_temp_max, gpu_power_avg, gpu_power_max, optimization_scheme,
+                        item_set_hash, item_ids_json, item_ids_complete, authenticated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         client_hash, now, day, item["app_version"], item["gpu_model"], item["config_tier"],
                         item["duration_sec"], item["avg_fps"], item["fps_1_low"],
                         item["gpu_util_avg"], item["gpu_util_max"], item["gpu_temp_avg"],
                         item["gpu_temp_max"], item["gpu_power_avg"], item["gpu_power_max"],
+                        item["optimization_scheme"], item["item_set_hash"],
+                        json.dumps(item["item_ids"], separators=(",", ":")),
+                        item["item_ids_complete"],
                         1 if authenticated else 0,
                     ),
                 )
@@ -2067,19 +2330,491 @@ def _report_summary():
     return {"count": count, "lastUpload": last or None}
 
 
+DIAGNOSTIC_ISSUE_LABELS = {
+    "low_fps": "平均帧率偏低", "frame_drops": "掉帧 / 帧率波动",
+    "stutter": "卡顿 / 微卡", "low_one_percent": "1% Low 偏低",
+    "input_latency": "输入延迟", "slow_loading": "加载 / 切场景慢",
+    "game_crash": "闪退 / 全屏黑屏 / 无响应",
+    "partial_black_screen": "游戏内部分黑屏 / 黑块",
+    "system_lag": "系统整体卡顿", "cpu_heat": "CPU 占用或温度过高",
+    "gpu_heat": "GPU 占用或温度过高", "noise_power": "噪音 / 功耗高",
+    "app_update_failure": "工具启动 / 更新失败",
+    "apply_restore_failure": "优化 / 还原失败",
+}
+DIAGNOSTIC_BENEFIT_LABELS = {
+    "fps_gain": "平均帧率提升", "one_percent_gain": "1% Low 提升",
+    "less_stutter": "卡顿减少", "lower_latency": "输入延迟降低",
+    "faster_loading": "加载更快", "smoother_system": "系统响应更流畅",
+    "lower_cpu_heat": "CPU 温度降低", "lower_gpu_heat": "GPU 温度降低",
+    "lower_noise_power": "噪音 / 功耗降低", "better_stability": "稳定性提高",
+}
+DIAGNOSTIC_RELATED_PROCESS_LABELS = {
+    "game-client": "三角洲游戏进程", "game-launcher": "三角洲启动进程",
+    "presentmon": "PresentMon", "rtss": "RTSS", "msi-afterburner": "MSI Afterburner",
+    "obs": "OBS", "discord": "Discord", "game-bar": "Xbox Game Bar",
+    "nvidia-share": "NVIDIA Share", "wegame": "WeGame",
+}
+DIAGNOSTIC_RELATED_PROCESS_ALIASES = {
+    "deltaforceclient-win64-shipping": "game-client", "deltaforce": "game-launcher",
+    "presentmon": "presentmon", "rtss": "rtss", "msiafterburner": "msi-afterburner",
+    "obs64": "obs", "discord": "discord", "gamebar": "game-bar",
+    "nvidia share": "nvidia-share", "wegame": "wegame",
+}
+DIAGNOSTIC_ERROR_PATTERNS = (
+    ("gpu_panel_detection_failed", "显卡软件检测失败", r"显卡软件检测失败"),
+    ("parameter_type_mismatch", "历史参数类型不匹配", r"(?:执行失败|优化失败).{0,40}参数类型不匹配"),
+    ("nv_auto_opt_path_empty", "NVIDIA App 自动优化路径异常", r"NVIDIA App.{0,80}(?:Path|路径).{0,40}(?:为空|empty|未设置|参数)"),
+    ("shader_cache_path_empty", "着色器缓存路径异常", r"着色器缓存.{0,80}(?:Path|路径).{0,40}(?:为空|empty|未设置|参数)"),
+    ("power_restore_residual", "电源隐藏项还原残留", r"(?:电源|隐藏).{0,80}(?:还原|恢复).{0,80}残留"),
+    ("illegal_path", "历史非法路径", r"路径中(?:具有|有)非法字符"),
+    ("backup_locked", "备份文件被占用", r"备份.{0,80}(?:被占用|锁定|正在使用|另一个进程)"),
+)
+_DIAGNOSTIC_VIRTUAL_DISPLAY_RE = re.compile(
+    r"ToDesk\s+Virtual\s+Display|OrayIddDriver|AskLink\s+Display\s+Adapter|"
+    r"GameViewer\s+Virtual\s+Display|MuMu\s+Virtual\s+Display|"
+    r"Parsec\s+Virtual\s+Display|Sunshine\s+Virtual\s+Display|"
+    r"Indirect\s+Display\s+Driver|IddSampleDriver",
+    re.IGNORECASE,
+)
+
+
+def _diagnostic_csv_ids(value, allowed):
+    values = []
+    for item in str(value or "").split(","):
+        item = item.strip().lower()
+        if item and item != "none" and item in allowed and item not in values:
+            values.append(item)
+    return values
+
+
+def _parse_diagnostic_report(text):
+    """Extract only aggregate-safe fields; accepts v0.19+ prose and schema-v2 reports."""
+    # GUI reports use CRLF on Windows.  Normalizing once keeps all anchored
+    # historical fallbacks (version, feedback and performance rows) working.
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    fields = {}
+    section = re.search(
+        r"(?ms)^== 分析字段（schema v2） ==\s*$\n(?P<body>.*?)(?=^== |\Z)", text,
+    )
+    if section:
+        for line in section.group("body").splitlines():
+            match = re.fullmatch(r"([a-z][a-z0-9_]{0,63})=(.*)", line.strip())
+            if match:
+                fields[match.group(1)] = match.group(2).strip()[:256]
+
+    def first(pattern, default="", flags=re.MULTILINE):
+        match = re.search(pattern, text, flags)
+        return match.group(1).strip() if match else default
+
+    integer_limits = {
+        "diagnostic_schema": 16, "cpu_visible_cores": 1024,
+        "cpu_visible_threads": 4096, "cpu_packages": 64,
+        "memory_configured_mhz": 20000, "memory_rated_mhz": 20000,
+        "memory_module_count": 128, "gpu_count": 16,
+        "virtual_display_count": 16,
+    }
+
+    def bounded_integer(value, maximum):
+        try:
+            return min(maximum, max(0, int(value)))
+        except (TypeError, ValueError):
+            return 0
+
+    def integer(name, fallback=0):
+        value = fields.get(name)
+        if value is None or value == "":
+            value = fallback
+        return bounded_integer(value, integer_limits.get(name, 2147483647))
+
+    def decimal(name, fallback=0):
+        value = fields.get(name, fallback)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0
+        return round(value, 1) if math.isfinite(value) and 0 <= value <= 2048 else 0
+
+    def boolean(name, fallback=""):
+        value = fields.get(name)
+        if value is None or value == "":
+            value = fallback
+        value = str(value or "").strip().lower()
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        return None
+
+    schema = integer("diagnostic_schema", 0)
+    version = fields.get("app_version") or first(r"^界面版本：v?([0-9]+(?:\.[0-9]+){1,3})$")
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", version):
+        version = ""
+    issue_value = fields.get("feedback_issue_ids")
+    if issue_value is None:
+        issue_value = first(r"^问题标签：([^\r\n]+)$")
+    benefit_value = fields.get("feedback_benefit_ids")
+    if benefit_value is None:
+        benefit_value = first(r"^改善标签：([^\r\n]+)$")
+    process_value = fields.get("active_related_process_keys")
+    related_processes = _diagnostic_csv_ids(process_value, DIAGNOSTIC_RELATED_PROCESS_LABELS)
+    if process_value is None:
+        historical_processes = first(r"^相关进程：([^\r\n]+)$")
+        for process_name in historical_processes.split("、"):
+            process_id = DIAGNOSTIC_RELATED_PROCESS_ALIASES.get(process_name.strip().lower())
+            if process_id and process_id not in related_processes:
+                related_processes.append(process_id)
+
+    gpu_match = re.search(
+        r"(?m)^显卡（真实）：(.+?)（(NVIDIA|AMD|Intel|Unknown)，驱动\s*([^，）\r\n]*)",
+        text,
+    )
+    gpu_model = fields.get("main_gpu_model", "")[:160]
+    gpu_vendor = fields.get("main_gpu_vendor", "")
+    if gpu_match:
+        gpu_model = gpu_model or gpu_match.group(1).strip()[:160]
+        gpu_vendor = gpu_vendor or gpu_match.group(2)
+    if gpu_model.strip().lower() in ("未检测到", "未知", "unknown", "none"):
+        gpu_model = ""
+    vendor_key = str(gpu_vendor).strip().upper()
+    gpu_vendor = (
+        {"NVIDIA": "NVIDIA", "AMD": "AMD", "INTEL": "Intel"}.get(vendor_key, "Unknown")
+        if vendor_key else ""
+    )
+    driver_version = fields.get("main_gpu_driver_version") or (gpu_match.group(3).strip() if gpu_match else "")
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,7}", driver_version):
+        driver_version = ""
+    cpu_match = re.search(
+        r"(?m)^CPU(?:（Windows 当前可见）)?：(.+?)（(\d+) 核 (\d+) 线程(?:，(\d+) 路)?）",
+        text,
+    )
+    ram_match = re.search(r"(?m)^内存：([0-9]+(?:\.[0-9]+)?) GB", text)
+    device_text = first(r"^机型：(笔记本|台式机)$")
+    display_match = re.search(r"(?m)^显示输出：[^\n｜]*｜(\d+)x(\d+)\s*@\s*(\d+)Hz｜", text)
+
+    def display_mode(value):
+        match = re.fullmatch(r"(\d+)x(\d+)@(\d+)", str(value or "").strip())
+        if not match:
+            return ""
+        width, height, refresh = (int(part) for part in match.groups())
+        if not (640 <= width <= 16384 and 480 <= height <= 8640):
+            return ""
+        if refresh != 0 and not 24 <= refresh <= 1000:
+            return ""
+        return "%dx%d@%d" % (width, height, refresh)
+
+    display_fallback = "%sx%s@%s" % display_match.groups() if display_match else ""
+    normalized_display_mode = display_mode(fields.get("display_mode") or display_fallback)
+    virtual_names = {match.group(0).lower() for match in _DIAGNOSTIC_VIRTUAL_DISPLAY_RE.finditer(text)}
+    virtual_count = integer("virtual_display_count", len(virtual_names))
+    panel_status = fields.get("gpu_panel_status", "")
+    if not panel_status:
+        panel_status = "broker_failed" if "显卡软件检测失败" in text else "not_recorded"
+    if panel_status not in (
+        "ok", "broker_failed", "unsupported_vendor", "unavailable_in_compatibility_mode",
+        "not_checked", "not_recorded",
+    ):
+        panel_status = "not_recorded"
+    memory_type = fields.get("memory_type", "").upper()
+    if memory_type not in ("DDR4", "DDR5"):
+        memory_type = "unknown"
+    device_type = fields.get("device_type") or ({"笔记本": "laptop", "台式机": "desktop"}.get(device_text, ""))
+    if device_type not in ("desktop", "laptop"):
+        device_type = "unknown"
+    config_tier = str(fields.get("config_tier") or "unknown").strip().lower()
+    if config_tier not in CONFIG_TIERS:
+        config_tier = "unknown"
+    optimization_scheme = str(fields.get("optimization_scheme") or "legacy-unknown").strip().lower()
+    if optimization_scheme not in PERFORMANCE_SCHEMES:
+        optimization_scheme = "unknown"
+    optimization_item_ids = []
+    for item_id in str(fields.get("optimization_item_ids") or "").split(","):
+        item_id = item_id.strip().lower()
+        if (_optimization_item_id_re.fullmatch(item_id) and item_id not in optimization_item_ids
+                and len(optimization_item_ids) < 64):
+            optimization_item_ids.append(item_id)
+    optimization_item_ids.sort()
+    optimization_item_hash = str(fields.get("optimization_item_set_hash") or "").strip().lower()
+    optimization_items_complete = boolean("optimization_items_complete") is True
+    expected_item_hash = _tuning_item_set_hash(optimization_item_ids) if optimization_item_ids else ""
+    if optimization_item_hash != expected_item_hash:
+        optimization_items_complete = False
+    verified_fallback = first(r"^显卡（真实）：[^\r\n]*身份验证\s+(True|False)")
+
+    performance_matches = list(re.finditer(
+        r"(?m)^([^\n｜]+)｜([^\n｜]+)｜(\d+)s｜(?:"
+        r"平均帧率\s*([0-9.]+)\s*帧/秒｜1% 低帧率\s*([0-9.]+)\s*帧/秒|"
+        r"平均\s*([0-9.]+)\s*FPS｜1%\s*Low\s*([0-9.]+)\s*FPS)$",
+        text,
+    ))
+    performance_sessions = []
+    for match in performance_matches:
+        try:
+            duration = int(match.group(3))
+            avg_fps = float(match.group(4) or match.group(6))
+            fps_1_low = float(match.group(5) or match.group(7))
+        except ValueError:
+            continue
+        if (
+            duration > 600 or not math.isfinite(avg_fps) or not math.isfinite(fps_1_low)
+            or avg_fps <= 0 or avg_fps > 1000 or fps_1_low <= 0 or fps_1_low > avg_fps
+        ):
+            continue
+        performance_sessions.append({
+            "duration": duration, "avg_fps": avg_fps, "fps_1_low": fps_1_low,
+            # Old reports lack frame count/focus metadata. Positive 90s+ samples remain useful
+            # as descriptive history, but never become authenticated causal training outcomes.
+            "legacy_usable": duration >= 90 and avg_fps > 0 and fps_1_low > 0,
+        })
+    validity_markers = re.findall(r"(?m)^\s+有效性\s+([a-z_]+)", text)
+    errors = [key for key, _label, pattern in DIAGNOSTIC_ERROR_PATTERNS if re.search(pattern, text, re.I | re.S)]
+    core_fallback = bounded_integer(cpu_match.group(2), 1024) if cpu_match else 0
+    thread_fallback = bounded_integer(cpu_match.group(3), 4096) if cpu_match else 0
+    package_fallback = bounded_integer(cpu_match.group(4) or 1, 64) if cpu_match else 0
+    cpu_model = (fields.get("cpu_model") or (cpu_match.group(1).strip() if cpu_match else ""))[:160]
+    cpu_vendor_key = str(fields.get("cpu_vendor") or "").strip().upper()
+    if not cpu_vendor_key:
+        if re.search(r"\b(?:AMD|Ryzen)\b", cpu_model, re.I):
+            cpu_vendor_key = "AMD"
+        elif re.search(r"\b(?:Intel|Core)\b", cpu_model, re.I):
+            cpu_vendor_key = "INTEL"
+    cpu_vendor = {"AMD": "AMD", "INTEL": "Intel", "UNKNOWN": "Unknown"}.get(cpu_vendor_key, "Unknown")
+    reported_gpu_model = (
+        fields.get("main_gpu_reported_model")
+        or first(r"^\s+系统当前伪装上报：([^\r\n]+)$")
+    )[:160]
+    if reported_gpu_model.strip().lower() in ("未检测到", "未知", "unknown", "none"):
+        reported_gpu_model = ""
+    return {
+        "schema": schema, "version": version,
+        "issues": _diagnostic_csv_ids(issue_value, DIAGNOSTIC_ISSUE_LABELS),
+        "benefits": _diagnostic_csv_ids(benefit_value, DIAGNOSTIC_BENEFIT_LABELS),
+        "related_processes": related_processes,
+        "cpu_model": cpu_model, "cpu_vendor": cpu_vendor,
+        "cpu_cores": integer("cpu_visible_cores", core_fallback),
+        "cpu_threads": integer("cpu_visible_threads", thread_fallback),
+        "cpu_packages": integer("cpu_packages", package_fallback),
+        "ram_gb": decimal("ram_gb", ram_match.group(1) if ram_match else 0),
+        "memory_type": memory_type,
+        "memory_configured_mhz": integer("memory_configured_mhz"),
+        "memory_rated_mhz": integer("memory_rated_mhz"),
+        "memory_module_count": integer("memory_module_count"),
+        "gpu_vendor": gpu_vendor, "gpu_model": gpu_model,
+        "gpu_reported_model": reported_gpu_model,
+        "gpu_driver_version": driver_version,
+        "gpu_count": integer("gpu_count"),
+        "gpu_model_verified": boolean("main_gpu_model_verified", verified_fallback),
+        "gpu_pci_matched": boolean("main_gpu_pci_matched"),
+        "gpu_reported_model_differs": boolean("main_gpu_reported_model_differs"),
+        "device_type": device_type, "config_tier": config_tier,
+        "optimization_scheme": optimization_scheme,
+        "optimization_item_ids": optimization_item_ids,
+        "optimization_item_set_hash": optimization_item_hash,
+        "optimization_items_complete": optimization_items_complete,
+        "display_mode": normalized_display_mode,
+        "virtual_display_count": virtual_count, "gpu_panel_status": panel_status,
+        "pagefile_auto_managed": boolean("pagefile_auto_managed"),
+        "gpu_panel_installed_keys": _diagnostic_csv_ids(
+            fields.get("gpu_panel_installed_keys"), {"nv-cpl", "nv-app", "amd-sw", "intel-gcc"},
+        ),
+        "gpu_panel_missing_keys": _diagnostic_csv_ids(
+            fields.get("gpu_panel_missing_keys"), {"nv-cpl", "nv-app", "amd-sw", "intel-gcc"},
+        ),
+        "performance_sessions": performance_sessions,
+        "validity_markers": validity_markers, "errors": errors,
+    }
+
+
+def _build_diagnostic_analysis(start_ts=None, end_ts=None):
+    records = []
+    try:
+        names = os.listdir(REPORT_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not re.fullmatch(r"DFB-[A-Z2-9]{4}\.txt", name):
+            continue
+        path = os.path.join(REPORT_DIR, name)
+        try:
+            modified = int(os.path.getmtime(path))
+            if start_ts is not None and modified < int(start_ts):
+                continue
+            if end_ts is not None and modified > int(end_ts):
+                continue
+            with open(path, "r", encoding="utf-8", errors="replace") as stream:
+                record = _parse_diagnostic_report(stream.read(MAX_REPORT_BODY + 4096))
+            record["modified"] = modified
+            records.append(record)
+        except OSError:
+            continue
+
+    issue_counts, benefit_counts, error_counts = Counter(), Counter(), Counter()
+    versions, gpu_vendors, gpu_models = Counter(), Counter(), Counter()
+    panel_installed, panel_missing = Counter(), Counter()
+    related_process_counts, issue_related_process = Counter(), Counter()
+    issue_environment = Counter()
+    configurations = {}
+    performance_count = usable_history = marked_performance = 0
+    for record in records:
+        issue_counts.update(record["issues"])
+        benefit_counts.update(record["benefits"])
+        error_counts.update(record["errors"])
+        if record["version"]:
+            versions[record["version"]] += 1
+        if record["gpu_vendor"]:
+            gpu_vendors[record["gpu_vendor"]] += 1
+        if record["gpu_model"]:
+            gpu_models[record["gpu_model"]] += 1
+        panel_installed.update(record["gpu_panel_installed_keys"])
+        panel_missing.update(record["gpu_panel_missing_keys"])
+        related_process_counts.update(record["related_processes"])
+        sessions = record["performance_sessions"]
+        performance_count += len(sessions)
+        if record["schema"] < 2:
+            usable_history += sum(session["legacy_usable"] for session in sessions)
+        marked_performance += len(record["validity_markers"])
+        for issue_id in record["issues"]:
+            for process_id in record["related_processes"]:
+                issue_related_process[(issue_id, process_id)] += 1
+            issue_environment[(
+                issue_id, record["gpu_vendor"] or "Unknown", record["gpu_model"] or "未知 GPU",
+                record["gpu_driver_version"] or "未知驱动", record["config_tier"],
+                record["display_mode"] or "未知显示模式", record["device_type"] or "unknown",
+                record["virtual_display_count"] > 0, record["gpu_model_verified"],
+                record["optimization_scheme"], record["optimization_item_set_hash"],
+                record["optimization_items_complete"],
+            )] += 1
+        if record["cpu_model"] or record["gpu_model"]:
+            key = (
+                record["cpu_model"] or "未知 CPU", record["cpu_cores"], record["cpu_threads"],
+                record["cpu_packages"], record["ram_gb"] or "0",
+                record["memory_type"] or "unknown", record["memory_configured_mhz"],
+                record["memory_rated_mhz"], record["memory_module_count"],
+                record["gpu_model"] or "未知 GPU", record["gpu_count"],
+                record["device_type"] or "unknown", record["virtual_display_count"],
+                record["pagefile_auto_managed"], record["gpu_reported_model_differs"],
+                record["config_tier"], record["gpu_driver_version"] or "未知驱动",
+                record["display_mode"] or "未知显示模式", record["gpu_model_verified"],
+                record["gpu_pci_matched"], record["gpu_panel_status"],
+                record["cpu_vendor"], record["gpu_reported_model"],
+                record["optimization_scheme"], record["optimization_item_set_hash"],
+                record["optimization_items_complete"],
+            )
+            row = configurations.setdefault(key, {"reports": 0, "issues": Counter()})
+            row["reports"] += 1
+            row["issues"].update(record["issues"])
+
+    def distribution(counter, labels=None, key_name="id"):
+        rows = []
+        for key, count in counter.most_common():
+            row = {key_name: key, "reports": int(count)}
+            if labels is not None:
+                row["label"] = labels.get(key, key)
+            rows.append(row)
+        return rows
+
+    config_rows = []
+    for key, value in configurations.items():
+        config_rows.append({
+            "cpuModel": key[0], "cpuCores": key[1], "cpuThreads": key[2],
+            "cpuPackages": key[3], "ramGb": key[4], "memoryType": key[5],
+            "memoryConfiguredMhz": key[6], "memoryRatedMhz": key[7],
+            "memoryModuleCount": key[8], "gpuModel": key[9], "gpuCount": key[10],
+            "deviceType": key[11], "virtualDisplayCount": key[12],
+            "pagefileAutoManaged": key[13], "gpuReportedModelDiffers": key[14],
+            "configTier": key[15], "gpuDriverVersion": key[16], "displayMode": key[17],
+            "gpuModelVerified": key[18], "gpuPciMatched": key[19], "gpuPanelStatus": key[20],
+            "cpuVendor": key[21], "gpuReportedModel": key[22],
+            "optimizationScheme": key[23], "optimizationItemSetHash": key[24],
+            "optimizationItemsComplete": key[25],
+            "reports": value["reports"],
+            "topIssues": [
+                {"id": issue_id, "label": DIAGNOSTIC_ISSUE_LABELS.get(issue_id, issue_id), "reports": count}
+                for issue_id, count in value["issues"].most_common(3)
+            ],
+        })
+    config_rows.sort(key=lambda row: (-row["reports"], row["gpuModel"], row["cpuModel"]))
+    environment_rows = [{
+        "issueId": key[0], "issueLabel": DIAGNOSTIC_ISSUE_LABELS.get(key[0], key[0]),
+        "gpuVendor": key[1], "gpuModel": key[2], "gpuDriverVersion": key[3],
+        "configTier": key[4], "displayMode": key[5], "deviceType": key[6],
+        "hasVirtualDisplay": key[7], "gpuModelVerified": key[8],
+        "optimizationScheme": key[9], "optimizationItemSetHash": key[10],
+        "optimizationItemsComplete": key[11],
+        "reports": count,
+    } for key, count in issue_environment.items()]
+    environment_rows.sort(key=lambda row: (-row["reports"], row["issueId"], row["gpuVendor"]))
+    issue_process_rows = [{
+        "issueId": key[0], "issueLabel": DIAGNOSTIC_ISSUE_LABELS.get(key[0], key[0]),
+        "processId": key[1], "processLabel": DIAGNOSTIC_RELATED_PROCESS_LABELS.get(key[1], key[1]),
+        "reports": count,
+    } for key, count in issue_related_process.items()]
+    issue_process_rows.sort(key=lambda row: (-row["reports"], row["issueId"], row["processId"]))
+    error_labels = {key: label for key, label, _pattern in DIAGNOSTIC_ERROR_PATTERNS}
+    return {
+        "reports": len(records),
+        "schemaV2Reports": sum(record["schema"] >= 2 for record in records),
+        "historicalReports": sum(record["schema"] < 2 for record in records),
+        "feedbackReports": sum(bool(record["issues"] or record["benefits"]) for record in records),
+        "hardwareReports": sum(bool(record["cpu_model"] and record["gpu_model"]) for record in records),
+        "virtualDisplayReports": sum(record["virtual_display_count"] > 0 for record in records),
+        "gpuPanelFailures": sum(record["gpu_panel_status"] == "broker_failed" for record in records),
+        "performanceSessions": performance_count,
+        "qualityMarkedPerformanceSessions": marked_performance,
+        "usableHistoricalPerformanceSessions": usable_history,
+        "issues": distribution(issue_counts, DIAGNOSTIC_ISSUE_LABELS),
+        "benefits": distribution(benefit_counts, DIAGNOSTIC_BENEFIT_LABELS),
+        "errorSignals": distribution(error_counts, error_labels),
+        "versions": distribution(versions, key_name="version")[:50],
+        "gpuVendors": distribution(gpu_vendors, key_name="gpuVendor"),
+        "gpuModels": distribution(gpu_models, key_name="gpuModel")[:50],
+        "gpuPanelInstalled": distribution(panel_installed, key_name="key"),
+        "gpuPanelMissing": distribution(panel_missing, key_name="key"),
+        "relatedProcesses": distribution(
+            related_process_counts, DIAGNOSTIC_RELATED_PROCESS_LABELS, key_name="processId"
+        ),
+        "issueRelatedProcesses": issue_process_rows[:100],
+        "issueEnvironments": environment_rows[:100],
+        "configurations": config_rows[:100],
+        "dataQuality": {
+            "source": "user_initiated_diagnostic_reports",
+            "selectionBias": "users_submit_after_a_problem_or_observed_change",
+            "historicalParsingEnabled": True,
+            "historicalPerformanceUse": "descriptive_only_not_causal_training",
+            "rawReportTextExposed": False,
+        },
+    }
+
+
+def _finite_metric_values(rows, key, positive=False):
+    values = []
+    for row in rows:
+        try:
+            value = float(row.get(key))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(value) and (not positive or value > 0):
+            values.append(value)
+    return values
+
+
 def _median_metric(rows, key, minimum):
-    values = [float(row[key]) for row in rows if row.get(key) is not None and float(row[key]) > 0]
+    values = _finite_metric_values(rows, key, positive=True)
     return round(float(statistics.median(values)), 1) if len(values) >= minimum else None
 
 
 def _aggregate_performance(rows, minimum=PERFORMANCE_MIN_SAMPLES):
-    client_count = len({row["client_hash"] for row in rows})
+    client_groups = {}
+    for row in rows:
+        client_groups.setdefault(row["client_hash"], []).append(row)
+    client_count = len(client_groups)
     result = {
         "sessions": len(rows),
         "clients": client_count,
-        # 同一设备一天可产生多段会话；门槛必须按独立匿名设备计算，否则单机重复
-        # 采样就能让总体或某显卡分组达到公开条件。
+        # 同一设备一天可产生多段会话：先取每台设备的会话中位数，再在设备之间取
+        # 中位数。否则一台高频采样设备虽然过不了设备数门槛，仍会重复加权最终数值。
         "published": len(rows) >= minimum and client_count >= minimum,
+        "aggregation": "clientMedian",
+        "metricClients": {},
     }
     mapping = {
         "avgFps": "avg_fps",
@@ -2089,7 +2824,16 @@ def _aggregate_performance(rows, minimum=PERFORMANCE_MIN_SAMPLES):
         "gpuPower": "gpu_power_avg",
     }
     for output_key, row_key in mapping.items():
-        result[output_key] = _median_metric(rows, row_key, minimum) if result["published"] else None
+        client_values = []
+        for group in client_groups.values():
+            values = _finite_metric_values(group, row_key, positive=True)
+            if values:
+                client_values.append(float(statistics.median(values)))
+        result["metricClients"][output_key] = len(client_values)
+        result[output_key] = (
+            round(float(statistics.median(client_values)), 1)
+            if result["published"] and len(client_values) >= minimum else None
+        )
     return result
 
 
@@ -2102,7 +2846,7 @@ def _summarize_performance_pairs(rows):
         "published": len(rows) >= PERFORMANCE_MIN_COMPARISONS and client_count >= PERFORMANCE_MIN_COMPARISONS,
     }
     for key in metric_keys:
-        values = [float(row[key]) for row in rows if row.get(key) is not None]
+        values = _finite_metric_values(rows, key)
         observed_key = "observed" + key[0].upper() + key[1:]
         result[observed_key] = round(float(statistics.median(values)), 1) if values else None
         result[key] = (
@@ -2171,6 +2915,110 @@ def _performance_views(rows):
         by_config.append(aggregate)
 
     return overall, by_gpu, by_config, _summarize_performance_pairs(paired_rows)
+
+
+def _stored_performance_item_context(row):
+    if int(row.get("item_ids_complete") or 0) != 1:
+        return None
+    try:
+        item_ids = json.loads(row.get("item_ids_json") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(item_ids, list) or len(item_ids) > 64
+        or any(not isinstance(item_id, str) or not _optimization_item_id_re.fullmatch(item_id)
+               for item_id in item_ids)
+        or item_ids != sorted(set(item_ids))
+    ):
+        return None
+    expected_hash = _tuning_item_set_hash(item_ids) if item_ids else ""
+    if (row.get("item_set_hash") or "") != expected_hash:
+        return None
+    scheme = row.get("optimization_scheme") or "unknown"
+    if scheme not in PERFORMANCE_SCHEMES:
+        return None
+    if (not item_ids and scheme != "baseline") or (item_ids and scheme in ("baseline", "legacy-unknown")):
+        return None
+    return scheme, tuple(item_ids), expected_hash
+
+
+def _performance_optimization_views(rows):
+    """Private descriptive association by exact active item set; never claim causality."""
+    valid = []
+    groups = {}
+    client_sets = {}
+    for row in rows:
+        context = _stored_performance_item_context(row)
+        if context is None:
+            continue
+        scheme, item_ids, item_hash = context
+        valid.append(row)
+        group = groups.setdefault(item_ids, {"rows": [], "schemes": Counter(), "hash": item_hash})
+        group["rows"].append(row)
+        group["schemes"][scheme] += 1
+        client_sets.setdefault((row["client_hash"], row.get("gpu_model") or "", item_ids), []).append(row)
+
+    client_medians = {
+        key: _aggregate_performance(group, minimum=1)
+        for key, group in client_sets.items()
+    }
+    pair_groups = {}
+    for (client_hash, gpu_model, item_ids), optimized in client_medians.items():
+        if not item_ids:
+            continue
+        baseline = client_medians.get((client_hash, gpu_model, ()))
+        if not baseline:
+            continue
+        pair_groups.setdefault(item_ids, []).append({
+            "client_hash": client_hash,
+            "fpsDelta": optimized["avgFps"] - baseline["avgFps"],
+            "fps1LowDelta": optimized["fps1Low"] - baseline["fps1Low"],
+            "gpuUtilDelta": _metric_delta(optimized, baseline, "gpuUtil"),
+            "gpuTempDelta": _metric_delta(optimized, baseline, "gpuTemp"),
+            "gpuPowerDelta": _metric_delta(optimized, baseline, "gpuPower"),
+        })
+
+    result_rows = []
+    for item_ids, group in groups.items():
+        aggregate = _aggregate_performance(group["rows"])
+        observed = _aggregate_performance(group["rows"], minimum=1)
+        pairs = _summarize_performance_pairs(pair_groups.get(item_ids, []))
+        dominant_scheme = group["schemes"].most_common(1)[0][0]
+        result_rows.append({
+            "scheme": dominant_scheme,
+            "schemeLabel": PERFORMANCE_SCHEME_LABELS[dominant_scheme],
+            "schemeDistribution": [
+                {"scheme": scheme, "label": PERFORMANCE_SCHEME_LABELS[scheme], "sessions": count}
+                for scheme, count in group["schemes"].most_common()
+            ],
+            "itemSetHash": group["hash"],
+            "itemIds": list(item_ids),
+            "sessions": aggregate["sessions"],
+            "clients": aggregate["clients"],
+            "published": aggregate["published"],
+            "avgFps": aggregate["avgFps"],
+            "fps1Low": aggregate["fps1Low"],
+            "observedAvgFps": observed["avgFps"],
+            "observedFps1Low": observed["fps1Low"],
+            "comparisons": pairs["comparisons"],
+            "matchedClients": pairs["matchedClients"],
+            "comparisonPublished": pairs["published"],
+            "fpsDelta": pairs["fpsDelta"],
+            "fps1LowDelta": pairs["fps1LowDelta"],
+            "observedFpsDelta": pairs["observedFpsDelta"],
+            "observedFps1LowDelta": pairs["observedFps1LowDelta"],
+            "associationOnly": True,
+        })
+    result_rows.sort(key=lambda row: (bool(row["itemIds"]), -row["sessions"], row["itemSetHash"]))
+    return {
+        "rows": result_rows[:100],
+        "completeSessions": len(valid),
+        "completeClients": len({row["client_hash"] for row in valid}),
+        "incompleteSessions": len(rows) - len(valid),
+        "associationOnly": True,
+        "interpretation": "descriptive_association_not_causal",
+        "aggregation": "clientMedian",
+    }
 
 
 def _performance_gpu_inventory(rows):
@@ -2295,8 +3143,12 @@ def _build_experiment_dashboard(conn, start_day, now):
     start_ts = int(dt.datetime.combine(start_day, dt.time.min, tzinfo=REPORT_TIMEZONE).timestamp())
     operation_rows = _rows(
         conn,
-        """SELECT client_hash, action_type, source, result, gpu_model, driver_version,
-                  device_type, os_build, gpu_count, display_mode, item_set_hash,
+        """SELECT client_hash, action_type, source, result, cpu_model, gpu_model, driver_version,
+                  ram_gb, device_type, os_build, gpu_count, display_mode,
+                  cpu_cores, cpu_threads, cpu_packages, memory_type,
+                  memory_configured_mhz, memory_rated_mhz, memory_module_count,
+                  virtual_display_count, pagefile_auto_managed, gpu_reported_model_differs,
+                  item_set_hash,
                   item_ids_json, changed_item_ids_json, succeeded_item_ids_json,
                   failed_item_ids_json, skipped_item_ids_json, attention_item_ids_json,
                   reboot_item_ids_json, backup_status, verification_status, residual_count
@@ -2305,8 +3157,11 @@ def _build_experiment_dashboard(conn, start_day, now):
     )
     experiment_rows = _rows(
         conn,
-        """SELECT client_hash, created_at, completed_at, status, result, gpu_model,
-                  driver_version, device_type, os_build, gpu_count, display_mode
+        """SELECT client_hash, created_at, completed_at, status, result, cpu_model, gpu_model,
+                  driver_version, ram_gb, device_type, os_build, gpu_count, display_mode,
+                  cpu_cores, cpu_threads, cpu_packages, memory_type,
+                  memory_configured_mhz, memory_rated_mhz, memory_module_count,
+                  virtual_display_count, pagefile_auto_managed, gpu_reported_model_differs
              FROM tuning_experiments
             WHERE created_at>=? OR COALESCE(completed_at, 0)>=?""",
         (start_ts, start_ts),
@@ -2333,7 +3188,7 @@ def _build_experiment_dashboard(conn, start_day, now):
         "restoreImmediateVerified": 0, "restorePendingRestart": 0,
         "restoreResiduals": 0, "restoreFailed": 0, "residualUnits": 0,
     }
-    set_groups, item_groups, environment_groups = {}, {}, {}
+    set_groups, item_groups, environment_groups, configuration_groups = {}, {}, {}, {}
     exact_item_operations = 0
     operation_environment_snapshots = 0
     for row in operation_rows:
@@ -2400,6 +3255,31 @@ def _build_experiment_dashboard(conn, start_day, now):
         if row["gpu_model"] and row["os_build"] and row["device_type"]:
             operation_environment_snapshots += 1
 
+        config_key = (
+            row["cpu_model"] or "未知 CPU", int(row["cpu_cores"] or 0), int(row["cpu_threads"] or 0),
+            int(row["cpu_packages"] or 0), float(row["ram_gb"] or 0),
+            row["memory_type"] or "unknown", int(row["memory_configured_mhz"] or 0),
+            int(row["memory_rated_mhz"] or 0), int(row["memory_module_count"] or 0),
+            row["gpu_model"] or "未知 GPU", int(row["gpu_count"] or 0),
+            row["device_type"] or "unknown", int(row["virtual_display_count"]),
+            int(row["pagefile_auto_managed"]), int(row["gpu_reported_model_differs"]),
+        )
+        configuration = configuration_groups.setdefault(config_key, {
+            "cpuModel": config_key[0], "cpuCores": config_key[1], "cpuThreads": config_key[2],
+            "cpuPackages": config_key[3], "ramGb": config_key[4], "memoryType": config_key[5],
+            "memoryConfiguredMhz": config_key[6], "memoryRatedMhz": config_key[7],
+            "memoryModuleCount": config_key[8], "gpuModel": config_key[9],
+            "gpuCount": config_key[10], "deviceType": config_key[11],
+            "virtualDisplayCount": config_key[12], "pagefileAutoManaged": config_key[13],
+            "gpuReportedModelDiffers": config_key[14],
+            "operations": 0, "succeeded": 0, "partial": 0, "failed": 0,
+            "noop": 0, "residuals": 0, "_devices": set(),
+        })
+        configuration["operations"] += 1
+        configuration[row["result"]] += 1
+        configuration["residuals"] += int(row["residual_count"] or 0) > 0
+        configuration["_devices"].add(row["client_hash"])
+
     def finish_groups(groups, kind):
         output = []
         for group in groups.values():
@@ -2416,10 +3296,27 @@ def _build_experiment_dashboard(conn, start_day, now):
     item_sets = finish_groups(set_groups, "sets")
     items = finish_groups(item_groups, "items")
     environments = finish_groups(environment_groups, "environments")
+    configurations = []
+    for group in configuration_groups.values():
+        group["devices"] = len(group.pop("_devices"))
+        count = group["operations"]
+        group["failureRatePct"] = round(group["failed"] * 100.0 / count, 1) if count else 0
+        group["residualRatePct"] = round(group["residuals"] * 100.0 / count, 1) if count else 0
+        configurations.append(group)
+    configurations.sort(key=lambda row: (-row["operations"], row["gpuModel"], row["cpuModel"]))
     completed = [row for row in experiment_rows if row.get("completed_at") is not None]
     enriched_runs = [row for row in run_rows if row.get("frame_count") is not None]
-    mad_values = [float(row["frame_time_mad_ms"]) for row in run_rows if row.get("frame_time_mad_ms") is not None]
-    stutter_values = [float(row["stutters_per_min"]) for row in run_rows if row.get("stutters_per_min") is not None]
+    # 采集失败等无效轮次会带 0 或残缺的扩展指标，只用于计算失败原因；实验指标
+    # 中位数只取 validity=valid，避免失败捕获把稳定性看板和后续建议输入向 0 拉偏。
+    valid_enriched_runs = [row for row in enriched_runs if row.get("validity") == "valid"]
+    mad_values = [
+        float(row["frame_time_mad_ms"]) for row in valid_enriched_runs
+        if row.get("frame_time_mad_ms") is not None
+    ]
+    stutter_values = [
+        float(row["stutters_per_min"]) for row in valid_enriched_runs
+        if row.get("stutters_per_min") is not None
+    ]
     tuning_environment_snapshots = sum(
         bool(row.get("gpu_model") and row.get("os_build") and row.get("device_type"))
         for row in experiment_rows
@@ -2431,7 +3328,7 @@ def _build_experiment_dashboard(conn, start_day, now):
         "noSignificantGain": sum(row.get("result") == "no_significant_gain" for row in completed),
         "runs": len(run_rows), "validRuns": sum(row.get("validity") == "valid" for row in run_rows),
         "invalidRuns": sum(row.get("validity") != "valid" for row in run_rows),
-        "enrichedRuns": len(enriched_runs),
+        "enrichedRuns": len(enriched_runs), "validEnrichedRuns": len(valid_enriched_runs),
         "captureFailures": sum(row.get("capture_failed") == 1 or row.get("invalid_reason") == "capture_failed" for row in run_rows),
         "gameExitedRuns": sum(row.get("game_exited_early") == 1 or row.get("invalid_reason") == "game_exited" for row in run_rows),
         "focusLostRuns": sum(float(row.get("focus_lost_sec") or 0) > 0 for row in run_rows),
@@ -2439,6 +3336,7 @@ def _build_experiment_dashboard(conn, start_day, now):
         "medianFrameTimeMadMs": round(float(statistics.median(mad_values)), 2) if mad_values else None,
         "medianStuttersPerMin": round(float(statistics.median(stutter_values)), 2) if stutter_values else None,
     }
+    diagnostics = _build_diagnostic_analysis(start_ts, now)
     return {
         "dataReadiness": {
             "operations": len(operation_rows),
@@ -2447,9 +3345,12 @@ def _build_experiment_dashboard(conn, start_day, now):
             "tuningExperiments": len(experiment_rows), "tuningRuns": len(run_rows),
             "enrichedTuningRuns": len(enriched_runs),
             "environmentSnapshots": operation_environment_snapshots + tuning_environment_snapshots,
+            "diagnosticReports": diagnostics["reports"],
+            "structuredDiagnosticReports": diagnostics["schemaV2Reports"],
         },
         "operationSummary": summary,
         "itemSets": item_sets[:50], "items": items[:100], "environments": environments[:100],
+        "configurations": configurations[:100], "diagnostics": diagnostics,
         "tuning": tuning,
     }
 
@@ -2530,16 +3431,25 @@ def _build_stats(now=None, days=30):
         )]
         all_performance_rows = _rows(
             conn,
-            """SELECT ps.client_hash, ps.gpu_model, ps.config_tier, ps.avg_fps, ps.fps_1_low,
-                      ps.gpu_util_avg, ps.gpu_temp_avg, ps.gpu_power_avg, ps.authenticated,
-                      COALESCE(c.device_type, '') device_type
+            """SELECT ps.client_hash, ps.gpu_model, ps.config_tier, ps.duration_sec,
+                       ps.avg_fps, ps.fps_1_low,
+                       ps.gpu_util_avg, ps.gpu_temp_avg, ps.gpu_power_avg, ps.authenticated,
+                       ps.optimization_scheme, ps.item_set_hash, ps.item_ids_json,
+                       ps.item_ids_complete,
+                       COALESCE(c.device_type, '') device_type
                  FROM performance_sessions ps
                  LEFT JOIN clients c ON c.client_hash=ps.client_hash
                 WHERE ps.day>=?""",
             (start_day.isoformat(),),
         )
-        performance_rows = [row for row in all_performance_rows if int(row.get("authenticated") or 0) == 1]
-        legacy_performance_sessions = len(all_performance_rows) - len(performance_rows)
+        usable_performance_rows = [row for row in all_performance_rows if _stored_performance_usable(row)]
+        performance_rows = [
+            row for row in usable_performance_rows if int(row.get("authenticated") or 0) == 1
+        ]
+        legacy_performance_sessions = sum(
+            int(row.get("authenticated") or 0) != 1 for row in all_performance_rows
+        )
+        invalid_historical_performance_sessions = len(all_performance_rows) - len(usable_performance_rows)
         authenticated_clients = conn.execute(
             "SELECT COUNT(*) FROM clients WHERE authenticated_last_seen>0"
         ).fetchone()[0]
@@ -2557,14 +3467,15 @@ def _build_stats(now=None, days=30):
     performance, _, performance_by_config, performance_improvement = _performance_views(
         performance_rows
     )
-    performance_by_gpu = _performance_gpu_inventory(all_performance_rows)
+    performance_optimization = _performance_optimization_views(performance_rows)
+    performance_by_gpu = _performance_gpu_inventory(usable_performance_rows)
     performance_by_gpu_by_device = {
         "all": performance_by_gpu,
         "desktop": _performance_gpu_inventory([
-            row for row in all_performance_rows if row.get("device_type") == "desktop"
+            row for row in usable_performance_rows if row.get("device_type") == "desktop"
         ]),
         "laptop": _performance_gpu_inventory([
-            row for row in all_performance_rows if row.get("device_type") == "laptop"
+            row for row in usable_performance_rows if row.get("device_type") == "laptop"
         ]),
     }
 
@@ -2632,11 +3543,13 @@ def _build_stats(now=None, days=30):
         "performanceByGpuByDevice": performance_by_gpu_by_device,
         "performanceByConfig": performance_by_config,
         "performanceImprovement": performance_improvement,
+        "performanceOptimization": performance_optimization,
         "experiments": experiment_dashboard,
         "dataQuality": {
             "source": "client_self_reported",
             "sourceLabel": "客户端自报，未经独立测量验证",
             "aggregation": "median",
+            "performanceAggregation": "client_median_then_population_median",
             "minAggregateSamples": PERFORMANCE_MIN_SAMPLES,
             "minAggregateClients": PERFORMANCE_MIN_SAMPLES,
             "minComparisonSamples": PERFORMANCE_MIN_COMPARISONS,
@@ -2645,6 +3558,9 @@ def _build_stats(now=None, days=30):
             "weightedUsers": round(authenticated_clients + (total_users - authenticated_clients) * 0.25, 1),
             "trustedPerformanceSessions": int(performance["sessions"]),
             "legacyPerformanceSessionsExcluded": int(legacy_performance_sessions),
+            "invalidHistoricalPerformanceSessionsExcluded": int(invalid_historical_performance_sessions),
+            "completeOptimizationContextSessions": int(performance_optimization["completeSessions"]),
+            "incompleteOptimizationContextSessions": int(performance_optimization["incompleteSessions"]),
             "trustedLaunches": int(trusted_usage["launches"]),
             "weightedLaunches": round(
                 trusted_usage["launches"] + (sums["launches"] - trusted_usage["launches"]) * 0.25,
@@ -3005,16 +3921,19 @@ def _period_usage(conn, start, end, filters):
 
 def _weekly_performance_rows(conn, start, end, filters):
     where, args = _client_filter_sql(filters)
-    return _rows(
+    rows = _rows(
         conn,
-        """SELECT ps.client_hash, ps.gpu_model, ps.config_tier, ps.avg_fps,
-                  ps.fps_1_low, ps.gpu_util_avg, ps.gpu_temp_avg, ps.gpu_power_avg,
-                  c.gpu_model profile_gpu_model, c.app_version profile_version,
+        """SELECT ps.client_hash, ps.gpu_model, ps.config_tier, ps.duration_sec, ps.avg_fps,
+                   ps.fps_1_low, ps.gpu_util_avg, ps.gpu_temp_avg, ps.gpu_power_avg,
+                   ps.optimization_scheme, ps.item_set_hash, ps.item_ids_json,
+                   ps.item_ids_complete,
+                   c.gpu_model profile_gpu_model, c.app_version profile_version,
                   c.device_type profile_device_type
              FROM performance_sessions ps JOIN clients c ON c.client_hash=ps.client_hash
             WHERE ps.day>=? AND ps.day<? AND ps.authenticated=1""" + where,
         [start.isoformat(), end.isoformat()] + args,
     )
+    return [row for row in rows if _stored_performance_usable(row)]
 
 
 def _weekly_performance_counts(conn, start, end, filters):
@@ -3044,7 +3963,7 @@ def _weekly_performance_counts(conn, start, end, filters):
 
 
 def _median_positive(rows, key):
-    values = [float(row[key]) for row in rows if row.get(key) is not None and float(row[key]) > 0]
+    values = _finite_metric_values(rows, key, positive=True)
     return float(statistics.median(values)) if values else None
 
 
@@ -3097,7 +4016,7 @@ def _optional_delta(optimized, baseline, key):
 
 
 def _percentile(values, fraction):
-    ordered = sorted(float(value) for value in values)
+    ordered = sorted(value for value in (float(item) for item in values) if math.isfinite(value))
     if not ordered:
         return None
     position = (len(ordered) - 1) * fraction
@@ -3109,7 +4028,7 @@ def _percentile(values, fraction):
 
 
 def _delta_distribution(rows, key, published):
-    values = [float(row[key]) for row in rows if row.get(key) is not None]
+    values = _finite_metric_values(rows, key)
     if not published or len(values) < PERFORMANCE_MIN_COMPARISONS:
         return {"median": None, "mean": None, "p25": None, "p75": None}
     return {

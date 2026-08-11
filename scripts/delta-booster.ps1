@@ -1184,6 +1184,13 @@ function Get-GpuVendor([string]$Pnp, [string]$Name) {
   else   { 'Unknown' }
 }
 
+# 远控/串流软件常安装间接显示驱动。它们不是主力 GPU，但会改变桌面输出、刷新率、
+# 捕获路径和游戏所选适配器；把这个信号单独记录，避免把问题误归因到实体显卡。
+function Test-VirtualDisplayAdapter([string]$Pnp, [string]$Name) {
+  $identity = "$Name $Pnp"
+  [bool]($identity -match '(?i)(?:ToDesk\s+Virtual\s+Display|OrayIddDriver|AskLink\s+Display\s+Adapter|GameViewer\s+Virtual\s+Display|MuMu\s+Virtual\s+Display|Parsec\s+Virtual\s+Display|Sunshine\s+Virtual\s+Display|Indirect\s+Display\s+Driver|IddSampleDriver)')
+}
+
 # Enum 设备键的 Driver 值一一指向显示适配器 Class 键；这里读取不会被 DeviceDesc
 # 伪装覆盖的 DriverDesc，为 AMD 恢复真实型号显示与后续主卡选择。
 function Get-GpuDriverDescription([string]$PnpDeviceId, [string]$Vendor) {
@@ -1318,6 +1325,8 @@ function Get-XmpBiosTutorial($Hw) {
 # 独显前面。用型号特征做稳定排序：NVIDIA GeForce、AMD RX/Pro、Intel Arc 视为独显，
 # 其余 Radeon Graphics / Intel UHD / Iris 作为核显兜底。
 function Get-GpuPreferenceScore($Gpu) {
+  # 已知虚拟/远程显示适配器只描述显示环境，不参与主力 GPU 选择。
+  if ([bool]$Gpu.IsVirtualDisplay) { return -1000 }
   $name = "$($Gpu.Name)"
   switch ("$($Gpu.Vendor)") {
     'NVIDIA' { return 400 }
@@ -1408,19 +1417,28 @@ function Get-NvidiaGpuIdentities {
 
 function Get-HardwareInfo {
   $os   = Get-CimInstance Win32_OperatingSystem
-  $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
+  $processors = @(Get-CimInstance Win32_Processor)
+  $cpu  = $processors | Select-Object -First 1
   $cs   = Get-CimInstance Win32_ComputerSystem
   $board = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
   $memory = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
   $memoryFirst = $memory | Select-Object -First 1
   $memoryType = $(if ($memoryFirst.SMBIOSMemoryType -eq 34) { 'DDR5' }
                   elseif ($memoryFirst.SMBIOSMemoryType -eq 26) { 'DDR4' } else { '未知' })
-  $memoryConfiguredMHz = $(if ($memory.Count -gt 0) {
-    [int](($memory | ForEach-Object { [int]$_.ConfiguredClockSpeed } | Measure-Object -Minimum).Minimum)
+  $configuredSpeeds = @($memory | ForEach-Object { [int]$_.ConfiguredClockSpeed } | Where-Object { $_ -gt 0 })
+  $ratedSpeeds = @($memory | ForEach-Object { [int]$_.Speed } | Where-Object { $_ -gt 0 })
+  $memoryConfiguredMHz = $(if ($configuredSpeeds.Count) {
+    [int](($configuredSpeeds | Measure-Object -Minimum).Minimum)
   } else { 0 })
-  $memoryRatedMHz = $(if ($memory.Count -gt 0) {
-    [int](($memory | ForEach-Object { [int]$_.Speed } | Measure-Object -Minimum).Minimum)
+  $memoryRatedMHz = $(if ($ratedSpeeds.Count) {
+    [int](($ratedSpeeds | Measure-Object -Minimum).Minimum)
   } else { 0 })
+  # WMI 每个 Win32_Processor 对象代表一个处理器封装。旧实现只取第一个对象，会把
+  # 多路机器少算；这里汇总 Windows 当前可见拓扑，并在报告中明确它不是型号标称值。
+  $visibleCores = [int](($processors | ForEach-Object { [int]$_.NumberOfCores } |
+    Where-Object { $_ -gt 0 } | Measure-Object -Sum).Sum)
+  $visibleThreads = [int](($processors | ForEach-Object { [int]$_.NumberOfLogicalProcessors } |
+    Where-Object { $_ -gt 0 } | Measure-Object -Sum).Sum)
   $cpuVendor = $(if ("$($cpu.Manufacturer) $($cpu.Name)" -match '(?i)AuthenticAMD|AMD|Ryzen') { 'AMD' }
                  elseif ("$($cpu.Manufacturer) $($cpu.Name)" -match '(?i)GenuineIntel|Intel|Core') { 'Intel' }
                  else { 'Unknown' })
@@ -1431,7 +1449,9 @@ function Get-HardwareInfo {
     $reportedName = "$($_.Name)".Trim()
     $vendor = Get-GpuVendor $_.PNPDeviceID $reportedName
     $realName = $reportedName
-    $verified = ($vendor -notin @('NVIDIA','AMD'))
+    # Intel 的 WMI 名称可直接作为当前实现的可信来源；NVIDIA / AMD 需要下面的
+    # 二次身份解析。Unknown（常见于虚拟显示驱动）不能被误标成已验证实体显卡。
+    $verified = ($vendor -eq 'Intel')
     $pciLocation = $(if ($vendor -eq 'NVIDIA') { Get-PciBusLocation "$($_.PNPDeviceID)" } else { $null })
     $pciMatched = $false
     if ($vendor -eq 'NVIDIA') {
@@ -1455,6 +1475,7 @@ function Get-HardwareInfo {
       Pnp          = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
       PciLocation  = $pciLocation
       PciMatched   = $pciMatched
+      IsVirtualDisplay = Test-VirtualDisplayAdapter "$($_.PNPDeviceID)" "$reportedName $realName"
     }
   })
   # 双显卡（核显+独显）机器以独显为主，不能依赖 WMI 的未定义返回顺序
@@ -1469,18 +1490,22 @@ function Get-HardwareInfo {
   # 笔记本判定：有电池即笔记本。部分优化项（电源计划 DC 档、显卡型号）取值按机型区分
   $isLaptop = [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
   $brand = Resolve-ComputerBrand "$($cs.Manufacturer)" "$($cs.Model)" "$($board.Manufacturer)"
+  $virtualDisplayCount = @($gpus | Where-Object IsVirtualDisplay).Count
 
   [pscustomobject]@{
     OS            = $os.Caption
     Build         = [int]$os.BuildNumber
     CPU           = $cpu.Name.Trim()
     CpuVendor     = $cpuVendor
-    Cores         = $cpu.NumberOfCores
-    Threads       = $cpu.NumberOfLogicalProcessors
+    Cores         = $visibleCores
+    Threads       = $visibleThreads
+    CpuPackages   = $processors.Count
     RamGB         = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
     MemoryType    = $memoryType
     MemoryConfiguredMHz = $memoryConfiguredMHz
     MemoryRatedMHz = $memoryRatedMHz
+    MemoryModuleCount = $memory.Count
+    AutomaticManagedPagefile = [bool]$cs.AutomaticManagedPagefile
     ComputerBrandKey = $brand.Key
     ComputerBrand = $brand.Name
     ComputerModel = "$($cs.Model)".Trim()
@@ -1498,6 +1523,8 @@ function Get-HardwareInfo {
     DisplayWidth   = $(if ($display) { [int]$display.DisplayWidth } else { 0 })
     DisplayHeight  = $(if ($display) { [int]$display.DisplayHeight } else { 0 })
     DisplayRefreshHz = $(if ($display) { [int]$display.DisplayRefreshHz } else { 0 })
+    VirtualDisplayCount = $virtualDisplayCount
+    HasVirtualDisplay = [bool]($virtualDisplayCount -gt 0)
     IsLaptop      = $isLaptop
     IsAdmin       = Test-Admin
   }

@@ -38,6 +38,7 @@ Assert-True ($raw.Contains('Content="上传完整诊断"') -and
   'expanded negative-effect diagnostic collection is missing from the report button'
 Assert-True ($raw.Contains('function Show-DiagnosticFeedbackDialog') -and
   $raw.Contains("Id = 'frame_drops'; Label = '掉帧 / 帧率波动'") -and
+  $raw.Contains("Id = 'partial_black_screen'; Label = '游戏内部分区域黑屏 / 黑块'") -and
   $raw.Contains("Id = 'system_lag'; Label = '电脑整体卡顿 / 响应慢'") -and
   $raw.Contains("Id = 'gpu_heat'; Label = 'GPU 占用或温度过高'") -and
   $raw.Contains("Id = 'fps_gain'; Label = '平均帧率提升（涨帧）'") -and
@@ -120,6 +121,18 @@ Assert-True ($raw.Contains('x:Name="InlineRestorePanel"') -and
 Assert-True ($raw.Contains("'SystemRoot','WINDIR','ProgramData','ProgramFiles','ProgramFiles(x86)','TEMP','TMP','PATH','PSModulePath','COMSPEC','PATHEXT','__COMPAT_LAYER'") -and
   $raw.Contains('（仅记录名称，不上传值）')) `
   'diagnostic environment collection is not value-allowlisted or does not redact injection values'
+Assert-True ($raw.Contains("`$lines.Add('== 分析字段（schema v2） ==')") -and
+  $raw.Contains('feedback_issue_ids=') -and $raw.Contains('cpu_visible_cores=') -and
+  $raw.Contains('memory_configured_mhz=') -and $raw.Contains('virtual_display_count=') -and
+  $raw.Contains('gpu_panel_status=') -and $raw.Contains('pagefile_auto_managed=') -and
+  $raw.Contains('main_gpu_driver_version=') -and $raw.Contains('main_gpu_model_verified=') -and
+  $raw.Contains('main_gpu_pci_matched=') -and $raw.Contains('display_mode=') -and
+  $raw.Contains('active_related_process_keys=')) `
+  'diagnostic report is missing stable machine-readable recommendation fields'
+Assert-True ($raw.Contains("`$session.validity -eq 'valid'") -and
+  $raw.Contains("`$session.frameCount -lt 1000") -and $raw.Contains("`$session.focusLostSec -gt 5") -and
+  -not $raw.Contains('if ($session.avgFps -le 0 -and $session.gpuUtilAvg -le 0)')) `
+  'ordinary performance capture can still upload a known-invalid frame sample'
 
 function Find-GuiFunction([string]$Name) {
   $matches = @($ast.FindAll({
@@ -149,6 +162,58 @@ $commonHighlightFunction = Find-GuiFunction 'Set-DropFrameCommonText'
 $vendorLinkFunction = Find-GuiFunction 'Set-DropFrameVendorText'
 $updateDropFrameFunction = Find-GuiFunction 'Update-DropFrameRepairPage'
 $itemRowFunction = Find-GuiFunction 'New-ItemRow'
+$protectReportFunction = Find-GuiFunction 'Protect-ReportText'
+$gpuPanelInventoryFunction = Find-GuiFunction 'Get-GuiGpuPanelInventory'
+
+& {
+  param([string]$FunctionText)
+  $script:OriginalUserLocalAppData = 'C:\Users\Administrator\AppData\Local'
+  Invoke-Expression $FunctionText
+  $machine = [Environment]::MachineName
+  $protected = Protect-ReportText "FilterAdministratorToken=1; C:\Users\Administrator\AppData\Local; user Administrator; pc $machine"
+  Assert-True $protected.Contains('FilterAdministratorToken=1') `
+    'diagnostic redaction corrupts an identifier containing the original user name'
+  Assert-True ($protected.Contains('C:\Users\<user>\AppData\Local') -and
+    $protected.Contains('user <user>') -and $protected.Contains('pc <pc>')) `
+    'diagnostic redaction does not cover the authenticated original profile and machine token'
+} $protectReportFunction.Extent.Text
+
+& {
+  param([string]$FunctionText)
+  $script:BrokerCalls = New-Object System.Collections.ArrayList
+  $script:ReturnInvalidGpuInventory = $false
+  function Invoke-EngineHostUserAction([string]$Action, [string]$Payload = '') {
+    [void]$script:BrokerCalls.Add([pscustomobject]@{ Action=$Action; Payload=$Payload })
+    if ($script:ReturnInvalidGpuInventory) { return '[]' }
+    switch ($Action) {
+      'GetNvidiaPanelApps' { '[{"Key":"nv-cpl","Installed":true},{"Key":"nv-app","Installed":false}]' }
+      'GetAmdPanelApps' { '[{"Key":"amd-sw","Installed":true}]' }
+      'GetIntelPanelApps' { '[{"Key":"intel-gcc","Installed":true}]' }
+    }
+  }
+  function Write-Log([string]$Message) { $script:GpuInventoryLog = $Message }
+  Invoke-Expression $FunctionText
+  $script:RepairOnlySession = $true
+  $compatibility = Get-GuiGpuPanelInventory 'NVIDIA'
+  $script:RepairOnlySession = $false
+  $nvidia = Get-GuiGpuPanelInventory ' nViDiA '
+  $amd = Get-GuiGpuPanelInventory 'AMD'
+  $intel = Get-GuiGpuPanelInventory 'intel'
+  $unknown = Get-GuiGpuPanelInventory 'Unknown'
+  Assert-True (($script:BrokerCalls.Action -join ',') -eq 'GetNvidiaPanelApps,GetAmdPanelApps,GetIntelPanelApps') `
+    'GPU software detection does not map vendors to fixed broker actions'
+  Assert-True (@($script:BrokerCalls | Where-Object Payload).Count -eq 0) `
+    'GPU software detection still sends vendor identity as a free-text broker payload'
+  Assert-True ($compatibility.Status -eq 'unavailable_in_compatibility_mode' -and
+    @($compatibility.Apps).Count -eq 0 -and $nvidia.Status -eq 'ok' -and
+    $amd.Status -eq 'ok' -and $intel.Status -eq 'ok' -and
+    $unknown.Status -eq 'unsupported_vendor' -and @($unknown.Apps).Count -eq 0) `
+    "GPU software inventory status classification is inconsistent: compatibility=$($compatibility.Status), NVIDIA=$($nvidia.Status), AMD=$($amd.Status), Intel=$($intel.Status), unknown=$($unknown.Status), log=$script:GpuInventoryLog"
+  $script:ReturnInvalidGpuInventory = $true
+  $invalid = Get-GuiGpuPanelInventory 'NVIDIA'
+  Assert-True ($invalid.Status -eq 'broker_failed' -and @($invalid.Apps).Count -eq 0) `
+    'malformed GPU software inventory is treated as a successful detection'
+} $gpuPanelInventoryFunction.Extent.Text
 $dropFramePlanText = $dropFramePlanFunction.Extent.Text
 Assert-True ($dropFramePlanText.Contains("'NVIDIA'") -and $dropFramePlanText.Contains("'AMD'") -and
   $dropFramePlanText.Contains("'Intel'") -and $dropFramePlanText.Contains('MainGpuVendor') -and

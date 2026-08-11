@@ -177,7 +177,9 @@ function Get-DfbTuningPayloadInfo($Payload) {
   if ($copy -is [array] -or $copy -is [string] -or $null -eq $copy) { throw 'tuning payload must be an object' }
 
   $common = @('installId','event','version','os','build','cpu','gpuVendor','gpuModel','gpuModelVerified',
-    'ramGb','deviceType','tuningType','experimentId','driverVersion','gpuCount','displayMode')
+    'ramGb','deviceType','tuningType','experimentId','driverVersion','gpuCount','displayMode',
+    'cpuCores','cpuThreads','cpuPackages','memoryType','memoryConfiguredMhz','memoryRatedMhz',
+    'memoryModuleCount','virtualDisplayCount','pagefileAutoManaged','gpuReportedModelDiffers')
   $requiredCommon = @('installId','event','version','os','build','cpu','gpuVendor','gpuModel','gpuModelVerified',
     'ramGb','deviceType','tuningType','experimentId')
   $typeFields = @{
