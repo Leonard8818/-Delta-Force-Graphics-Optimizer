@@ -26,7 +26,7 @@ Assert-True ($duplicates.Count -eq 0) ('duplicate HTML ids: '+(($duplicates|ForE
 $experimentIds=@([regex]::Matches($raw,"(?:set|renderExperimentRows)\('(?<id>exp[A-Za-z0-9]+)'")|ForEach-Object{$_.Groups['id'].Value}|Sort-Object -Unique)
 foreach($id in $experimentIds){Assert-True ($ids -contains $id) "renderExperiments references a missing node: $id"}
 Assert-True (-not $raw.Contains('client_hash')) 'private dashboard exposes a raw client hash field'
-Assert-True ($raw.Contains("fetch('../api/stats'")) 'dashboard no longer loads the protected aggregate stats API'
+Assert-True ($raw.Contains("fetch('/admin/api/stats'")) 'dashboard no longer loads the protected aggregate stats API'
 Assert-True ($raw.Contains("history.replaceState(null,'',selected==='experiments'?'#experiments':'#usage')")) 'main tab selection is not addressable by hash'
 Assert-True ($raw.Contains('不会上传项目的注册表路径、键值、原值或新值')) 'privacy notice does not explain the new project-level telemetry boundary'
 
