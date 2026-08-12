@@ -1071,32 +1071,43 @@ function Set-KvStringItem([string]$Raw, [string]$Key, [string]$Value) {
 # 多版本共存本来就正常。判定口径（用户实测坐实）：只有缺失某个架构才算问题——x64 与
 # x86 相互独立，版本不同步很常见且通常无害，一律报警是误报。
 # 下载链接必须用 vs/18：vs/17 是 14.44 线，在已装更新版本的机器上必撞 0x80070666。
-function Get-VcRedistStatus {
+function Get-VcRedistInventory {
   $keys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
           'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
   $all = @(Get-ItemProperty $keys -ErrorAction SilentlyContinue |
            Where-Object { $_.DisplayName -match 'Visual C\+\+' -and $_.DisplayVersion -match '^14\.' })
-  # 文案直接带微软官方永久链接：用户不用再自己搜安装包，配合日志一键复制即可拿到
-  $dl = 'https://aka.ms/vs/18/release/vc_redist.x64.exe 和 https://aka.ms/vs/18/release/vc_redist.x86.exe'
-  if ($all.Count -eq 0) {
-    return @{ Ok = $false; Text = "未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：$dl，装完重启后再跑一次检测确认" }
-  }
-  # 按架构分组（DisplayName 里带 x64/x86 字样；arm64 不含字母 x 不会误匹配）
   $vc64 = @($all | Where-Object { $_.DisplayName -match '(?i)x64' })
   $vc86 = @($all | Where-Object { $_.DisplayName -match '(?i)x86' })
-  if ($vc64.Count -eq 0 -or $vc86.Count -eq 0) {
-    $missArch = $(if ($vc64.Count -eq 0) { 'x64' } else { 'x86' })
+  $ver64 = @($vc64 | ForEach-Object { try { [version]$_.DisplayVersion } catch {} } | Sort-Object -Descending | Select-Object -First 1)
+  $ver86 = @($vc86 | ForEach-Object { try { [version]$_.DisplayVersion } catch {} } | Sort-Object -Descending | Select-Object -First 1)
+  [pscustomobject]@{
+    Status = $(if ($all.Count -eq 0) { 'missing_both' } elseif ($vc64.Count -eq 0) { 'missing_x64' }
+      elseif ($vc86.Count -eq 0) { 'missing_x86' } else { 'complete' })
+    X64Version = $(if ($ver64.Count) { "$($ver64[0])" } else { '' })
+    X86Version = $(if ($ver86.Count) { "$($ver86[0])" } else { '' })
+    ComponentCount = [int]$all.Count
+  }
+}
+
+function Get-VcRedistStatus {
+  $inventory = Get-VcRedistInventory
+  # 文案直接带微软官方永久链接：用户不用再自己搜安装包，配合日志一键复制即可拿到
+  $dl = 'https://aka.ms/vs/18/release/vc_redist.x64.exe 和 https://aka.ms/vs/18/release/vc_redist.x86.exe'
+  if ($inventory.Status -eq 'missing_both') {
+    return @{ Ok = $false; Text = "未检测到 VC++ 2015-2022(v14) 运行库 —— 游戏很可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：$dl，装完重启后再跑一次检测确认" }
+  }
+  if ($inventory.Status -in 'missing_x64','missing_x86') {
+    $missArch = $(if ($inventory.Status -eq 'missing_x64') { 'x64' } else { 'x86' })
     return @{ Ok = $false; Text = "缺少 $missArch 架构的 v14 运行库 —— 依赖它的程序（含游戏组件）可能无法启动。请下载 x64 与 x86 两个都装（双击覆盖安装即可）：$dl，装完重启后再跑一次检测确认" }
   }
-  # 每个架构取已装的最高版本作代表（同架构的 Minimum/Additional Runtime 组件版本一致）
-  $ver64 = @($vc64 | ForEach-Object { [version]$_.DisplayVersion } | Sort-Object -Descending)[0]
-  $ver86 = @($vc86 | ForEach-Object { [version]$_.DisplayVersion } | Sort-Object -Descending)[0]
+  $ver64 = [version]$inventory.X64Version
+  $ver86 = [version]$inventory.X86Version
   if ($ver64.Minor -ne $ver86.Minor) {
     # 中性陈述而非报警：没有严格证据表明版本不同步必然导致掉帧/闪退（社区只有
     # 「重装后恢复」的个案报告），把它计入「体检发现问题」会制造误报和无谓折腾
     return @{ Ok = $true; Text = "x64 $ver64 / x86 $ver86，版本不同步——两套运行库相互独立，这在多数机器上无害，不算问题；只有确实遇到闪退或异常掉帧且排除了其他原因时，才值得给两个架构都装同一条最新线的包来统一：$dl。若安装器报 0x80070666「已安装更新的版本」，说明系统里的比安装包还新——正常现象，不用处理，也不要为此卸载" }
   }
-  @{ Ok = $true; Text = "v14 运行库 x64/x86 版本一致（x64 $ver64 / x86 $ver86，共 $($all.Count) 个组件），正常" }
+  @{ Ok = $true; Text = "v14 运行库 x64/x86 版本一致（x64 $ver64 / x86 $ver86，共 $($inventory.ComponentCount) 个组件），正常" }
 }
 
 # WMI 读不到 SPD 中是否真的存在 XMP/A-XMP/EXPO/DOCP 档位，只能比较当前频率与
@@ -1415,11 +1426,113 @@ function Get-NvidiaGpuIdentities {
   } catch { @() }
 }
 
+function Get-SystemPowerSnapshot {
+  try {
+    if (-not ('DfbSystemPowerStatus' -as [type])) {
+      Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class DfbSystemPowerStatus {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct SYSTEM_POWER_STATUS {
+    public byte ACLineStatus;
+    public byte BatteryFlag;
+    public byte BatteryLifePercent;
+    public byte SystemStatusFlag;
+    public uint BatteryLifeTime;
+    public uint BatteryFullLifeTime;
+  }
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
+  public static SYSTEM_POWER_STATUS Read() {
+    SYSTEM_POWER_STATUS status;
+    if (!GetSystemPowerStatus(out status)) throw new InvalidOperationException("GetSystemPowerStatus failed");
+    return status;
+  }
+}
+'@
+    }
+    $status = [DfbSystemPowerStatus]::Read()
+    [pscustomobject]@{
+      Source = $(if ($status.ACLineStatus -eq 1) { 'ac' } elseif ($status.ACLineStatus -eq 0) { 'battery' } else { 'unknown' })
+      BatteryPercent = $(if ($status.BatteryLifePercent -le 100) { [int]$status.BatteryLifePercent } else { $null })
+    }
+  } catch {
+    [pscustomobject]@{ Source = 'unknown'; BatteryPercent = $null }
+  }
+}
+
+function Get-DisplayTopologyInfo {
+  $queried = $false
+  $connections = @()
+  try {
+    $connections = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -ErrorAction Stop |
+      Where-Object { $_.Active -ne $false })
+    $queried = $true
+  } catch {}
+  $connectors = @()
+  $internal = 0; $external = 0
+  foreach ($connection in $connections) {
+    $technology = [int64]$connection.VideoOutputTechnology
+    if ($technology -lt 0) { $technology += 4294967296L }
+    $connector = switch ($technology) {
+      0 { 'vga' }
+      4 { 'dvi' }
+      5 { 'hdmi' }
+      6 { 'lvds' }
+      10 { 'displayport' }
+      11 { 'embedded-displayport' }
+      13 { 'embedded-udi' }
+      2147483648 { 'internal' }
+      default { 'other' }
+    }
+    $connectors += $connector
+    if ($technology -in 6,11,13,2147483648) { $internal++ } else { $external++ }
+  }
+  [pscustomobject]@{
+    QueryAvailable = [bool]$queried
+    ActiveDisplayCount = [int]$connections.Count
+    InternalDisplayCount = [int]$internal
+    ExternalDisplayCount = [int]$external
+    HasInternalDisplay = $(if ($queried -and $connections.Count -gt 0) { [bool]($internal -gt 0) } else { $null })
+    Connectors = [string[]]@($connectors | Sort-Object -Unique)
+  }
+}
+
+function Resolve-FormFactor([object[]]$ChassisTypes, $HasBattery, $HasInternalDisplay) {
+  $types = @($ChassisTypes | ForEach-Object { try { [int]$_ } catch {} } |
+    Where-Object { $_ -ge 1 -and $_ -le 36 } | Sort-Object -Unique)
+  # SMBIOS chassis types: portable/notebook/tablet/convertible/detachable are portable;
+  # tower/AIO/rack/mini-PC/stick-PC are stationary.  A battery alone is not proof of a
+  # notebook because desktop UPS devices can expose Win32_Battery.
+  $portableTypes = @(8,9,10,11,14,30,31,32)
+  $stationaryTypes = @(3,4,5,6,7,13,15,16,17,23,24,34,35,36)
+  $portable = @($types | Where-Object { $portableTypes -contains $_ }).Count -gt 0
+  $stationary = @($types | Where-Object { $stationaryTypes -contains $_ }).Count -gt 0
+  $batteryKnown = $null -ne $HasBattery
+  $internalKnown = $null -ne $HasInternalDisplay
+  $battery = $batteryKnown -and [bool]$HasBattery
+  $internal = $internalKnown -and [bool]$HasInternalDisplay
+  $formFactor = 'unknown'; $confidence = 'low'
+  if ($portable -and -not $stationary) { $formFactor = 'laptop'; $confidence = 'high' }
+  elseif ($stationary -and -not $portable) { $formFactor = 'desktop'; $confidence = 'high' }
+  elseif (-not $portable -and -not $stationary -and $battery -and $internal) {
+    $formFactor = 'laptop'; $confidence = 'medium'
+  }
+  [pscustomobject]@{
+    FormFactor = $formFactor
+    Confidence = $confidence
+    ChassisTypes = [int[]]$types
+    IsUpsAmbiguous = [bool]($battery -and (($stationary -and -not $portable) -or ($internalKnown -and -not $internal)))
+  }
+}
+
 function Get-HardwareInfo {
   $os   = Get-CimInstance Win32_OperatingSystem
   $processors = @(Get-CimInstance Win32_Processor)
   $cpu  = $processors | Select-Object -First 1
   $cs   = Get-CimInstance Win32_ComputerSystem
+  $enclosures = @(Get-CimInstance Win32_SystemEnclosure -ErrorAction SilentlyContinue)
   $board = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
   $memory = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
   $memoryFirst = $memory | Select-Object -First 1
@@ -1469,9 +1582,14 @@ function Get-HardwareInfo {
       NameVerified = $verified
       Vendor       = $vendor
       Driver       = $_.DriverVersion
+      DriverDate   = $(try {
+        if ($_.DriverDate -is [DateTime]) { ([DateTime]$_.DriverDate).ToString('yyyy-MM-dd') }
+        else { ([Management.ManagementDateTimeConverter]::ToDateTime("$($_.DriverDate)")).ToString('yyyy-MM-dd') }
+      } catch { '' })
       DisplayWidth = $(if ([int64]$_.CurrentHorizontalResolution -ge 640 -and [int64]$_.CurrentHorizontalResolution -le 16384) { [int]$_.CurrentHorizontalResolution } else { 0 })
       DisplayHeight = $(if ([int64]$_.CurrentVerticalResolution -ge 480 -and [int64]$_.CurrentVerticalResolution -le 8640) { [int]$_.CurrentVerticalResolution } else { 0 })
       DisplayRefreshHz = $(if ([int64]$_.CurrentRefreshRate -ge 24 -and [int64]$_.CurrentRefreshRate -le 1000) { [int]$_.CurrentRefreshRate } else { 0 })
+      DisplayActive = [bool]([int64]$_.CurrentHorizontalResolution -gt 0 -and [int64]$_.CurrentVerticalResolution -gt 0)
       Pnp          = $_.PNPDeviceID   # 中断绑核要按设备实例路径落到 Enum 键下
       PciLocation  = $pciLocation
       PciMatched   = $pciMatched
@@ -1487,10 +1605,20 @@ function Get-HardwareInfo {
                            @{Expression='DisplayRefreshHz';Descending=$true} | Select-Object -First 1)
   if ($display.Count -gt 0) { $display = $display[0] } else { $display = $null }
 
-  # 笔记本判定：有电池即笔记本。部分优化项（电源计划 DC 档、显卡型号）取值按机型区分
-  $isLaptop = [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
+  $batteryKnown = $false; $batteries = @()
+  try { $batteries = @(Get-CimInstance Win32_Battery -ErrorAction Stop); $batteryKnown = $true } catch {}
+  $hasBattery = $(if ($batteryKnown) { [bool]($batteries.Count -gt 0) } else { $null })
+  $chassisTypes = @($enclosures | ForEach-Object { @($_.ChassisTypes) } | ForEach-Object { $_ })
+  $displayTopology = Get-DisplayTopologyInfo
+  $formFactor = Resolve-FormFactor $chassisTypes $hasBattery $displayTopology.HasInternalDisplay
+  $isLaptop = $formFactor.FormFactor -eq 'laptop'
+  $powerStatus = Get-SystemPowerSnapshot
   $brand = Resolve-ComputerBrand "$($cs.Manufacturer)" "$($cs.Model)" "$($board.Manufacturer)"
   $virtualDisplayCount = @($gpus | Where-Object IsVirtualDisplay).Count
+  $physicalGpus = @($gpus | Where-Object { -not $_.IsVirtualDisplay })
+  $hybridGraphics = [bool]($physicalGpus.Count -gt 1 -and @($physicalGpus.Vendor | Sort-Object -Unique).Count -gt 1)
+  $cpuTopology = @(Get-CpuCoreTopology)
+  $cpuEfficiencyClasses = @($cpuTopology | ForEach-Object { [int]$_.Class } | Sort-Object -Unique)
 
   [pscustomobject]@{
     OS            = $os.Caption
@@ -1500,6 +1628,9 @@ function Get-HardwareInfo {
     Cores         = $visibleCores
     Threads       = $visibleThreads
     CpuPackages   = $processors.Count
+    CpuEfficiencyClasses = [int[]]$cpuEfficiencyClasses
+    HybridCpu     = [bool]($cpuEfficiencyClasses.Count -gt 1)
+    HypervisorPresent = $(if ($null -eq $cs.HypervisorPresent) { $null } else { [bool]$cs.HypervisorPresent })
     RamGB         = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
     MemoryType    = $memoryType
     MemoryConfiguredMHz = $memoryConfiguredMHz
@@ -1508,7 +1639,9 @@ function Get-HardwareInfo {
     AutomaticManagedPagefile = [bool]$cs.AutomaticManagedPagefile
     ComputerBrandKey = $brand.Key
     ComputerBrand = $brand.Name
+    ComputerManufacturer = "$($cs.Manufacturer)".Trim()
     ComputerModel = "$($cs.Model)".Trim()
+    ComputerModelFamily = $(if ("$($cs.SystemFamily)".Trim()) { "$($cs.SystemFamily)".Trim() } else { "$($cs.Model)".Trim() })
     BaseBoardManufacturer = "$($board.Manufacturer)".Trim()
     BaseBoardProduct = "$($board.Product)".Trim()
     BiosEntryHint = Get-BiosEntryInstruction $brand.Key $isLaptop
@@ -1523,8 +1656,25 @@ function Get-HardwareInfo {
     DisplayWidth   = $(if ($display) { [int]$display.DisplayWidth } else { 0 })
     DisplayHeight  = $(if ($display) { [int]$display.DisplayHeight } else { 0 })
     DisplayRefreshHz = $(if ($display) { [int]$display.DisplayRefreshHz } else { 0 })
+    DisplayGpuVendor = $(if ($display) { "$($display.Vendor)" } else { 'Unknown' })
+    DisplayGpuName = $(if ($display) { "$($display.Name)" } else { '' })
+    DisplayGpuPnp = $(if ($display) { "$($display.Pnp)" } else { '' })
+    DisplayGpuNameVerified = $(if ($display) { [bool]$display.NameVerified } else { $false })
+    HybridGraphics = $hybridGraphics
     VirtualDisplayCount = $virtualDisplayCount
     HasVirtualDisplay = [bool]($virtualDisplayCount -gt 0)
+    FormFactor = "$($formFactor.FormFactor)"
+    FormFactorConfidence = "$($formFactor.Confidence)"
+    ChassisTypes = [int[]]@($formFactor.ChassisTypes)
+    HasBattery = $hasBattery
+    HasInternalDisplay = $displayTopology.HasInternalDisplay
+    IsUpsAmbiguous = [bool]$formFactor.IsUpsAmbiguous
+    ActiveDisplayCount = [int]$displayTopology.ActiveDisplayCount
+    InternalDisplayCount = [int]$displayTopology.InternalDisplayCount
+    ExternalDisplayCount = [int]$displayTopology.ExternalDisplayCount
+    DisplayConnectors = [string[]]@($displayTopology.Connectors)
+    PowerSource = "$($powerStatus.Source)"
+    BatteryPercent = $powerStatus.BatteryPercent
     IsLaptop      = $isLaptop
     IsAdmin       = Test-Admin
   }
@@ -2631,6 +2781,11 @@ function ConvertTo-CanonicalBackupItem($Item) {
 
 function Get-BackupCanonicalPayload($Document) {
   $schema = [int]$Document.SchemaVersion
+  # PowerShell 7 的 ConvertFrom-Json 会把 ISO-8601 时间自动转成 DateTime；若直接插值，
+  # HMAC 复验会受当前区域格式影响。统一还原成 UTC round-trip 格式，兼容 5.1/7。
+  $createdUtc = $(if ($Document.CreatedUtc -is [DateTime]) {
+    $Document.CreatedUtc.ToUniversalTime().ToString('o')
+  } else { "$($Document.CreatedUtc)" })
   if ($schema -eq 3) {
     $payload = [ordered]@{
       SchemaVersion = $schema
@@ -2638,7 +2793,7 @@ function Get-BackupCanonicalPayload($Document) {
       ApplyId = "$($Document.ApplyId)"
       AppVersion = "$($Document.AppVersion)"
       CatalogVersion = [int]$Document.CatalogVersion
-      CreatedUtc = "$($Document.CreatedUtc)"
+      CreatedUtc = $createdUtc
       UserSid = "$($Document.UserSid)"
       UserLocalAppData = "$($Document.UserLocalAppData)"
       State = "$($Document.State)"
@@ -2649,7 +2804,7 @@ function Get-BackupCanonicalPayload($Document) {
     $payload = [ordered]@{
       SchemaVersion = $schema
       BackupId = "$($Document.BackupId)"
-      CreatedUtc = "$($Document.CreatedUtc)"
+      CreatedUtc = $createdUtc
       UserSid = "$($Document.UserSid)"
       UserLocalAppData = "$($Document.UserLocalAppData)"
       State = "$($Document.State)"
@@ -3312,6 +3467,11 @@ function Get-RestoreOpKey($op) {
 }
 
 function Get-RestoreReceiptCanonicalPayload($Receipt) {
+  # PowerShell 7 会把 ConvertFrom-Json 读到的 ISO-8601 时间转成 DateTime；
+  # 与备份文档使用相同的 UTC round-trip 表示，保证 5.1/7 复验一致。
+  $createdUtc = $(if ($Receipt.CreatedUtc -is [DateTime]) {
+    $Receipt.CreatedUtc.ToUniversalTime().ToString('o')
+  } else { "$($Receipt.CreatedUtc)" })
   $payload = [pscustomobject][ordered]@{
     SchemaVersion = [int]$Receipt.SchemaVersion
     RestoreActionId = "$($Receipt.RestoreActionId)"
@@ -3321,7 +3481,7 @@ function Get-RestoreReceiptCanonicalPayload($Receipt) {
     ConsumedOps = @($Receipt.ConsumedOps | ForEach-Object {
       [pscustomobject][ordered]@{ BackupId = "$($_.BackupId)"; OpId = "$($_.OpId)" }
     })
-    CreatedUtc = "$($Receipt.CreatedUtc)"
+    CreatedUtc = $createdUtc
     Verification = "$($Receipt.Verification)"
   }
   $payload | ConvertTo-Json -Depth 8 -Compress
@@ -3520,6 +3680,7 @@ function Get-RestoreItemCatalog {
     })
   }
   $legacyRecords = @($state.Records | Where-Object { [int]$_.Document.SchemaVersion -eq 2 -and @($_.Document.Ops).Count -gt 0 })
+  $pendingRecords = @($state.Records | Where-Object { "$($_.Path)" -like '*.pending.json' })
   $unsupportedIds = @($active | Where-Object { $supported -notcontains "$($_.Op.ItemId)" } | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique)
   $activeV3BackupCount = @($active | ForEach-Object BackupId | Select-Object -Unique).Count
   [pscustomobject][ordered]@{
@@ -3528,6 +3689,8 @@ function Get-RestoreItemCatalog {
     ActiveItemIds = @($active | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique)
     ActiveItemCount = @($active | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique).Count
     ActiveOpCount = $active.Count + @($legacyRecords | ForEach-Object { @($_.Document.Ops) }).Count
+    PendingBackupCount = $pendingRecords.Count
+    ConflictItemCount = @($items.ToArray() | Where-Object { $_.Status -in 'conflict','shared_target','unsupported' }).Count
     HasActiveChanges = [bool]($active.Count -gt 0 -or $legacyRecords.Count -gt 0); Notes = @($state.Notes)
   }
 }

@@ -38,7 +38,12 @@ Assert-True ($raw.Contains('Content="上传完整诊断"') -and
   'expanded negative-effect diagnostic collection is missing from the report button'
 Assert-True ($raw.Contains('function Show-DiagnosticFeedbackDialog') -and
   $raw.Contains("Id = 'frame_drops'; Label = '掉帧 / 帧率波动'") -and
+  $raw.Contains("Id = 'black_screen_audio'; Label = '游戏全屏黑屏，但仍有声音'") -and
+  $raw.Contains("Id = 'black_screen_no_audio'; Label = '游戏全屏黑屏，声音也中断'") -and
   $raw.Contains("Id = 'partial_black_screen'; Label = '游戏内部分区域黑屏 / 黑块'") -and
+  $raw.Contains("Id = 'black_screen_alt_tab'; Label = 'Alt+Tab / 切换显示模式后黑屏'") -and
+  $raw.Contains("Id = 'black_screen_frame_generation'; Label = '开启帧生成后出现黑屏'") -and
+  $raw.Contains("Id = 'black_screen_external_display'; Label = '外接显示器 / 独显直连时黑屏'") -and
   $raw.Contains("Id = 'system_lag'; Label = '电脑整体卡顿 / 响应慢'") -and
   $raw.Contains("Id = 'gpu_heat'; Label = 'GPU 占用或温度过高'") -and
   $raw.Contains("Id = 'fps_gain'; Label = '平均帧率提升（涨帧）'") -and
@@ -121,7 +126,7 @@ Assert-True ($raw.Contains('x:Name="InlineRestorePanel"') -and
 Assert-True ($raw.Contains("'SystemRoot','WINDIR','ProgramData','ProgramFiles','ProgramFiles(x86)','TEMP','TMP','PATH','PSModulePath','COMSPEC','PATHEXT','__COMPAT_LAYER'") -and
   $raw.Contains('（仅记录名称，不上传值）')) `
   'diagnostic environment collection is not value-allowlisted or does not redact injection values'
-Assert-True ($raw.Contains("`$lines.Add('== 分析字段（schema v2） ==')") -and
+Assert-True ($raw.Contains("`$lines.Add('== 分析字段（schema v3） ==')") -and
   $raw.Contains('feedback_issue_ids=') -and $raw.Contains('cpu_visible_cores=') -and
   $raw.Contains('memory_configured_mhz=') -and $raw.Contains('virtual_display_count=') -and
   $raw.Contains('gpu_panel_status=') -and $raw.Contains('pagefile_auto_managed=') -and
@@ -129,6 +134,22 @@ Assert-True ($raw.Contains("`$lines.Add('== 分析字段（schema v2） ==')") -
   $raw.Contains('main_gpu_pci_matched=') -and $raw.Contains('display_mode=') -and
   $raw.Contains('active_related_process_keys=')) `
   'diagnostic report is missing stable machine-readable recommendation fields'
+Assert-True ($raw.Contains('function Get-TelemetryAnalysisContext') -and
+  $raw.Contains('function Get-TelemetryRegValue') -and
+  $raw.Contains('cpuEfficiencyClasses =') -and $raw.Contains('windowsReleaseChannel =') -and
+  $raw.Contains('optimizationItemIds =') -and $raw.Contains('gpuPanelInstalledKeys =') -and
+  $raw.Contains('activeSoftwareKeys =') -and $raw.Contains('pendingBackupCount =') -and
+  $raw.Contains('systemDriveMediaType =') -and $raw.Contains('gameDriveMediaType =')) `
+  'future personalization context is missing required fixed-schema fields'
+Assert-True ($raw.Contains("'GamePP'='gamepp'") -and
+  $raw.Contains('processCpuAvgPct=') -and $raw.Contains('systemMemoryUsedAvgPct=') -and
+  $raw.Contains('gpuDedicatedMemoryAvgMb=') -and $raw.Contains('presentedFrameTimeCvPct=') -and
+  $raw.Contains('$physicalIndexByAdapter') -and
+  $raw.Contains('$physicalIndexByAdapter[$gameRenderAdapterLuid]') -and
+  $raw.Contains('$dedicatedCounters.Count') -and $raw.Contains('$sharedCounters.Count')) `
+  'Game++-inspired runtime signals are missing from collection'
+Assert-True ($raw.Contains('[math]::Max($gpuDedicatedMb.Count,$gpuSharedMb.Count)')) `
+  'partial GPU process-memory counters can still be mislabeled as zero samples'
 Assert-True ($raw.Contains("`$session.validity -eq 'valid'") -and
   $raw.Contains("`$session.frameCount -lt 1000") -and $raw.Contains("`$session.focusLostSec -gt 5") -and
   -not $raw.Contains('if ($session.avgFps -le 0 -and $session.gpuUtilAvg -le 0)')) `

@@ -68,6 +68,104 @@ class TelemetryTests(unittest.TestCase):
             "gpuReportedModelDiffers": True,
         }
 
+    def analysis_context(self, item_ids=None, scheme="baseline", complete=True):
+        item_ids = sorted(list(item_ids or []))
+        return {
+            "schemaVersion": 1,
+            "formFactor": "desktop", "formFactorConfidence": "high", "chassisTypes": [3],
+            "hasBattery": False, "hasInternalDisplay": False, "upsAmbiguous": False,
+            "manufacturer": "Example", "modelFamily": "Example Desktop",
+            "cpuEfficiencyClasses": [0], "hybridCpu": False, "hypervisorPresent": False,
+            "gpuAdapters": [{
+                "vendor": "NVIDIA", "model": "NVIDIA GeForce RTX 4070 SUPER",
+                "modelVerified": True, "reportedModelDiffers": False,
+                "driverVersion": "600.00", "driverDate": "2026-08-01",
+                "virtualDisplay": False, "displayActive": True,
+                "displayMode": "2560x1440@165", "main": True, "displayConnected": True,
+            }],
+            "displayAdapterVendor": "NVIDIA", "displayAdapterModel": "NVIDIA GeForce RTX 4070 SUPER",
+            "displayAdapterModelVerified": True, "hybridGraphics": False,
+            "activeDisplayCount": 1, "internalDisplayCount": 0, "externalDisplayCount": 1,
+            "displayConnectors": ["displayport"], "windowsDisplayVersion": "24H2",
+            "windowsBuildRevision": 5000, "windowsReleaseChannel": "retail",
+            "vbsState": "running", "memoryIntegrityState": "enabled",
+            "hagsState": "enabled", "gameModeState": "enabled", "gameDvrState": "disabled",
+            "mpoState": "default", "windowedOptimizationState": "enabled",
+            "autoHdrState": "disabled", "vrrState": "enabled", "memoryCompressionState": "enabled",
+            "fsoState": "default", "gpuPreferenceState": "high_performance",
+            "optimizationScheme": scheme, "optimizationItemIds": item_ids,
+            "optimizationItemSetHash": SERVER._tuning_item_set_hash(item_ids) if item_ids else "",
+            "optimizationItemsComplete": complete, "gpuPanelStatus": "ok",
+            "gpuPanelInstalledKeys": ["nv-cpl"], "gpuPanelMissingKeys": ["nv-app"],
+            "activeSoftwareKeys": ["gamepp"], "restoreCatalogStatus": "ok",
+            "activeBackupCount": 1 if item_ids else 0,
+            "activeRestoreItemCount": len(item_ids), "activeRestoreOpCount": len(item_ids),
+            "legacyBackupCount": 0, "pendingBackupCount": 0, "restoreConflictItemCount": 0,
+            "systemDriveMediaType": "ssd", "systemDriveBusType": "nvme", "systemDriveFreeGb": 256.5,
+            "gameDriveMediaType": "ssd", "gameDriveBusType": "nvme", "gameDriveFreeGb": 512.0,
+            "activePowerPlanGuid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+            "rebootPending": False, "gameExeVersion": "1.0.0.1", "powerSource": "ac",
+            "batteryPercent": None, "vcRuntimeStatus": "complete",
+            "vcRuntimeX64Version": "14.50.1000.0", "vcRuntimeX86Version": "14.50.1000.0",
+            "vcRuntimeComponentCount": 4, "captureCompatibilityStatus": "available",
+        }
+
+    def performance_metrics_context(self, avg_fps=100, fps_1_low=70):
+        return {
+            "schemaVersion": 1, "legacyFpsSource": "presented", "captureTool": "presentmon",
+            "captureToolVersion": "2.5.1", "captureMode": "etw_summary", "overlayEnabled": False,
+            "captureOverheadMeasured": False, "presentedFrameCount": 12000,
+            "presentedFpsAvg": avg_fps, "presentedFps1Low": fps_1_low,
+            "presentedP50FrameMs": 10.0, "presentedP90FrameMs": 12.0,
+            "presentedP95FrameMs": 14.0, "presentedP99FrameMs": 20.0,
+            "presentedFrameTimeCvPct": 15.0, "slowFrame25Ms": 1000,
+            "slowFrame33Ms": 500, "slowFrame50Ms": 100, "slowFrame100Ms": 20,
+            "slowFrame33Pct": 4.2, "displayedFrameCount": 12000,
+            "displayedFpsAvg": 100.0, "displayedFps1Low": 70.0,
+            "displayedP95FrameMs": 14.0, "displayedP99FrameMs": 20.0,
+            "displayMetricSource": "displayed_time", "appFrameCount": 12000,
+            "appFpsAvg": 100.0, "appFps1Low": 70.0, "generatedFrameCount": 0,
+            "repeatedFrameCount": 0, "droppedFrameCount": 0, "frameGenerationDetected": False,
+            "displayTrackingCoveragePct": 100.0, "frameTypeCoveragePct": 100.0,
+            "frameTypeDistribution": {"Application": 12000},
+            "presentModeDistribution": {"Hardware: Independent Flip": 12000},
+            "presentRuntimeDistribution": {"DXGI": 12000}, "syncIntervalDistribution": {"0": 12000},
+            "swapChainCount": 1, "tearingFramePct": 100.0, "cpuBusyAvgMs": 3.0,
+            "cpuBusyP95Ms": 5.0, "gpuBusyAvgMs": 7.0, "gpuBusyP95Ms": 10.0,
+            "displayLatencyAvgMs": 20.0, "displayLatencyP95Ms": 25.0,
+            "captureCompatibilityStatus": "ok", "gpuUtilSource": "windows-gpu-engine",
+            "gpuUtilSampleCount": 60, "gpuUtilCoveragePct": 100.0,
+            "gpuTempSource": "nvidia-smi", "gpuTempSampleCount": 60, "gpuTempCoveragePct": 100.0,
+            "gpuPowerSource": "nvidia-smi", "gpuPowerSampleCount": 60, "gpuPowerCoveragePct": 100.0,
+            "processCpuAvgPct": 35.0, "processCpuMaxPct": 55.0,
+            "processCpuSampleCount": 59, "processCpuCoveragePct": 98.3,
+            "gameWorkingSetAvgMb": 8000.0, "gameWorkingSetMaxMb": 8500.0,
+            "gamePrivateAvgMb": 9000.0, "gamePrivateMaxMb": 9500.0,
+            "processMemorySampleCount": 60, "systemMemoryUsedAvgPct": 65.0,
+            "systemMemoryUsedMaxPct": 70.0, "systemMemoryAvailableMinMb": 8000.0,
+            "systemCommitUsedAvgPct": 60.0, "systemMemorySampleCount": 60,
+            "gpuDedicatedMemoryAvgMb": 7000.0, "gpuDedicatedMemoryMaxMb": 7500.0,
+            "gpuSharedMemoryAvgMb": 500.0, "gpuSharedMemoryMaxMb": 600.0,
+            "gpuMemorySource": "windows-gpu-process-memory", "gpuMemorySampleCount": 60,
+            "gpuMemoryCoveragePct": 100.0, "gameRenderAdapterLuid": "0x1:0x2",
+            "gameRenderAdapterPhysicalIndex": 0, "hybridPresentCount": None,
+            "hybridPresentCoveragePct": None, "powerSourceStart": "ac", "powerSourceEnd": "ac",
+            "powerSourceChanged": False, "batteryPercentStart": None, "batteryPercentEnd": None,
+            "batteryDischargingUnderLoad": None, "chargerInsufficiencySuspected": None,
+        }
+
+    def enriched_performance_payload(self, install_id, item_ids=None, scheme="baseline"):
+        data = self.performance_context_payload(install_id, item_ids, scheme)
+        data["version"] = "0.22.2"
+        data["analysisContext"] = self.analysis_context(item_ids, scheme)
+        data["performanceContext"] = self.performance_metrics_context(data["avgFps"], data["fps1Low"])
+        data.update({
+            "frameCount": 12000, "p99FrameMs": 20.0, "frameTimeMadMs": 1.0,
+            "stutter50Ms": 100, "stutter100Ms": 20, "stuttersPerMin": 50.0,
+            "focusLostSec": 0.0,
+        })
+        return data
+
     def performance_payload(self, install_id, tier="baseline", avg_fps=100, fps_1_low=70):
         data = self.payload(install_id, "performance")
         data.update({
@@ -544,12 +642,12 @@ class TelemetryTests(unittest.TestCase):
         structured = "\r\n".join((
             "DeltaForceBooster 诊断报告",
             "界面版本：v0.23.0",
-            "问题标签：partial_black_screen,stutter",
+            "问题标签：black_screen_audio,partial_black_screen,stutter",
             "改善标签：none",
-            "== 分析字段（schema v2） ==",
-            "diagnostic_schema=2",
+            "== 分析字段（schema v3） ==",
+            "diagnostic_schema=3",
             "app_version=0.23.0",
-            "feedback_issue_ids=partial_black_screen,stutter",
+            "feedback_issue_ids=black_screen_audio,partial_black_screen,stutter",
             "feedback_benefit_ids=",
             "config_tier=balanced",
             "optimization_scheme=balanced",
@@ -559,7 +657,7 @@ class TelemetryTests(unittest.TestCase):
                 "wer-off", "mpo-off", "transparency-off", "paging-exec", "game-priority",
             ]),
             "optimization_items_complete=true",
-            "active_related_process_keys=obs,nvidia-share",
+            "active_related_process_keys=gamepp,obs,nvidia-share",
             "cpu_model=Example New CPU",
             "cpu_vendor=Intel",
             "cpu_visible_cores=12",
@@ -612,7 +710,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(1, analysis["qualityMarkedPerformanceSessions"])
         self.assertEqual(1, analysis["usableHistoricalPerformanceSessions"])
         self.assertEqual(
-            {"low_fps": 1, "partial_black_screen": 1, "stutter": 1},
+            {"black_screen_audio": 1, "low_fps": 1, "partial_black_screen": 1, "stutter": 1},
             {row["id"]: row["reports"] for row in analysis["issues"]},
         )
         self.assertEqual(
@@ -625,7 +723,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual({"nv-app": 1}, {
             row["key"]: row["reports"] for row in analysis["gpuPanelMissing"]
         })
-        self.assertEqual({"rtss": 1, "discord": 1, "obs": 1, "nvidia-share": 1}, {
+        self.assertEqual({"rtss": 1, "discord": 1, "gamepp": 1, "obs": 1, "nvidia-share": 1}, {
             row["processId"]: row["reports"] for row in analysis["relatedProcesses"]
         })
         self.assertIn(
@@ -797,6 +895,144 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(["gpu-pref"], valid["item_ids"])
         self.assertEqual("frame-fix", valid["optimization_scheme"])
         self.assertEqual(1, valid["item_ids_complete"])
+
+    def test_v0222_analysis_and_runtime_contexts_are_strict_and_persist_null_sensors(self):
+        now = 1786248000
+        install_id = "57575757-5757-4757-8757-575757575757"
+        missing = self.payload(install_id, version="0.22.2")
+        with self.assertRaisesRegex(ValueError, "missing analysis context"):
+            SERVER._normalize_telemetry(missing)
+
+        malformed = self.payload(install_id, version="0.22.2")
+        malformed["analysisContext"] = self.analysis_context()
+        malformed["analysisContext"]["unexpected"] = True
+        with self.assertRaisesRegex(ValueError, "invalid analysis context schema"):
+            SERVER._normalize_telemetry(malformed)
+
+        mismatch = self.enriched_performance_payload(install_id, ["gpu-pref"], "frame-fix")
+        mismatch["analysisContext"] = self.analysis_context([], "baseline")
+        with self.assertRaisesRegex(SERVER.TelemetryPerformanceError, "optimization context disagree"):
+            SERVER._normalize_telemetry(mismatch)
+
+        partial_gpu_memory = self.enriched_performance_payload(install_id, ["gpu-pref"], "frame-fix")
+        partial_gpu_memory["performanceContext"]["gpuSharedMemoryAvgMb"] = None
+        partial_gpu_memory["performanceContext"]["gpuSharedMemoryMaxMb"] = None
+        normalized_partial = SERVER._normalize_telemetry(partial_gpu_memory)
+        self.assertEqual(60, normalized_partial["performance_metrics_context"]["gpuMemorySampleCount"])
+        self.assertIsNone(normalized_partial["performance_metrics_context"]["gpuSharedMemoryAvgMb"])
+
+        inconsistent_gpu_memory = self.enriched_performance_payload(install_id, ["gpu-pref"], "frame-fix")
+        inconsistent_gpu_memory["performanceContext"]["gpuMemorySampleCount"] = 0
+        with self.assertRaisesRegex(SERVER.TelemetryPerformanceError, "summary lacks samples"):
+            SERVER._normalize_telemetry(inconsistent_gpu_memory)
+
+        data = self.enriched_performance_payload(install_id, ["gpu-pref"], "frame-fix")
+        data["gpuTempAvg"] = None
+        data["gpuTempMax"] = None
+        data["gpuPowerAvg"] = None
+        data["gpuPowerMax"] = None
+        for prefix in ("gpuTemp", "gpuPower"):
+            data["performanceContext"][prefix + "Source"] = "unavailable"
+            data["performanceContext"][prefix + "SampleCount"] = 0
+            data["performanceContext"][prefix + "CoveragePct"] = 0.0
+        normalized = SERVER._normalize_telemetry(data)
+        self.assertEqual("enriched", normalized["data_quality_tier"])
+        self.assertEqual("gamepp", normalized["analysis_context"]["activeSoftwareKeys"][0])
+        self.assertIsNone(normalized["gpu_temp_avg"])
+        self.assertEqual(0, normalized["risk_usable"])
+
+        recorded = self.authenticate(data, now)
+        wire_size = len(json.dumps(recorded, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        self.assertLess(wire_size, SERVER.MAX_TELEMETRY_BODY)
+        SERVER._record_telemetry(recorded, now)
+        conn = SERVER._connect()
+        try:
+            client = dict(conn.execute("SELECT * FROM clients").fetchone())
+            session = dict(conn.execute("SELECT * FROM performance_sessions").fetchone())
+        finally:
+            conn.close()
+        self.assertEqual("desktop", client["form_factor"])
+        self.assertGreater(client["context_completeness"], 80)
+        self.assertIsNone(session["gpu_temp_avg_v2"])
+        self.assertIsNone(session["gpu_power_avg_v2"])
+        self.assertEqual("enriched", session["data_quality_tier"])
+        stored_context = json.loads(session["performance_context_json"])
+        self.assertEqual(35.0, stored_context["processCpuAvgPct"])
+        self.assertEqual(7000.0, stored_context["gpuDedicatedMemoryAvgMb"])
+
+    def test_v0222_valid_tuning_runs_require_matching_runtime_context_but_failures_do_not(self):
+        install_id = "58585858-5858-4858-8858-585858585858"
+        experiment_id = "exp_" + "a" * 24
+        run = self.tuning_run_payload(
+            install_id, experiment_id, experiment_id + ".baseline", experiment_id + ".run_1",
+        )
+        run["version"] = "0.22.2"
+        run["analysisContext"] = self.analysis_context()
+        run["frameCount"] = 12000
+        run["performanceContext"] = self.performance_metrics_context(run["avgFps"], run["fps1Low"])
+        run["performanceContext"].update({
+            "presentedP99FrameMs": run["p99FrameMs"],
+            "slowFrame50Ms": run["stutter50Ms"],
+            "slowFrame100Ms": run["stutter100Ms"],
+        })
+        normalized = SERVER._normalize_telemetry(run)
+        self.assertEqual("enriched", normalized["data_quality_tier"])
+
+        missing = dict(run)
+        missing.pop("performanceContext")
+        with self.assertRaisesRegex(SERVER.TelemetryPerformanceError, "missing performance metrics context"):
+            SERVER._normalize_telemetry(missing)
+
+        mismatch = dict(run)
+        mismatch["performanceContext"] = dict(run["performanceContext"])
+        mismatch["performanceContext"]["presentedFpsAvg"] += 5
+        with self.assertRaisesRegex(SERVER.TelemetryTuningError, "summary and performance context disagree"):
+            SERVER._normalize_telemetry(mismatch)
+
+        failed = self.tuning_run_payload(
+            install_id, experiment_id, experiment_id + ".baseline", experiment_id + ".run_failed",
+            validity="invalid", invalid_reason="capture_failed",
+        )
+        failed["version"] = "0.22.2"
+        failed["analysisContext"] = self.analysis_context()
+        normalized_failed = SERVER._normalize_telemetry(failed)
+        self.assertEqual("invalid", normalized_failed["tuning"]["validity"])
+        self.assertIsNone(normalized_failed["performance_metrics_context"])
+
+    def test_historical_positive_sensor_values_backfill_without_inventing_zero_samples(self):
+        conn = SERVER._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO performance_sessions (
+                           client_hash, recorded_at, day, gpu_util_avg, gpu_util_max,
+                           gpu_temp_avg, gpu_temp_max, gpu_power_avg, gpu_power_max
+                       ) VALUES ('legacy-positive', 1, '2026-08-01', 80, 90, 70, 75, 150, 170)"""
+                )
+                conn.execute(
+                    """INSERT INTO performance_sessions (
+                           client_hash, recorded_at, day, gpu_util_avg, gpu_util_max,
+                           gpu_temp_avg, gpu_temp_max, gpu_power_avg, gpu_power_max
+                       ) VALUES ('legacy-missing', 2, '2026-08-01', 0, 0, 0, 0, 0, 0)"""
+                )
+        finally:
+            conn.close()
+        SERVER._init_db()
+        conn = SERVER._connect()
+        try:
+            positive = dict(conn.execute(
+                "SELECT * FROM performance_sessions WHERE client_hash='legacy-positive'"
+            ).fetchone())
+            missing = dict(conn.execute(
+                "SELECT * FROM performance_sessions WHERE client_hash='legacy-missing'"
+            ).fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(70.0, positive["gpu_temp_avg_v2"])
+        self.assertEqual(170.0, positive["gpu_power_max_v2"])
+        self.assertIsNone(missing["gpu_util_avg_v2"])
+        self.assertIsNone(missing["gpu_temp_avg_v2"])
+        self.assertIsNone(missing["gpu_power_avg_v2"])
 
     def test_performance_uses_trusted_median_and_minimum_sample(self):
         now = 1786248000

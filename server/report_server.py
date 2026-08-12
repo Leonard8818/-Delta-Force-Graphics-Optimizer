@@ -28,7 +28,7 @@ DB_PATH = os.path.join(DATA_DIR, "telemetry.db")
 ADMIN_API_TOKEN = os.environ.get("DFB_ADMIN_API_TOKEN", "")
 TELEMETRY_PEPPER = os.environ.get("DFB_TELEMETRY_PEPPER", "")
 MAX_REPORT_BODY = 256 * 1024
-MAX_TELEMETRY_BODY = 8 * 1024
+MAX_TELEMETRY_BODY = 16 * 1024
 MAX_WEBSITE_VISIT_BODY = 1024
 MAX_ADMIN_RESPONSE_BODY = 1024 * 1024
 MAX_WEEKLY_SNAPSHOT_BODY = 768 * 1024
@@ -54,6 +54,7 @@ REGISTRATION_DAILY_LIMIT = 200
 MAX_RATE_BUCKETS = 20000
 TOKEN_REQUIRED_VERSION = (0, 19, 4)
 PERFORMANCE_CONTEXT_REQUIRED_VERSION = (0, 22, 1)
+ANALYSIS_CONTEXT_REQUIRED_VERSION = (0, 22, 2)
 WEEKLY_SCHEMA_VERSION = 3
 WEEKLY_FILTER_LIMITS = {"version": 24, "gpu": 160, "deviceType": 24}
 CUSTOM_PERIOD_MAX_DAYS = 92
@@ -137,6 +138,7 @@ _operation_id_re = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
 _optimization_item_id_re = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_power_plan_guid_re = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$")
 
 
 class TelemetryAuthError(ValueError):
@@ -375,6 +377,11 @@ def _init_db():
                 virtual_display_count INTEGER NOT NULL DEFAULT -1,
                 pagefile_auto_managed INTEGER NOT NULL DEFAULT -1,
                 gpu_reported_model_differs INTEGER NOT NULL DEFAULT -1,
+                form_factor TEXT NOT NULL DEFAULT 'unknown',
+                form_factor_confidence TEXT NOT NULL DEFAULT 'low',
+                analysis_context_schema INTEGER NOT NULL DEFAULT 0,
+                analysis_context_json TEXT NOT NULL DEFAULT '{}',
+                context_completeness INTEGER NOT NULL DEFAULT 0,
                 authenticated_last_seen INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS daily_usage (
@@ -416,6 +423,27 @@ def _init_db():
                 item_set_hash TEXT NOT NULL DEFAULT '',
                 item_ids_json TEXT NOT NULL DEFAULT '[]',
                 item_ids_complete INTEGER NOT NULL DEFAULT 0,
+                frame_count INTEGER,
+                p99_frame_ms REAL,
+                frame_time_mad_ms REAL,
+                stutter_50ms INTEGER,
+                stutter_100ms INTEGER,
+                stutters_per_min REAL,
+                focus_lost_sec REAL,
+                gpu_util_avg_v2 REAL,
+                gpu_util_max_v2 REAL,
+                gpu_temp_avg_v2 REAL,
+                gpu_temp_max_v2 REAL,
+                gpu_power_avg_v2 REAL,
+                gpu_power_max_v2 REAL,
+                analysis_context_json TEXT NOT NULL DEFAULT '{}',
+                performance_context_json TEXT NOT NULL DEFAULT '{}',
+                data_quality_tier TEXT NOT NULL DEFAULT 'legacy_descriptive',
+                context_completeness INTEGER NOT NULL DEFAULT 0,
+                descriptive_usable INTEGER NOT NULL DEFAULT 1,
+                causal_usable INTEGER NOT NULL DEFAULT 0,
+                compatibility_usable INTEGER NOT NULL DEFAULT 0,
+                risk_usable INTEGER NOT NULL DEFAULT 0,
                 authenticated INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_performance_day ON performance_sessions(day);
@@ -457,6 +485,7 @@ def _init_db():
                 virtual_display_count INTEGER NOT NULL DEFAULT -1,
                 pagefile_auto_managed INTEGER NOT NULL DEFAULT -1,
                 gpu_reported_model_differs INTEGER NOT NULL DEFAULT -1,
+                analysis_context_json TEXT NOT NULL DEFAULT '{}',
                 item_set_hash TEXT NOT NULL,
                 item_ids_json TEXT NOT NULL,
                 changed_item_ids_json TEXT NOT NULL,
@@ -528,6 +557,7 @@ def _init_db():
                 virtual_display_count INTEGER NOT NULL DEFAULT -1,
                 pagefile_auto_managed INTEGER NOT NULL DEFAULT -1,
                 gpu_reported_model_differs INTEGER NOT NULL DEFAULT -1,
+                analysis_context_json TEXT NOT NULL DEFAULT '{}',
                 baseline_variant_id TEXT,
                 winning_variant_id TEXT,
                 result TEXT NOT NULL DEFAULT '',
@@ -590,6 +620,9 @@ def _init_db():
                 game_exited_early INTEGER,
                 capture_failed INTEGER,
                 presentmon_exit_code INTEGER,
+                performance_context_json TEXT NOT NULL DEFAULT '{}',
+                data_quality_tier TEXT NOT NULL DEFAULT 'legacy_controlled',
+                context_completeness INTEGER NOT NULL DEFAULT 0,
                 settings_hash TEXT NOT NULL DEFAULT '',
                 environment_hash TEXT NOT NULL DEFAULT '',
                 order_controlled INTEGER NOT NULL DEFAULT 0,
@@ -649,6 +682,11 @@ def _init_db():
                 ("virtual_display_count", "INTEGER NOT NULL DEFAULT -1"),
                 ("pagefile_auto_managed", "INTEGER NOT NULL DEFAULT -1"),
                 ("gpu_reported_model_differs", "INTEGER NOT NULL DEFAULT -1"),
+                ("form_factor", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("form_factor_confidence", "TEXT NOT NULL DEFAULT 'low'"),
+                ("analysis_context_schema", "INTEGER NOT NULL DEFAULT 0"),
+                ("analysis_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("context_completeness", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if name not in columns:
                     conn.execute("ALTER TABLE clients ADD COLUMN %s %s" % (name, definition))
@@ -668,9 +706,41 @@ def _init_db():
                 ("item_set_hash", "TEXT NOT NULL DEFAULT ''"),
                 ("item_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
                 ("item_ids_complete", "INTEGER NOT NULL DEFAULT 0"),
+                ("frame_count", "INTEGER"),
+                ("p99_frame_ms", "REAL"),
+                ("frame_time_mad_ms", "REAL"),
+                ("stutter_50ms", "INTEGER"),
+                ("stutter_100ms", "INTEGER"),
+                ("stutters_per_min", "REAL"),
+                ("focus_lost_sec", "REAL"),
+                ("gpu_util_avg_v2", "REAL"),
+                ("gpu_util_max_v2", "REAL"),
+                ("gpu_temp_avg_v2", "REAL"),
+                ("gpu_temp_max_v2", "REAL"),
+                ("gpu_power_avg_v2", "REAL"),
+                ("gpu_power_max_v2", "REAL"),
+                ("analysis_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("performance_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("data_quality_tier", "TEXT NOT NULL DEFAULT 'legacy_descriptive'"),
+                ("context_completeness", "INTEGER NOT NULL DEFAULT 0"),
+                ("descriptive_usable", "INTEGER NOT NULL DEFAULT 1"),
+                ("causal_usable", "INTEGER NOT NULL DEFAULT 0"),
+                ("compatibility_usable", "INTEGER NOT NULL DEFAULT 0"),
+                ("risk_usable", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if name not in performance_columns:
                     conn.execute("ALTER TABLE performance_sessions ADD COLUMN %s %s" % (name, definition))
+            # 历史版本用 0 同时表示“真实为 0”和“传感器不可用”。只能安全复用大于 0 的
+            # 旧样本；其余保持 NULL，避免把缺失值继续当作温度/功耗/占用为零。
+            for legacy_name, nullable_name in (
+                ("gpu_util_avg", "gpu_util_avg_v2"), ("gpu_util_max", "gpu_util_max_v2"),
+                ("gpu_temp_avg", "gpu_temp_avg_v2"), ("gpu_temp_max", "gpu_temp_max_v2"),
+                ("gpu_power_avg", "gpu_power_avg_v2"), ("gpu_power_max", "gpu_power_max_v2"),
+            ):
+                conn.execute(
+                    "UPDATE performance_sessions SET %s=%s WHERE %s IS NULL AND %s>0"
+                    % (nullable_name, legacy_name, nullable_name, legacy_name)
+                )
             experiment_columns = {row[1] for row in conn.execute("PRAGMA table_info(tuning_experiments)")}
             for name, definition in (
                 ("allow_higher_power", "INTEGER NOT NULL DEFAULT 0"),
@@ -696,6 +766,7 @@ def _init_db():
                 ("virtual_display_count", "INTEGER NOT NULL DEFAULT -1"),
                 ("pagefile_auto_managed", "INTEGER NOT NULL DEFAULT -1"),
                 ("gpu_reported_model_differs", "INTEGER NOT NULL DEFAULT -1"),
+                ("analysis_context_json", "TEXT NOT NULL DEFAULT '{}'"),
             ):
                 if name not in experiment_columns:
                     conn.execute("ALTER TABLE tuning_experiments ADD COLUMN %s %s" % (name, definition))
@@ -711,6 +782,7 @@ def _init_db():
                 ("virtual_display_count", "INTEGER NOT NULL DEFAULT -1"),
                 ("pagefile_auto_managed", "INTEGER NOT NULL DEFAULT -1"),
                 ("gpu_reported_model_differs", "INTEGER NOT NULL DEFAULT -1"),
+                ("analysis_context_json", "TEXT NOT NULL DEFAULT '{}'"),
             ):
                 if name not in operation_columns:
                     conn.execute("ALTER TABLE optimization_operations ADD COLUMN %s %s" % (name, definition))
@@ -737,6 +809,9 @@ def _init_db():
                 ("game_exited_early", "INTEGER"),
                 ("capture_failed", "INTEGER"),
                 ("presentmon_exit_code", "INTEGER"),
+                ("performance_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("data_quality_tier", "TEXT NOT NULL DEFAULT 'legacy_controlled'"),
+                ("context_completeness", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if name not in run_columns:
                     conn.execute("ALTER TABLE tuning_runs ADD COLUMN %s %s" % (name, definition))
@@ -802,6 +877,515 @@ def _strict_nonnegative_float(value, maximum):
     if not math.isfinite(number) or number < 0 or number > maximum:
         raise TelemetryPerformanceError("performance number out of range")
     return round(number, 1)
+
+
+def _strict_optional_nonnegative_float(value, maximum):
+    if value is None or value == "":
+        return None
+    return _strict_nonnegative_float(value, maximum)
+
+
+def _strict_optional_nonnegative_int(value, maximum):
+    if value is None or value == "":
+        return None
+    return _strict_nonnegative_int(value, maximum)
+
+
+def _context_exact_object(value, fields, label):
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise ValueError("invalid %s schema" % label)
+    return value
+
+
+def _context_text(value, maximum, label, allow_empty=True):
+    if not isinstance(value, str):
+        raise ValueError("invalid %s" % label)
+    value = value.strip()
+    if (not allow_empty and not value) or len(value) > maximum or any(ord(char) < 32 for char in value):
+        raise ValueError("invalid %s" % label)
+    return value
+
+
+def _context_enum(value, allowed, label):
+    value = _context_text(value, 64, label, False).lower()
+    if value not in allowed:
+        raise ValueError("invalid %s" % label)
+    return value
+
+
+def _context_bool(value, label, optional=False):
+    if optional and value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError("invalid %s" % label)
+    return value
+
+
+def _context_int(value, minimum, maximum, label, optional=False):
+    if optional and value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum or value > maximum:
+        raise ValueError("invalid %s" % label)
+    return value
+
+
+def _context_float(value, minimum, maximum, label, optional=False):
+    if optional and value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("invalid %s" % label)
+    value = float(value)
+    if not math.isfinite(value) or value < minimum or value > maximum:
+        raise ValueError("invalid %s" % label)
+    return round(value, 2)
+
+
+def _context_distribution(value, label):
+    if not isinstance(value, dict) or len(value) > 12:
+        raise ValueError("invalid %s" % label)
+    normalized = {}
+    for key, count in value.items():
+        key = _context_text(key, 48, label, False)
+        if key in normalized:
+            raise ValueError("duplicate %s key" % label)
+        normalized[key] = _context_int(count, 0, 10_000_000, label)
+    return dict(sorted(normalized.items()))
+
+
+def _context_enum_list(value, allowed, maximum, label):
+    if not isinstance(value, list) or len(value) > maximum:
+        raise ValueError("invalid %s" % label)
+    normalized = [_context_enum(item, allowed, label) for item in value]
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("duplicate %s" % label)
+    return sorted(normalized)
+
+
+def _context_optimization_ids(value):
+    if not isinstance(value, list) or len(value) > 64:
+        raise ValueError("invalid optimizationItemIds")
+    normalized = []
+    for item in value:
+        item = _context_text(item, 64, "optimizationItemIds", False).lower()
+        if not _optimization_item_id_re.fullmatch(item):
+            raise ValueError("invalid optimizationItemIds")
+        normalized.append(item)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("duplicate optimizationItemIds")
+    return sorted(normalized)
+
+
+def _normalize_analysis_context(payload, app_version):
+    value = payload.get("analysisContext")
+    required = _version_tuple(app_version) >= ANALYSIS_CONTEXT_REQUIRED_VERSION
+    if value is None:
+        if required:
+            raise ValueError("missing analysis context")
+        return None
+    fields = (
+        "schemaVersion", "formFactor", "formFactorConfidence", "chassisTypes",
+        "hasBattery", "hasInternalDisplay", "upsAmbiguous", "manufacturer", "modelFamily",
+        "cpuEfficiencyClasses", "hybridCpu", "hypervisorPresent",
+        "gpuAdapters", "displayAdapterVendor", "displayAdapterModel",
+        "displayAdapterModelVerified", "hybridGraphics", "activeDisplayCount",
+        "internalDisplayCount", "externalDisplayCount", "displayConnectors",
+        "windowsDisplayVersion", "windowsBuildRevision", "windowsReleaseChannel", "vbsState",
+        "memoryIntegrityState", "hagsState", "gameModeState", "gameDvrState", "mpoState",
+        "windowedOptimizationState", "autoHdrState", "vrrState", "memoryCompressionState",
+        "fsoState", "gpuPreferenceState", "optimizationScheme", "optimizationItemIds",
+        "optimizationItemSetHash", "optimizationItemsComplete", "gpuPanelStatus",
+        "gpuPanelInstalledKeys", "gpuPanelMissingKeys", "activeSoftwareKeys",
+        "restoreCatalogStatus", "activeBackupCount", "activeRestoreItemCount",
+        "activeRestoreOpCount", "legacyBackupCount", "pendingBackupCount",
+        "restoreConflictItemCount", "systemDriveMediaType", "systemDriveBusType",
+        "systemDriveFreeGb", "gameDriveMediaType", "gameDriveBusType", "gameDriveFreeGb",
+        "activePowerPlanGuid", "rebootPending", "gameExeVersion",
+        "powerSource", "batteryPercent", "vcRuntimeStatus", "vcRuntimeX64Version",
+        "vcRuntimeX86Version", "vcRuntimeComponentCount", "captureCompatibilityStatus",
+    )
+    value = _context_exact_object(value, fields, "analysis context")
+    if value.get("schemaVersion") != 1:
+        raise ValueError("unknown analysis context schemaVersion")
+    form_factor = _context_enum(value["formFactor"], ("desktop", "laptop", "unknown"), "formFactor")
+    confidence = _context_enum(value["formFactorConfidence"], ("high", "medium", "low"), "formFactorConfidence")
+    chassis = value["chassisTypes"]
+    if not isinstance(chassis, list) or len(chassis) > 8:
+        raise ValueError("invalid chassisTypes")
+    chassis = sorted({_context_int(item, 1, 36, "chassisTypes") for item in chassis})
+    has_battery = _context_bool(value["hasBattery"], "hasBattery", True)
+    has_internal = _context_bool(value["hasInternalDisplay"], "hasInternalDisplay", True)
+    ups_ambiguous = _context_bool(value["upsAmbiguous"], "upsAmbiguous")
+    if form_factor == "laptop" and confidence == "high" and ups_ambiguous:
+        raise ValueError("high-confidence laptop conflicts with UPS ambiguity")
+    adapters = value["gpuAdapters"]
+    if not isinstance(adapters, list) or len(adapters) > 8:
+        raise ValueError("invalid gpuAdapters")
+    adapter_fields = (
+        "vendor", "model", "modelVerified", "reportedModelDiffers", "driverVersion",
+        "driverDate", "virtualDisplay", "displayActive", "displayMode", "main",
+        "displayConnected",
+    )
+    normalized_adapters = []
+    main_count = 0
+    for index, adapter in enumerate(adapters):
+        adapter = _context_exact_object(adapter, adapter_fields, "gpu adapter")
+        vendor = _context_enum(adapter["vendor"], ("nvidia", "amd", "intel", "unknown"), "gpu adapter vendor")
+        model = _context_text(adapter["model"], 160, "gpu adapter model")
+        driver_date = _context_text(adapter["driverDate"], 10, "gpu driver date")
+        if driver_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", driver_date):
+            raise ValueError("invalid gpu driver date")
+        display_mode = _context_text(adapter["displayMode"], 64, "gpu display mode")
+        if display_mode and not re.fullmatch(r"\d{3,5}x\d{3,5}@\d{1,4}", display_mode):
+            raise ValueError("invalid gpu display mode")
+        is_main = _context_bool(adapter["main"], "gpu adapter main")
+        main_count += int(is_main)
+        normalized_adapters.append({
+            "vendor": {"nvidia": "NVIDIA", "amd": "AMD", "intel": "Intel", "unknown": "Unknown"}[vendor],
+            "model": model,
+            "modelVerified": _context_bool(adapter["modelVerified"], "gpu model verified"),
+            "reportedModelDiffers": _context_bool(adapter["reportedModelDiffers"], "gpu model differs"),
+            "driverVersion": _context_text(adapter["driverVersion"], 64, "gpu driver version"),
+            "driverDate": driver_date,
+            "virtualDisplay": _context_bool(adapter["virtualDisplay"], "virtual display"),
+            "displayActive": _context_bool(adapter["displayActive"], "display active"),
+            "displayMode": display_mode,
+            "main": is_main,
+            "displayConnected": _context_bool(adapter["displayConnected"], "display connected"),
+            "index": index,
+        })
+    if main_count > 1:
+        raise ValueError("multiple main GPU adapters")
+    display_connectors = value["displayConnectors"]
+    connector_values = ("vga", "dvi", "hdmi", "lvds", "displayport", "embedded-displayport", "embedded-udi", "internal", "other")
+    if not isinstance(display_connectors, list) or len(display_connectors) > 8:
+        raise ValueError("invalid displayConnectors")
+    display_connectors = sorted({_context_enum(item, connector_values, "display connector") for item in display_connectors})
+    active_displays = _context_int(value["activeDisplayCount"], 0, 16, "activeDisplayCount")
+    internal_displays = _context_int(value["internalDisplayCount"], 0, 16, "internalDisplayCount")
+    external_displays = _context_int(value["externalDisplayCount"], 0, 16, "externalDisplayCount")
+    if internal_displays + external_displays > active_displays:
+        raise ValueError("display counts disagree")
+    state_values = ("default", "enabled", "disabled", "custom", "mixed", "unknown")
+    efficiency_classes = value["cpuEfficiencyClasses"]
+    if not isinstance(efficiency_classes, list) or len(efficiency_classes) > 16:
+        raise ValueError("invalid cpuEfficiencyClasses")
+    efficiency_classes = sorted({_context_int(item, 0, 255, "cpuEfficiencyClasses") for item in efficiency_classes})
+    optimization_ids = _context_optimization_ids(value["optimizationItemIds"])
+    optimization_hash = _context_text(value["optimizationItemSetHash"], 64, "optimizationItemSetHash").lower()
+    expected_optimization_hash = _tuning_item_set_hash(optimization_ids) if optimization_ids else ""
+    if optimization_hash != expected_optimization_hash:
+        raise ValueError("optimization item set hash mismatch")
+    optimization_scheme = _context_enum(value["optimizationScheme"], PERFORMANCE_SCHEMES, "optimizationScheme")
+    optimization_complete = _context_bool(value["optimizationItemsComplete"], "optimizationItemsComplete")
+    if optimization_complete:
+        if not optimization_ids and optimization_scheme != "baseline":
+            raise ValueError("empty optimization set must be baseline")
+        if optimization_ids and optimization_scheme == "baseline":
+            raise ValueError("non-empty optimization set cannot be baseline")
+    panel_keys = ("nv-cpl", "nv-app", "amd-sw", "intel-gcc")
+    panel_installed = _context_enum_list(value["gpuPanelInstalledKeys"], panel_keys, 4, "gpuPanelInstalledKeys")
+    panel_missing = _context_enum_list(value["gpuPanelMissingKeys"], panel_keys, 4, "gpuPanelMissingKeys")
+    if set(panel_installed) & set(panel_missing):
+        raise ValueError("GPU panel keys overlap")
+    software_keys = (
+        "game-client", "game-launcher", "presentmon", "rtss", "msi-afterburner", "obs",
+        "discord", "game-bar", "nvidia-share", "amd-software", "wegame", "gamepp",
+        "lossless-scaling", "process-lasso", "armoury-crate", "g-helper", "lenovo-vantage",
+        "msi-center", "omen-gaming-hub", "alienware-command-center", "razer-cortex",
+    )
+    active_software = _context_enum_list(value["activeSoftwareKeys"], software_keys, 32, "activeSoftwareKeys")
+    restore_status = _context_enum(value["restoreCatalogStatus"], ("ok", "unavailable"), "restoreCatalogStatus")
+    restore_counts = {
+        key: _context_int(value[key], 0, 100_000, key)
+        for key in (
+            "activeBackupCount", "activeRestoreItemCount", "activeRestoreOpCount",
+            "legacyBackupCount", "pendingBackupCount", "restoreConflictItemCount",
+        )
+    }
+    if restore_status == "unavailable" and any(restore_counts.values()):
+        raise ValueError("unavailable restore catalog has counts")
+    if restore_counts["legacyBackupCount"] > restore_counts["activeBackupCount"]:
+        raise ValueError("legacy backup count exceeds active backups")
+    if restore_counts["restoreConflictItemCount"] > restore_counts["activeRestoreItemCount"]:
+        raise ValueError("restore conflict count exceeds active items")
+    media_types = ("unknown", "hdd", "ssd", "scm")
+    bus_types = (
+        "unknown", "ata", "sata", "nvme", "usb", "raid", "scsi", "sas", "mmc", "sd",
+        "iscsi", "virtual", "file_backed_virtual", "spaces",
+    )
+    normalized = {
+        "schemaVersion": 1,
+        "formFactor": form_factor,
+        "formFactorConfidence": confidence,
+        "chassisTypes": chassis,
+        "hasBattery": has_battery,
+        "hasInternalDisplay": has_internal,
+        "upsAmbiguous": ups_ambiguous,
+        "manufacturer": _context_text(value["manufacturer"], 96, "manufacturer"),
+        "modelFamily": _context_text(value["modelFamily"], 128, "modelFamily"),
+        "cpuEfficiencyClasses": efficiency_classes,
+        "hybridCpu": _context_bool(value["hybridCpu"], "hybridCpu"),
+        "hypervisorPresent": _context_bool(value["hypervisorPresent"], "hypervisorPresent", True),
+        "gpuAdapters": normalized_adapters,
+        "displayAdapterVendor": _context_text(value["displayAdapterVendor"], 32, "display adapter vendor"),
+        "displayAdapterModel": _context_text(value["displayAdapterModel"], 160, "display adapter model"),
+        "displayAdapterModelVerified": _context_bool(value["displayAdapterModelVerified"], "display adapter verified"),
+        "hybridGraphics": _context_bool(value["hybridGraphics"], "hybridGraphics"),
+        "activeDisplayCount": active_displays,
+        "internalDisplayCount": internal_displays,
+        "externalDisplayCount": external_displays,
+        "displayConnectors": display_connectors,
+        "windowsDisplayVersion": _context_text(value["windowsDisplayVersion"], 32, "windows display version"),
+        "windowsBuildRevision": _context_int(value["windowsBuildRevision"], 0, 10_000_000, "windows build revision"),
+        "windowsReleaseChannel": _context_enum(value["windowsReleaseChannel"], ("retail", "release_preview", "beta", "dev", "canary", "preview", "unknown"), "windowsReleaseChannel"),
+        "vbsState": _context_enum(value["vbsState"], ("running", "configured", "disabled", "unknown"), "vbsState"),
+        "memoryIntegrityState": _context_enum(value["memoryIntegrityState"], ("enabled", "configured_not_running", "disabled", "unknown"), "memoryIntegrityState"),
+        "hagsState": _context_enum(value["hagsState"], state_values, "hagsState"),
+        "gameModeState": _context_enum(value["gameModeState"], state_values, "gameModeState"),
+        "gameDvrState": _context_enum(value["gameDvrState"], state_values, "gameDvrState"),
+        "mpoState": _context_enum(value["mpoState"], state_values, "mpoState"),
+        "windowedOptimizationState": _context_enum(value["windowedOptimizationState"], state_values, "windowedOptimizationState"),
+        "autoHdrState": _context_enum(value["autoHdrState"], state_values, "autoHdrState"),
+        "vrrState": _context_enum(value["vrrState"], state_values, "vrrState"),
+        "memoryCompressionState": _context_enum(value["memoryCompressionState"], ("enabled", "disabled", "unknown"), "memoryCompressionState"),
+        "fsoState": _context_enum(value["fsoState"], state_values, "fsoState"),
+        "gpuPreferenceState": _context_enum(value["gpuPreferenceState"], ("default", "high_performance", "power_saving", "custom", "unknown"), "gpuPreferenceState"),
+        "optimizationScheme": optimization_scheme,
+        "optimizationItemIds": optimization_ids,
+        "optimizationItemSetHash": optimization_hash,
+        "optimizationItemsComplete": optimization_complete,
+        "gpuPanelStatus": _context_enum(value["gpuPanelStatus"], ("ok", "broker_failed", "unsupported_vendor", "unavailable_in_compatibility_mode", "not_checked"), "gpuPanelStatus"),
+        "gpuPanelInstalledKeys": panel_installed,
+        "gpuPanelMissingKeys": panel_missing,
+        "activeSoftwareKeys": active_software,
+        "restoreCatalogStatus": restore_status,
+        **restore_counts,
+        "systemDriveMediaType": _context_enum(value["systemDriveMediaType"], media_types, "systemDriveMediaType"),
+        "systemDriveBusType": _context_enum(value["systemDriveBusType"], bus_types, "systemDriveBusType"),
+        "systemDriveFreeGb": _context_float(value["systemDriveFreeGb"], 0, 1_000_000, "systemDriveFreeGb", True),
+        "gameDriveMediaType": _context_enum(value["gameDriveMediaType"], media_types, "gameDriveMediaType"),
+        "gameDriveBusType": _context_enum(value["gameDriveBusType"], bus_types, "gameDriveBusType"),
+        "gameDriveFreeGb": _context_float(value["gameDriveFreeGb"], 0, 1_000_000, "gameDriveFreeGb", True),
+        "activePowerPlanGuid": _context_text(value["activePowerPlanGuid"], 36, "active power plan").lower(),
+        "rebootPending": _context_bool(value["rebootPending"], "rebootPending"),
+        "gameExeVersion": _context_text(value["gameExeVersion"], 64, "game exe version"),
+        "powerSource": _context_enum(value["powerSource"], ("ac", "battery", "unknown"), "powerSource"),
+        "batteryPercent": _context_int(value["batteryPercent"], 0, 100, "batteryPercent", True),
+        "vcRuntimeStatus": _context_enum(value["vcRuntimeStatus"], ("complete", "missing_both", "missing_x64", "missing_x86", "unknown"), "vcRuntimeStatus"),
+        "vcRuntimeX64Version": _context_text(value["vcRuntimeX64Version"], 32, "VC runtime x64 version"),
+        "vcRuntimeX86Version": _context_text(value["vcRuntimeX86Version"], 32, "VC runtime x86 version"),
+        "vcRuntimeComponentCount": _context_int(value["vcRuntimeComponentCount"], 0, 128, "VC runtime component count"),
+        "captureCompatibilityStatus": _context_enum(value["captureCompatibilityStatus"], ("available", "missing_presentmon", "unknown"), "capture compatibility"),
+    }
+    if not _power_plan_guid_re.fullmatch(normalized["activePowerPlanGuid"]):
+        raise ValueError("invalid active power plan")
+    indicators = (
+        form_factor != "unknown", bool(chassis), has_battery is not None, has_internal is not None,
+        bool(normalized["manufacturer"]), bool(normalized["modelFamily"]), bool(efficiency_classes),
+        normalized["hypervisorPresent"] is not None, bool(adapters),
+        bool(normalized["displayAdapterModel"]), active_displays > 0, bool(display_connectors),
+        bool(normalized["windowsDisplayVersion"]), normalized["windowsBuildRevision"] > 0,
+        normalized["windowsReleaseChannel"] != "unknown", normalized["vbsState"] != "unknown",
+        normalized["memoryIntegrityState"] != "unknown",
+        normalized["hagsState"] != "unknown", normalized["gameModeState"] != "unknown",
+        normalized["gameDvrState"] != "unknown", normalized["memoryCompressionState"] != "unknown",
+        bool(normalized["activePowerPlanGuid"]), normalized["restoreCatalogStatus"] == "ok",
+        normalized["systemDriveFreeGb"] is not None, normalized["gameDriveFreeGb"] is not None,
+        normalized["gpuPanelStatus"] != "not_checked",
+        bool(normalized["gameExeVersion"]), normalized["powerSource"] != "unknown",
+        normalized["vcRuntimeStatus"] != "unknown", normalized["captureCompatibilityStatus"] == "available",
+    )
+    normalized["completeness"] = int(round(sum(bool(item) for item in indicators) * 100.0 / len(indicators)))
+    return normalized
+
+
+def _normalize_performance_metrics_context(payload, required=False):
+    value = payload.get("performanceContext")
+    if value is None:
+        if required:
+            raise TelemetryPerformanceError("missing performance metrics context")
+        return None
+    fields = (
+        "schemaVersion", "legacyFpsSource", "captureTool", "captureToolVersion", "captureMode",
+        "overlayEnabled", "captureOverheadMeasured", "presentedFrameCount", "presentedFpsAvg",
+        "presentedFps1Low", "presentedP50FrameMs", "presentedP90FrameMs", "presentedP95FrameMs",
+        "presentedP99FrameMs", "presentedFrameTimeCvPct", "slowFrame25Ms", "slowFrame33Ms",
+        "slowFrame50Ms", "slowFrame100Ms", "slowFrame33Pct", "displayedFrameCount",
+        "displayedFpsAvg", "displayedFps1Low", "displayedP95FrameMs", "displayedP99FrameMs",
+        "displayMetricSource", "appFrameCount", "appFpsAvg", "appFps1Low", "generatedFrameCount",
+        "repeatedFrameCount", "droppedFrameCount", "frameGenerationDetected",
+        "displayTrackingCoveragePct", "frameTypeCoveragePct", "frameTypeDistribution",
+        "presentModeDistribution", "presentRuntimeDistribution", "syncIntervalDistribution",
+        "swapChainCount", "tearingFramePct", "cpuBusyAvgMs", "cpuBusyP95Ms", "gpuBusyAvgMs",
+        "gpuBusyP95Ms", "displayLatencyAvgMs", "displayLatencyP95Ms", "captureCompatibilityStatus",
+        "gpuUtilSource", "gpuUtilSampleCount", "gpuUtilCoveragePct", "gpuTempSource",
+        "gpuTempSampleCount", "gpuTempCoveragePct", "gpuPowerSource", "gpuPowerSampleCount",
+        "gpuPowerCoveragePct", "gameRenderAdapterLuid", "gameRenderAdapterPhysicalIndex",
+        "processCpuAvgPct", "processCpuMaxPct", "processCpuSampleCount", "processCpuCoveragePct",
+        "gameWorkingSetAvgMb", "gameWorkingSetMaxMb", "gamePrivateAvgMb", "gamePrivateMaxMb",
+        "processMemorySampleCount", "systemMemoryUsedAvgPct", "systemMemoryUsedMaxPct",
+        "systemMemoryAvailableMinMb", "systemCommitUsedAvgPct", "systemMemorySampleCount",
+        "gpuDedicatedMemoryAvgMb", "gpuDedicatedMemoryMaxMb", "gpuSharedMemoryAvgMb",
+        "gpuSharedMemoryMaxMb", "gpuMemorySource", "gpuMemorySampleCount", "gpuMemoryCoveragePct",
+        "hybridPresentCount", "hybridPresentCoveragePct", "powerSourceStart", "powerSourceEnd",
+        "powerSourceChanged", "batteryPercentStart", "batteryPercentEnd",
+        "batteryDischargingUnderLoad", "chargerInsufficiencySuspected",
+    )
+    try:
+        value = _context_exact_object(value, fields, "performance context")
+        if value.get("schemaVersion") != 1:
+            raise ValueError("unknown performance context schemaVersion")
+        result = {
+            "schemaVersion": 1,
+            "legacyFpsSource": _context_enum(value["legacyFpsSource"], ("presented",), "legacyFpsSource"),
+            "captureTool": _context_enum(value["captureTool"], ("presentmon",), "captureTool"),
+            "captureToolVersion": _context_text(value["captureToolVersion"], 32, "capture tool version"),
+            "captureMode": _context_enum(value["captureMode"], ("etw_summary",), "captureMode"),
+            "overlayEnabled": _context_bool(value["overlayEnabled"], "overlayEnabled"),
+            "captureOverheadMeasured": _context_bool(value["captureOverheadMeasured"], "captureOverheadMeasured"),
+            "presentedFrameCount": _context_int(value["presentedFrameCount"], 0, 10_000_000, "presentedFrameCount"),
+            "presentedFpsAvg": _context_float(value["presentedFpsAvg"], 0, 1000, "presentedFpsAvg", True),
+            "presentedFps1Low": _context_float(value["presentedFps1Low"], 0, 1000, "presentedFps1Low", True),
+            "presentedP50FrameMs": _context_float(value["presentedP50FrameMs"], 0, 1000, "presentedP50FrameMs", True),
+            "presentedP90FrameMs": _context_float(value["presentedP90FrameMs"], 0, 1000, "presentedP90FrameMs", True),
+            "presentedP95FrameMs": _context_float(value["presentedP95FrameMs"], 0, 1000, "presentedP95FrameMs", True),
+            "presentedP99FrameMs": _context_float(value["presentedP99FrameMs"], 0, 1000, "presentedP99FrameMs", True),
+            "presentedFrameTimeCvPct": _context_float(value["presentedFrameTimeCvPct"], 0, 10_000, "presentedFrameTimeCvPct", True),
+            "slowFrame25Ms": _context_int(value["slowFrame25Ms"], 0, 10_000_000, "slowFrame25Ms"),
+            "slowFrame33Ms": _context_int(value["slowFrame33Ms"], 0, 10_000_000, "slowFrame33Ms"),
+            "slowFrame50Ms": _context_int(value["slowFrame50Ms"], 0, 10_000_000, "slowFrame50Ms"),
+            "slowFrame100Ms": _context_int(value["slowFrame100Ms"], 0, 10_000_000, "slowFrame100Ms"),
+            "slowFrame33Pct": _context_float(value["slowFrame33Pct"], 0, 100, "slowFrame33Pct", True),
+            "displayedFrameCount": _context_int(value["displayedFrameCount"], 0, 10_000_000, "displayedFrameCount"),
+            "displayedFpsAvg": _context_float(value["displayedFpsAvg"], 0, 1000, "displayedFpsAvg", True),
+            "displayedFps1Low": _context_float(value["displayedFps1Low"], 0, 1000, "displayedFps1Low", True),
+            "displayedP95FrameMs": _context_float(value["displayedP95FrameMs"], 0, 1000, "displayedP95FrameMs", True),
+            "displayedP99FrameMs": _context_float(value["displayedP99FrameMs"], 0, 1000, "displayedP99FrameMs", True),
+            "displayMetricSource": _context_enum(value["displayMetricSource"], ("displayed_time", "display_change", "unavailable"), "displayMetricSource"),
+            "appFrameCount": _context_int(value["appFrameCount"], 0, 10_000_000, "appFrameCount"),
+            "appFpsAvg": _context_float(value["appFpsAvg"], 0, 1000, "appFpsAvg", True),
+            "appFps1Low": _context_float(value["appFps1Low"], 0, 1000, "appFps1Low", True),
+            "generatedFrameCount": _context_int(value["generatedFrameCount"], 0, 10_000_000, "generatedFrameCount", True),
+            "repeatedFrameCount": _context_int(value["repeatedFrameCount"], 0, 10_000_000, "repeatedFrameCount", True),
+            "droppedFrameCount": _context_int(value["droppedFrameCount"], 0, 10_000_000, "droppedFrameCount", True),
+            "frameGenerationDetected": _context_bool(value["frameGenerationDetected"], "frameGenerationDetected", True),
+            "displayTrackingCoveragePct": _context_float(value["displayTrackingCoveragePct"], 0, 100, "displayTrackingCoveragePct", True),
+            "frameTypeCoveragePct": _context_float(value["frameTypeCoveragePct"], 0, 100, "frameTypeCoveragePct", True),
+            "frameTypeDistribution": _context_distribution(value["frameTypeDistribution"], "frameTypeDistribution"),
+            "presentModeDistribution": _context_distribution(value["presentModeDistribution"], "presentModeDistribution"),
+            "presentRuntimeDistribution": _context_distribution(value["presentRuntimeDistribution"], "presentRuntimeDistribution"),
+            "syncIntervalDistribution": _context_distribution(value["syncIntervalDistribution"], "syncIntervalDistribution"),
+            "swapChainCount": _context_int(value["swapChainCount"], 0, 1024, "swapChainCount"),
+            "tearingFramePct": _context_float(value["tearingFramePct"], 0, 100, "tearingFramePct", True),
+            "cpuBusyAvgMs": _context_float(value["cpuBusyAvgMs"], 0, 1000, "cpuBusyAvgMs", True),
+            "cpuBusyP95Ms": _context_float(value["cpuBusyP95Ms"], 0, 1000, "cpuBusyP95Ms", True),
+            "gpuBusyAvgMs": _context_float(value["gpuBusyAvgMs"], 0, 1000, "gpuBusyAvgMs", True),
+            "gpuBusyP95Ms": _context_float(value["gpuBusyP95Ms"], 0, 1000, "gpuBusyP95Ms", True),
+            "displayLatencyAvgMs": _context_float(value["displayLatencyAvgMs"], 0, 1000, "displayLatencyAvgMs", True),
+            "displayLatencyP95Ms": _context_float(value["displayLatencyP95Ms"], 0, 1000, "displayLatencyP95Ms", True),
+            "captureCompatibilityStatus": _context_enum(value["captureCompatibilityStatus"], ("ok", "no_frame_data"), "captureCompatibilityStatus"),
+        }
+        for prefix in ("gpuUtil", "gpuTemp", "gpuPower"):
+            result[prefix + "Source"] = _context_enum(
+                value[prefix + "Source"], ("nvidia-smi", "windows-gpu-engine", "unavailable"), prefix + "Source"
+            )
+            result[prefix + "SampleCount"] = _context_int(value[prefix + "SampleCount"], 0, 100_000, prefix + "SampleCount")
+            result[prefix + "CoveragePct"] = _context_float(value[prefix + "CoveragePct"], 0, 100, prefix + "CoveragePct", True)
+        for prefix in ("processCpu",):
+            result[prefix + "AvgPct"] = _context_float(value[prefix + "AvgPct"], 0, 100, prefix + "AvgPct", True)
+            result[prefix + "MaxPct"] = _context_float(value[prefix + "MaxPct"], 0, 100, prefix + "MaxPct", True)
+            result[prefix + "SampleCount"] = _context_int(value[prefix + "SampleCount"], 0, 100_000, prefix + "SampleCount")
+            result[prefix + "CoveragePct"] = _context_float(value[prefix + "CoveragePct"], 0, 100, prefix + "CoveragePct", True)
+        for prefix in ("gameWorkingSet", "gamePrivate", "gpuDedicatedMemory", "gpuSharedMemory"):
+            result[prefix + "AvgMb"] = _context_float(value[prefix + "AvgMb"], 0, 1_048_576, prefix + "AvgMb", True)
+            result[prefix + "MaxMb"] = _context_float(value[prefix + "MaxMb"], 0, 1_048_576, prefix + "MaxMb", True)
+        result.update({
+            "processMemorySampleCount": _context_int(value["processMemorySampleCount"], 0, 100_000, "processMemorySampleCount"),
+            "systemMemoryUsedAvgPct": _context_float(value["systemMemoryUsedAvgPct"], 0, 100, "systemMemoryUsedAvgPct", True),
+            "systemMemoryUsedMaxPct": _context_float(value["systemMemoryUsedMaxPct"], 0, 100, "systemMemoryUsedMaxPct", True),
+            "systemMemoryAvailableMinMb": _context_float(value["systemMemoryAvailableMinMb"], 0, 1_048_576, "systemMemoryAvailableMinMb", True),
+            "systemCommitUsedAvgPct": _context_float(value["systemCommitUsedAvgPct"], 0, 100, "systemCommitUsedAvgPct", True),
+            "systemMemorySampleCount": _context_int(value["systemMemorySampleCount"], 0, 100_000, "systemMemorySampleCount"),
+            "gpuMemorySource": _context_enum(value["gpuMemorySource"], ("windows-gpu-process-memory", "unavailable"), "gpuMemorySource"),
+            "gpuMemorySampleCount": _context_int(value["gpuMemorySampleCount"], 0, 100_000, "gpuMemorySampleCount"),
+            "gpuMemoryCoveragePct": _context_float(value["gpuMemoryCoveragePct"], 0, 100, "gpuMemoryCoveragePct", True),
+        })
+        luid = _context_text(value["gameRenderAdapterLuid"], 48, "gameRenderAdapterLuid").lower()
+        if luid and not re.fullmatch(r"0x[0-9a-f]+:0x[0-9a-f]+", luid):
+            raise ValueError("invalid gameRenderAdapterLuid")
+        result.update({
+            "gameRenderAdapterLuid": luid,
+            "gameRenderAdapterPhysicalIndex": _context_int(value["gameRenderAdapterPhysicalIndex"], 0, 64, "gameRenderAdapterPhysicalIndex", True),
+            "hybridPresentCount": _context_int(value["hybridPresentCount"], 0, 10_000_000, "hybridPresentCount", True),
+            "hybridPresentCoveragePct": _context_float(value["hybridPresentCoveragePct"], 0, 100, "hybridPresentCoveragePct", True),
+            "powerSourceStart": _context_enum(value["powerSourceStart"], ("ac", "battery", "unknown"), "powerSourceStart"),
+            "powerSourceEnd": _context_enum(value["powerSourceEnd"], ("ac", "battery", "unknown"), "powerSourceEnd"),
+            "powerSourceChanged": _context_bool(value["powerSourceChanged"], "powerSourceChanged", True),
+            "batteryPercentStart": _context_int(value["batteryPercentStart"], 0, 100, "batteryPercentStart", True),
+            "batteryPercentEnd": _context_int(value["batteryPercentEnd"], 0, 100, "batteryPercentEnd", True),
+            "batteryDischargingUnderLoad": _context_bool(value["batteryDischargingUnderLoad"], "batteryDischargingUnderLoad", True),
+            "chargerInsufficiencySuspected": _context_bool(value["chargerInsufficiencySuspected"], "chargerInsufficiencySuspected", True),
+        })
+    except ValueError as exc:
+        raise TelemetryPerformanceError(str(exc))
+    if required and (
+        result["presentedFrameCount"] < 1000 or result["presentedFpsAvg"] is None
+        or result["presentedFps1Low"] is None or result["captureCompatibilityStatus"] != "ok"
+    ):
+        raise TelemetryPerformanceError("incomplete performance metrics context")
+    slow_counts = [result[key] for key in ("slowFrame25Ms", "slowFrame33Ms", "slowFrame50Ms", "slowFrame100Ms")]
+    if not (slow_counts[0] >= slow_counts[1] >= slow_counts[2] >= slow_counts[3]):
+        raise TelemetryPerformanceError("slow frame thresholds disagree")
+    if slow_counts[0] > result["presentedFrameCount"]:
+        raise TelemetryPerformanceError("slow frames exceed presented frames")
+    expected_slow_pct = (
+        round(result["slowFrame33Ms"] * 100.0 / result["presentedFrameCount"], 1)
+        if result["presentedFrameCount"] else None
+    )
+    if expected_slow_pct is not None and (
+        result["slowFrame33Pct"] is None or abs(result["slowFrame33Pct"] - expected_slow_pct) > 0.11
+    ):
+        raise TelemetryPerformanceError("slow frame percentage disagrees")
+    for average_key, maximum_key in (
+        ("processCpuAvgPct", "processCpuMaxPct"),
+        ("gameWorkingSetAvgMb", "gameWorkingSetMaxMb"),
+        ("gamePrivateAvgMb", "gamePrivateMaxMb"),
+        ("systemMemoryUsedAvgPct", "systemMemoryUsedMaxPct"),
+        ("gpuDedicatedMemoryAvgMb", "gpuDedicatedMemoryMaxMb"),
+        ("gpuSharedMemoryAvgMb", "gpuSharedMemoryMaxMb"),
+    ):
+        if result[average_key] is not None and result[maximum_key] is not None and result[average_key] > result[maximum_key]:
+            raise TelemetryPerformanceError("runtime average exceeds maximum")
+    gpu_memory_pairs = (
+        ("gpuDedicatedMemoryAvgMb", "gpuDedicatedMemoryMaxMb"),
+        ("gpuSharedMemoryAvgMb", "gpuSharedMemoryMaxMb"),
+    )
+    for average_key, maximum_key in gpu_memory_pairs:
+        if (result[average_key] is None) != (result[maximum_key] is None):
+            raise TelemetryPerformanceError("incomplete GPU memory summary")
+    has_gpu_memory_summary = any(result[average_key] is not None for average_key, _ in gpu_memory_pairs)
+    if result["gpuMemorySampleCount"]:
+        if result["gpuMemorySource"] == "unavailable" or not has_gpu_memory_summary:
+            raise TelemetryPerformanceError("GPU memory samples lack a usable summary")
+    elif has_gpu_memory_summary:
+        raise TelemetryPerformanceError("GPU memory summary lacks samples")
+    indicators = (
+        result["presentedFrameCount"] >= 1000, result["presentedP99FrameMs"] is not None,
+        result["presentedFrameTimeCvPct"] is not None, result["slowFrame33Pct"] is not None,
+        result["displayedFrameCount"] > 0, result["displayTrackingCoveragePct"] is not None,
+        result["appFrameCount"] > 0, result["frameTypeCoveragePct"] is not None,
+        bool(result["presentModeDistribution"]), bool(result["presentRuntimeDistribution"]),
+        result["cpuBusyAvgMs"] is not None, result["gpuBusyAvgMs"] is not None,
+        result["displayLatencyAvgMs"] is not None, result["gpuUtilSampleCount"] > 0,
+        result["gpuTempSampleCount"] > 0, result["gpuPowerSampleCount"] > 0,
+        result["processCpuSampleCount"] > 0, result["processMemorySampleCount"] > 0,
+        result["systemMemorySampleCount"] > 0, result["gpuMemorySampleCount"] > 0,
+        bool(result["gameRenderAdapterLuid"]), result["hybridPresentCoveragePct"] is not None,
+        result["powerSourceStart"] != "unknown", result["powerSourceEnd"] != "unknown",
+        result["batteryPercentStart"] is not None, result["captureToolVersion"] != "",
+    )
+    result["completeness"] = int(round(sum(bool(item) for item in indicators) * 100.0 / len(indicators)))
+    return result
 
 
 def _operation_text(payload, key, maximum):
@@ -1127,6 +1711,7 @@ def _normalize_tuning(payload):
         "cpuCores", "cpuThreads", "cpuPackages", "memoryType",
         "memoryConfiguredMhz", "memoryRatedMhz", "memoryModuleCount",
         "virtualDisplayCount", "pagefileAutoManaged", "gpuReportedModelDiffers",
+        "analysisContext",
     }
     type_fields = {
         "experiment_started": {
@@ -1146,6 +1731,7 @@ def _normalize_tuning(payload):
             "gpuPowerAvg", "settingsHash", "environmentHash", "orderControlled",
             "frameCount", "frameTimeMadMs", "stuttersPerMin", "focusLostSec",
             "gpuTempMax", "gameExitedEarly", "captureFailed", "presentMonExitCode",
+            "performanceContext",
         },
         "experiment_completed": {
             "status", "result", "stopReason", "winningVariantId", "autoRollback",
@@ -1329,6 +1915,26 @@ def _normalize_tuning(payload):
     return result
 
 
+def _validate_tuning_metrics_context(tuning, metrics):
+    """Keep the legacy tuning summary and the richer frame context from diverging."""
+    if tuning["type"] != "run_completed" or tuning["validity"] != "valid" or not metrics:
+        return
+    for metric_key, tuning_key in (
+        ("presentedFpsAvg", "avg_fps"),
+        ("presentedFps1Low", "fps_1_low"),
+        ("presentedP99FrameMs", "p99_frame_ms"),
+    ):
+        if metrics[metric_key] is None or abs(metrics[metric_key] - tuning[tuning_key]) > 0.11:
+            raise TelemetryTuningError("tuning frame summary and performance context disagree")
+    if tuning["frame_count"] is not None and metrics["presentedFrameCount"] != tuning["frame_count"]:
+        raise TelemetryTuningError("tuning frame counts disagree")
+    if (
+        metrics["slowFrame50Ms"] != tuning["stutter_50ms"]
+        or metrics["slowFrame100Ms"] != tuning["stutter_100ms"]
+    ):
+        raise TelemetryTuningError("tuning slow frame counts disagree")
+
+
 def _normalize_telemetry(payload):
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
@@ -1346,23 +1952,56 @@ def _normalize_telemetry(payload):
         duration_sec = _strict_nonnegative_int(payload.get("durationSec"), PERFORMANCE_MAX_DURATION)
         avg_fps = _strict_nonnegative_float(payload.get("avgFps"), 1000)
         fps_1_low = _strict_nonnegative_float(payload.get("fps1Low"), 1000)
-        gpu_util_avg = _strict_nonnegative_float(payload.get("gpuUtilAvg"), 100)
-        gpu_util_max = _strict_nonnegative_float(payload.get("gpuUtilMax"), 100)
-        gpu_temp_avg = _strict_nonnegative_float(payload.get("gpuTempAvg"), 120)
-        gpu_temp_max = _strict_nonnegative_float(payload.get("gpuTempMax"), 120)
-        gpu_power_avg = _strict_nonnegative_float(payload.get("gpuPowerAvg"), 1500)
-        gpu_power_max = _strict_nonnegative_float(payload.get("gpuPowerMax"), 1500)
+        gpu_util_avg = _strict_optional_nonnegative_float(payload.get("gpuUtilAvg"), 100)
+        gpu_util_max = _strict_optional_nonnegative_float(payload.get("gpuUtilMax"), 100)
+        gpu_temp_avg = _strict_optional_nonnegative_float(payload.get("gpuTempAvg"), 120)
+        gpu_temp_max = _strict_optional_nonnegative_float(payload.get("gpuTempMax"), 120)
+        gpu_power_avg = _strict_optional_nonnegative_float(payload.get("gpuPowerAvg"), 1500)
+        gpu_power_max = _strict_optional_nonnegative_float(payload.get("gpuPowerMax"), 1500)
+        frame_count = _strict_optional_nonnegative_int(payload.get("frameCount"), 10_000_000)
+        p99_frame_ms = _strict_optional_nonnegative_float(payload.get("p99FrameMs"), 1000)
+        frame_time_mad_ms = _strict_optional_nonnegative_float(payload.get("frameTimeMadMs"), 1000)
+        stutter_50ms = _strict_optional_nonnegative_int(payload.get("stutter50Ms"), 10_000_000)
+        stutter_100ms = _strict_optional_nonnegative_int(payload.get("stutter100Ms"), 10_000_000)
+        stutters_per_min = _strict_optional_nonnegative_float(payload.get("stuttersPerMin"), 100_000)
+        focus_lost_sec = _strict_optional_nonnegative_float(payload.get("focusLostSec"), PERFORMANCE_MAX_DURATION)
         performance_context = _normalize_performance_context(payload, app_version, config_tier)
     else:
         duration_sec = 0
         avg_fps = fps_1_low = 0.0
-        gpu_util_avg = gpu_util_max = 0.0
-        gpu_temp_avg = gpu_temp_max = 0.0
-        gpu_power_avg = gpu_power_max = 0.0
+        gpu_util_avg = gpu_util_max = None
+        gpu_temp_avg = gpu_temp_max = None
+        gpu_power_avg = gpu_power_max = None
+        frame_count = p99_frame_ms = frame_time_mad_ms = None
+        stutter_50ms = stutter_100ms = stutters_per_min = focus_lost_sec = None
         performance_context = {
             "optimization_scheme": "legacy-unknown", "item_set_hash": "",
             "item_ids": [], "item_ids_complete": 0,
         }
+    analysis_context = _normalize_analysis_context(payload, app_version)
+    tuning_metrics_required = (
+        event == "tuning" and payload.get("tuningType") == "run_completed"
+        and str(payload.get("validity", "")).strip().lower() == "valid"
+        and _version_tuple(app_version) >= ANALYSIS_CONTEXT_REQUIRED_VERSION
+    )
+    metrics_context_required = (
+        event == "performance" and _version_tuple(app_version) >= ANALYSIS_CONTEXT_REQUIRED_VERSION
+    ) or tuning_metrics_required
+    should_parse_metrics_context = (
+        (event in ("performance", "tuning") and "performanceContext" in payload)
+        or metrics_context_required
+    )
+    metrics_context = _normalize_performance_metrics_context(
+        payload, metrics_context_required,
+    ) if should_parse_metrics_context else None
+    if event == "performance" and analysis_context:
+        if (
+            analysis_context["optimizationScheme"] != performance_context["optimization_scheme"]
+            or analysis_context["optimizationItemIds"] != performance_context["item_ids"]
+            or analysis_context["optimizationItemSetHash"] != performance_context["item_set_hash"]
+            or int(analysis_context["optimizationItemsComplete"]) != performance_context["item_ids_complete"]
+        ):
+            raise TelemetryPerformanceError("analysis and performance optimization context disagree")
     memory_type = _text(payload.get("memoryType"), 16).upper()
     if memory_type not in ("DDR4", "DDR5"):
         memory_type = "unknown"
@@ -1370,6 +2009,25 @@ def _normalize_telemetry(payload):
     pagefile_auto_managed = 1 if pagefile_auto_managed is True else 0 if pagefile_auto_managed is False else -1
     gpu_reported_model_differs = payload.get("gpuReportedModelDiffers")
     gpu_reported_model_differs = 1 if gpu_reported_model_differs is True else 0 if gpu_reported_model_differs is False else -1
+    device_type = _text(payload.get("deviceType"), 24).lower()
+    if device_type not in ("desktop", "laptop", "unknown"):
+        device_type = "unknown"
+    if analysis_context:
+        form_factor = analysis_context["formFactor"]
+        if device_type not in ("unknown", form_factor) and form_factor != "unknown":
+            raise ValueError("deviceType conflicts with analysis context")
+        device_type = form_factor
+    analysis_json = json.dumps(analysis_context or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    metrics_json = json.dumps(metrics_context or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    completeness_values = [
+        value["completeness"] for value in (analysis_context, metrics_context) if value is not None
+    ]
+    context_completeness = int(round(sum(completeness_values) / len(completeness_values))) if completeness_values else 0
+    data_quality_tier = (
+        "enriched" if analysis_context and metrics_context
+        else "contextual" if analysis_context or metrics_context
+        else "legacy_descriptive"
+    )
     result = {
         "install_id": install_id.lower(),
         "event": event,
@@ -1385,7 +2043,7 @@ def _normalize_telemetry(payload):
         "display_mode": _text(payload.get("displayMode"), 64),
         "config_tier": config_tier,
         "ram_gb": _bounded_float(payload.get("ramGb")),
-        "device_type": _text(payload.get("deviceType"), 24),
+        "device_type": device_type,
         "cpu_cores": _bounded_int(payload.get("cpuCores"), 1024),
         "cpu_threads": _bounded_int(payload.get("cpuThreads"), 4096),
         "cpu_packages": _bounded_int(payload.get("cpuPackages"), 64),
@@ -1410,6 +2068,23 @@ def _normalize_telemetry(payload):
         "gpu_temp_max": gpu_temp_max,
         "gpu_power_avg": gpu_power_avg,
         "gpu_power_max": gpu_power_max,
+        "frame_count": frame_count,
+        "p99_frame_ms": p99_frame_ms,
+        "frame_time_mad_ms": frame_time_mad_ms,
+        "stutter_50ms": stutter_50ms,
+        "stutter_100ms": stutter_100ms,
+        "stutters_per_min": stutters_per_min,
+        "focus_lost_sec": focus_lost_sec,
+        "analysis_context": analysis_context,
+        "analysis_context_json": analysis_json,
+        "performance_metrics_context": metrics_context,
+        "performance_context_json": metrics_json,
+        "data_quality_tier": data_quality_tier,
+        "context_completeness": context_completeness,
+        "compatibility_usable": 1 if analysis_context and analysis_context["formFactor"] != "unknown" else 0,
+        "risk_usable": 1 if metrics_context and any(
+            metrics_context[key] > 0 for key in ("gpuTempSampleCount", "gpuPowerSampleCount")
+        ) else 0,
         **performance_context,
         "device_token": _text(payload.get("deviceToken"), 256),
         "event_id": _text(payload.get("eventId"), 64).lower(),
@@ -1417,6 +2092,15 @@ def _normalize_telemetry(payload):
     }
     result["operation"] = _normalize_optimization_operation(payload, event)
     result["tuning"] = _normalize_tuning(payload) if event == "tuning" else None
+    if event == "tuning" and result["tuning"]["type"] == "run_completed":
+        _validate_tuning_metrics_context(result["tuning"], metrics_context)
+    if (
+        event == "tuning" and result["tuning"]["type"] == "run_completed"
+        and result["tuning"]["validity"] == "valid"
+        and _version_tuple(app_version) >= ANALYSIS_CONTEXT_REQUIRED_VERSION
+        and metrics_context is None
+    ):
+        raise TelemetryTuningError("missing performance metrics context")
     return result
 
 
@@ -1494,6 +2178,15 @@ def _validate_performance(item, authenticated):
         raise TelemetryPerformanceError("missing frame metrics")
     if item["fps_1_low"] > item["avg_fps"]:
         raise TelemetryPerformanceError("low frame rate exceeds average")
+    if item["frame_count"] is not None and item["frame_count"] < 1000:
+        raise TelemetryPerformanceError("insufficient frame count")
+    if item["focus_lost_sec"] is not None and item["focus_lost_sec"] > item["duration_sec"]:
+        raise TelemetryPerformanceError("focus duration exceeds capture duration")
+    if (
+        item["stutter_50ms"] is not None and item["stutter_100ms"] is not None
+        and item["stutter_100ms"] > item["stutter_50ms"]
+    ):
+        raise TelemetryPerformanceError("100ms stutters exceed 50ms stutters")
     for average_key, maximum_key in (
         ("gpu_util_avg", "gpu_util_max"),
         ("gpu_temp_avg", "gpu_temp_max"),
@@ -1501,8 +2194,32 @@ def _validate_performance(item, authenticated):
     ):
         average = item[average_key]
         maximum = item[maximum_key]
-        if average > 0 and maximum > 0 and maximum < average:
+        if average is not None and maximum is not None and maximum < average:
             raise TelemetryPerformanceError("maximum below average")
+    metrics = item.get("performance_metrics_context")
+    if metrics:
+        if (
+            metrics["presentedFpsAvg"] is None or metrics["presentedFps1Low"] is None
+            or abs(metrics["presentedFpsAvg"] - item["avg_fps"]) > 0.11
+            or abs(metrics["presentedFps1Low"] - item["fps_1_low"]) > 0.11
+        ):
+            raise TelemetryPerformanceError("legacy and presented frame metrics disagree")
+        if item["frame_count"] is not None and metrics["presentedFrameCount"] != item["frame_count"]:
+            raise TelemetryPerformanceError("frame counts disagree")
+        if item["stutter_50ms"] is not None and metrics["slowFrame50Ms"] != item["stutter_50ms"]:
+            raise TelemetryPerformanceError("50ms stutter counts disagree")
+        if item["stutter_100ms"] is not None and metrics["slowFrame100Ms"] != item["stutter_100ms"]:
+            raise TelemetryPerformanceError("100ms stutter counts disagree")
+        for prefix, average_key, maximum_key in (
+            ("gpuUtil", "gpu_util_avg", "gpu_util_max"),
+            ("gpuTemp", "gpu_temp_avg", "gpu_temp_max"),
+            ("gpuPower", "gpu_power_avg", "gpu_power_max"),
+        ):
+            samples = metrics[prefix + "SampleCount"]
+            if samples and (item[average_key] is None or item[maximum_key] is None):
+                raise TelemetryPerformanceError("sensor samples lack summary metrics")
+            if not samples and (item[average_key] is not None or item[maximum_key] is not None):
+                raise TelemetryPerformanceError("sensor summary lacks samples")
 
 
 def _stored_performance_usable(row):
@@ -1547,6 +2264,8 @@ def _tuning_business_hash(item):
     # hardware columns stay outside it so delayed outbox replays still match hashes
     # written before those optional fields existed.
     value = {"tuning": item["tuning"]}
+    if item["tuning"]["type"] == "run_completed" and item.get("performance_metrics_context"):
+        value["performanceContext"] = item["performance_metrics_context"]
     if item["tuning"]["type"] == "experiment_started":
         value.update({
             "appVersion": item["app_version"],
@@ -1613,13 +2332,13 @@ def _record_optimization_operation(conn, item, client_hash, now, day):
                display_mode, cpu_cores, cpu_threads, cpu_packages, memory_type,
                memory_configured_mhz, memory_rated_mhz, memory_module_count,
                virtual_display_count, pagefile_auto_managed, gpu_reported_model_differs,
-               item_set_hash, item_ids_json, changed_item_ids_json,
+               analysis_context_json, item_set_hash, item_ids_json, changed_item_ids_json,
                succeeded_item_ids_json, failed_item_ids_json, skipped_item_ids_json,
                attention_item_ids_json, reboot_item_ids_json, related_operation_ids_json,
                succeeded_unit_count, failed_unit_count, skipped_unit_count, backup_status,
                restore_mode, verification_status, residual_count, payload_hash
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             operation["operation_id"], client_hash, now, day, item["event"],
             operation["source"], operation["result"], item["app_version"],
@@ -1630,6 +2349,7 @@ def _record_optimization_operation(conn, item, client_hash, now, day):
             item["memory_configured_mhz"], item["memory_rated_mhz"], item["memory_module_count"],
             item["virtual_display_count"], item["pagefile_auto_managed"],
             item["gpu_reported_model_differs"],
+            item["analysis_context_json"],
             _tuning_item_set_hash(operation["item_ids"]), json_value(operation["item_ids"]),
             json_value(operation["changed_item_ids"]), json_value(operation["succeeded_item_ids"]),
             json_value(operation["failed_item_ids"]), json_value(operation["skipped_item_ids"]),
@@ -1947,8 +2667,8 @@ def _record_tuning(conn, item, client_hash, now):
                    device_type, gpu_count, display_mode, cpu_cores, cpu_threads, cpu_packages,
                    memory_type, memory_configured_mhz, memory_rated_mhz, memory_module_count,
                    virtual_display_count, pagefile_auto_managed, gpu_reported_model_differs,
-                   baseline_variant_id, start_payload_hash
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   analysis_context_json, baseline_variant_id, start_payload_hash
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 experiment_id, client_hash, now, tuning["status"], tuning["goal"],
                 tuning["risk_level"], int(tuning["allow_reboot"]),
@@ -1961,6 +2681,7 @@ def _record_tuning(conn, item, client_hash, now):
                 item["memory_configured_mhz"], item["memory_rated_mhz"], item["memory_module_count"],
                 item["virtual_display_count"], item["pagefile_auto_managed"],
                 item["gpu_reported_model_differs"],
+                item["analysis_context_json"],
                 tuning["baseline_variant_id"], payload_hash,
             ),
         )
@@ -2070,10 +2791,11 @@ def _record_tuning(conn, item, client_hash, now):
                    avg_fps, fps_1_low, p99_frame_ms, frame_time_mad_ms, stutter_50ms,
                    stutter_100ms, stutters_per_min, focus_lost_sec, gpu_util_avg,
                    gpu_temp_avg, gpu_temp_max, gpu_power_avg, game_exited_early,
-                   capture_failed, presentmon_exit_code, settings_hash, environment_hash,
+                   capture_failed, presentmon_exit_code, performance_context_json,
+                   data_quality_tier, context_completeness, settings_hash, environment_hash,
                    order_controlled, payload_hash
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                         ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 tuning["run_id"], experiment_id, tuning["variant_id"], tuning["run_no"],
                 tuning["sequence_no"], now - tuning["duration_sec"], now,
@@ -2088,6 +2810,8 @@ def _record_tuning(conn, item, client_hash, now):
                 None if tuning["game_exited_early"] is None else int(tuning["game_exited_early"]),
                 None if tuning["capture_failed"] is None else int(tuning["capture_failed"]),
                 tuning["presentmon_exit_code"],
+                item["performance_context_json"], item["data_quality_tier"],
+                item["context_completeness"],
                 tuning["settings_hash"], tuning["environment_hash"],
                 int(tuning["order_controlled"]), payload_hash,
             ),
@@ -2210,8 +2934,10 @@ def _record_telemetry(payload, now=None):
                 gpu_count, display_mode, ram_gb, device_type, cpu_cores, cpu_threads,
                 cpu_packages, memory_type, memory_configured_mhz, memory_rated_mhz,
                 memory_module_count, virtual_display_count, pagefile_auto_managed,
-                gpu_reported_model_differs, authenticated_last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                gpu_reported_model_differs, form_factor, form_factor_confidence,
+                analysis_context_schema, analysis_context_json, context_completeness,
+                authenticated_last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(client_hash) DO UPDATE SET
                 last_seen=excluded.last_seen,
                 app_version=CASE WHEN excluded.app_version<>'' THEN excluded.app_version ELSE clients.app_version END,
@@ -2238,6 +2964,11 @@ def _record_telemetry(payload, now=None):
                 virtual_display_count=CASE WHEN excluded.virtual_display_count>=0 THEN excluded.virtual_display_count ELSE clients.virtual_display_count END,
                 pagefile_auto_managed=CASE WHEN excluded.pagefile_auto_managed>=0 THEN excluded.pagefile_auto_managed ELSE clients.pagefile_auto_managed END,
                 gpu_reported_model_differs=CASE WHEN excluded.gpu_reported_model_differs>=0 THEN excluded.gpu_reported_model_differs ELSE clients.gpu_reported_model_differs END,
+                form_factor=CASE WHEN excluded.form_factor<>'unknown' THEN excluded.form_factor ELSE clients.form_factor END,
+                form_factor_confidence=CASE WHEN excluded.form_factor<>'unknown' THEN excluded.form_factor_confidence ELSE clients.form_factor_confidence END,
+                analysis_context_schema=MAX(clients.analysis_context_schema, excluded.analysis_context_schema),
+                analysis_context_json=CASE WHEN excluded.analysis_context_json<>'{}' THEN excluded.analysis_context_json ELSE clients.analysis_context_json END,
+                context_completeness=CASE WHEN excluded.analysis_context_json<>'{}' THEN excluded.context_completeness ELSE clients.context_completeness END,
                 authenticated_last_seen=MAX(clients.authenticated_last_seen, excluded.authenticated_last_seen)
             """,
             (
@@ -2249,6 +2980,11 @@ def _record_telemetry(payload, now=None):
                 item["memory_configured_mhz"], item["memory_rated_mhz"], item["memory_module_count"],
                 item["virtual_display_count"], item["pagefile_auto_managed"],
                 item["gpu_reported_model_differs"],
+                item["analysis_context"]["formFactor"] if item["analysis_context"] else "unknown",
+                item["analysis_context"]["formFactorConfidence"] if item["analysis_context"] else "low",
+                item["analysis_context"]["schemaVersion"] if item["analysis_context"] else 0,
+                item["analysis_context_json"],
+                item["analysis_context"]["completeness"] if item["analysis_context"] else 0,
                 now if authenticated else 0,
             ),
         )
@@ -2261,17 +2997,36 @@ def _record_telemetry(payload, now=None):
                         client_hash, recorded_at, day, app_version, gpu_model, config_tier, duration_sec,
                         avg_fps, fps_1_low, gpu_util_avg, gpu_util_max, gpu_temp_avg,
                         gpu_temp_max, gpu_power_avg, gpu_power_max, optimization_scheme,
-                        item_set_hash, item_ids_json, item_ids_complete, authenticated
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        item_set_hash, item_ids_json, item_ids_complete, frame_count,
+                        p99_frame_ms, frame_time_mad_ms, stutter_50ms, stutter_100ms,
+                        stutters_per_min, focus_lost_sec, gpu_util_avg_v2, gpu_util_max_v2,
+                        gpu_temp_avg_v2, gpu_temp_max_v2, gpu_power_avg_v2, gpu_power_max_v2,
+                        analysis_context_json, performance_context_json, data_quality_tier,
+                        context_completeness, descriptive_usable, causal_usable,
+                        compatibility_usable, risk_usable, authenticated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         client_hash, now, day, item["app_version"], item["gpu_model"], item["config_tier"],
                         item["duration_sec"], item["avg_fps"], item["fps_1_low"],
-                        item["gpu_util_avg"], item["gpu_util_max"], item["gpu_temp_avg"],
-                        item["gpu_temp_max"], item["gpu_power_avg"], item["gpu_power_max"],
+                        item["gpu_util_avg"] if item["gpu_util_avg"] is not None else 0.0,
+                        item["gpu_util_max"] if item["gpu_util_max"] is not None else 0.0,
+                        item["gpu_temp_avg"] if item["gpu_temp_avg"] is not None else 0.0,
+                        item["gpu_temp_max"] if item["gpu_temp_max"] is not None else 0.0,
+                        item["gpu_power_avg"] if item["gpu_power_avg"] is not None else 0.0,
+                        item["gpu_power_max"] if item["gpu_power_max"] is not None else 0.0,
                         item["optimization_scheme"], item["item_set_hash"],
                         json.dumps(item["item_ids"], separators=(",", ":")),
                         item["item_ids_complete"],
+                        item["frame_count"], item["p99_frame_ms"], item["frame_time_mad_ms"],
+                        item["stutter_50ms"], item["stutter_100ms"], item["stutters_per_min"],
+                        item["focus_lost_sec"], item["gpu_util_avg"], item["gpu_util_max"],
+                        item["gpu_temp_avg"], item["gpu_temp_max"], item["gpu_power_avg"],
+                        item["gpu_power_max"], item["analysis_context_json"],
+                        item["performance_context_json"], item["data_quality_tier"],
+                        item["context_completeness"], 1, 0, item["compatibility_usable"],
+                        item["risk_usable"],
                         1 if authenticated else 0,
                     ),
                 )
@@ -2335,7 +3090,12 @@ DIAGNOSTIC_ISSUE_LABELS = {
     "stutter": "卡顿 / 微卡", "low_one_percent": "1% Low 偏低",
     "input_latency": "输入延迟", "slow_loading": "加载 / 切场景慢",
     "game_crash": "闪退 / 全屏黑屏 / 无响应",
+    "black_screen_audio": "全屏黑屏但有声音",
+    "black_screen_no_audio": "全屏黑屏且声音中断",
     "partial_black_screen": "游戏内部分黑屏 / 黑块",
+    "black_screen_alt_tab": "切屏或显示模式变化后黑屏",
+    "black_screen_frame_generation": "开启帧生成后黑屏",
+    "black_screen_external_display": "外接显示器或独显直连时黑屏",
     "system_lag": "系统整体卡顿", "cpu_heat": "CPU 占用或温度过高",
     "gpu_heat": "GPU 占用或温度过高", "noise_power": "噪音 / 功耗高",
     "app_update_failure": "工具启动 / 更新失败",
@@ -2352,13 +3112,19 @@ DIAGNOSTIC_RELATED_PROCESS_LABELS = {
     "game-client": "三角洲游戏进程", "game-launcher": "三角洲启动进程",
     "presentmon": "PresentMon", "rtss": "RTSS", "msi-afterburner": "MSI Afterburner",
     "obs": "OBS", "discord": "Discord", "game-bar": "Xbox Game Bar",
-    "nvidia-share": "NVIDIA Share", "wegame": "WeGame",
+    "nvidia-share": "NVIDIA Share", "amd-software": "AMD Software", "wegame": "WeGame",
+    "gamepp": "游戏++", "lossless-scaling": "Lossless Scaling", "process-lasso": "Process Lasso",
+    "armoury-crate": "Armoury Crate", "g-helper": "G-Helper", "lenovo-vantage": "Lenovo Vantage",
+    "msi-center": "MSI Center", "omen-gaming-hub": "OMEN Gaming Hub",
+    "alienware-command-center": "Alienware Command Center", "razer-cortex": "Razer Cortex",
 }
 DIAGNOSTIC_RELATED_PROCESS_ALIASES = {
     "deltaforceclient-win64-shipping": "game-client", "deltaforce": "game-launcher",
     "presentmon": "presentmon", "rtss": "rtss", "msiafterburner": "msi-afterburner",
     "obs64": "obs", "discord": "discord", "gamebar": "game-bar",
-    "nvidia share": "nvidia-share", "wegame": "wegame",
+    "nvidia share": "nvidia-share", "radeonsoftware": "amd-software", "wegame": "wegame",
+    "gamepp": "gamepp", "losslessscaling": "lossless-scaling", "processlasso": "process-lasso",
+    "processgovernor": "process-lasso", "ghelper": "g-helper", "razercortex": "razer-cortex",
 }
 DIAGNOSTIC_ERROR_PATTERNS = (
     ("gpu_panel_detection_failed", "显卡软件检测失败", r"显卡软件检测失败"),
@@ -2388,13 +3154,13 @@ def _diagnostic_csv_ids(value, allowed):
 
 
 def _parse_diagnostic_report(text):
-    """Extract only aggregate-safe fields; accepts v0.19+ prose and schema-v2 reports."""
+    """Extract only aggregate-safe fields; accepts v0.19+ prose and schema-v2/v3 reports."""
     # GUI reports use CRLF on Windows.  Normalizing once keeps all anchored
     # historical fallbacks (version, feedback and performance rows) working.
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     fields = {}
     section = re.search(
-        r"(?ms)^== 分析字段（schema v2） ==\s*$\n(?P<body>.*?)(?=^== |\Z)", text,
+        r"(?ms)^== 分析字段（schema v(?:2|3)） ==\s*$\n(?P<body>.*?)(?=^== |\Z)", text,
     )
     if section:
         for line in section.group("body").splitlines():
@@ -2518,7 +3284,7 @@ def _parse_diagnostic_report(text):
     if memory_type not in ("DDR4", "DDR5"):
         memory_type = "unknown"
     device_type = fields.get("device_type") or ({"笔记本": "laptop", "台式机": "desktop"}.get(device_text, ""))
-    if device_type not in ("desktop", "laptop"):
+    if device_type not in ("desktop", "laptop", "unknown"):
         device_type = "unknown"
     config_tier = str(fields.get("config_tier") or "unknown").strip().lower()
     if config_tier not in CONFIG_TIERS:

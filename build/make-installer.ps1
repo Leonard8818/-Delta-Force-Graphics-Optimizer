@@ -641,9 +641,7 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复部分电脑无法正确检测 NVIDIA、AMD、Intel 显卡控制软件的问题。
-- 诊断反馈新增「游戏内部分区域黑屏 / 黑块」选项。
-- 修复异常或不完整的性能采样被误判为有效记录的问题。
+- 修复一些已知问题。
 '@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让

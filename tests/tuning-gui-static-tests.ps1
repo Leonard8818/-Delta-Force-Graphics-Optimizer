@@ -507,6 +507,27 @@ $script:GuiVersion=$guiVersionMatch.Groups[1].Value
 $hw=[pscustomobject]@{OS='Windows 11';Build='26100';CPU='Test CPU';MainGpuVendor='NVIDIA';MainGpuName='NVIDIA Test GPU';MainGpuNameVerified=$true;RamGB=32;IsLaptop=$false}
 $environment=[pscustomobject][ordered]@{appVersion=$script:GuiVersion;windowsBuild='26100';gpuModel='NVIDIA Test GPU';driverVersion='600.1';gameVersion='1.2.3';displayMode='2560x1440@165';sceneId='靶场固定路线'}
 
+# 这里只提取 payload 函数，没有执行 GUI 顶层的硬件/注册表检测。
+# 用与服务端 v1 严格结构一致的固定上下文，验证当前版本的 tuning 事件会真正携带它。
+$script:TuningAnalysisContextFixture=@'
+{"schemaVersion":1,"formFactor":"desktop","formFactorConfidence":"high","chassisTypes":[3],"hasBattery":false,"hasInternalDisplay":false,"upsAmbiguous":false,"manufacturer":"Example","modelFamily":"Example Desktop","cpuEfficiencyClasses":[0],"hybridCpu":false,"hypervisorPresent":false,"gpuAdapters":[{"vendor":"NVIDIA","model":"NVIDIA GeForce RTX 4070 SUPER","modelVerified":true,"reportedModelDiffers":false,"driverVersion":"600.00","driverDate":"2026-08-01","virtualDisplay":false,"displayActive":true,"displayMode":"2560x1440@165","main":true,"displayConnected":true}],"displayAdapterVendor":"NVIDIA","displayAdapterModel":"NVIDIA GeForce RTX 4070 SUPER","displayAdapterModelVerified":true,"hybridGraphics":false,"activeDisplayCount":1,"internalDisplayCount":0,"externalDisplayCount":1,"displayConnectors":["displayport"],"windowsDisplayVersion":"24H2","windowsBuildRevision":5000,"windowsReleaseChannel":"retail","vbsState":"running","memoryIntegrityState":"enabled","hagsState":"enabled","gameModeState":"enabled","gameDvrState":"disabled","mpoState":"default","windowedOptimizationState":"enabled","autoHdrState":"disabled","vrrState":"enabled","memoryCompressionState":"enabled","fsoState":"default","gpuPreferenceState":"high_performance","optimizationScheme":"baseline","optimizationItemIds":[],"optimizationItemSetHash":"","optimizationItemsComplete":true,"gpuPanelStatus":"ok","gpuPanelInstalledKeys":["nv-cpl"],"gpuPanelMissingKeys":["nv-app"],"activeSoftwareKeys":["gamepp"],"restoreCatalogStatus":"ok","activeBackupCount":0,"activeRestoreItemCount":0,"activeRestoreOpCount":0,"legacyBackupCount":0,"pendingBackupCount":0,"restoreConflictItemCount":0,"systemDriveMediaType":"ssd","systemDriveBusType":"nvme","systemDriveFreeGb":256.5,"gameDriveMediaType":"ssd","gameDriveBusType":"nvme","gameDriveFreeGb":512.0,"activePowerPlanGuid":"381b4222-f694-41f0-9685-ff5bb260df2e","rebootPending":false,"gameExeVersion":"1.0.0.1","powerSource":"ac","batteryPercent":null,"vcRuntimeStatus":"complete","vcRuntimeX64Version":"14.50.1000.0","vcRuntimeX86Version":"14.50.1000.0","vcRuntimeComponentCount":4,"captureCompatibilityStatus":"available"}
+'@|ConvertFrom-Json
+function Get-TelemetryAnalysisContext { $script:TuningAnalysisContextFixture }
+$script:TuningPerformanceContextTemplate=@'
+{"schemaVersion":1,"legacyFpsSource":"presented","captureTool":"presentmon","captureToolVersion":"2.5.1","captureMode":"etw_summary","overlayEnabled":false,"captureOverheadMeasured":false,"presentedFrameCount":12000,"presentedFpsAvg":100,"presentedFps1Low":70,"presentedP50FrameMs":10.0,"presentedP90FrameMs":12.0,"presentedP95FrameMs":14.0,"presentedP99FrameMs":20.0,"presentedFrameTimeCvPct":15.0,"slowFrame25Ms":1000,"slowFrame33Ms":500,"slowFrame50Ms":100,"slowFrame100Ms":20,"slowFrame33Pct":4.2,"displayedFrameCount":12000,"displayedFpsAvg":100.0,"displayedFps1Low":70.0,"displayedP95FrameMs":14.0,"displayedP99FrameMs":20.0,"displayMetricSource":"displayed_time","appFrameCount":12000,"appFpsAvg":100.0,"appFps1Low":70.0,"generatedFrameCount":0,"repeatedFrameCount":0,"droppedFrameCount":0,"frameGenerationDetected":false,"displayTrackingCoveragePct":100.0,"frameTypeCoveragePct":100.0,"frameTypeDistribution":{"Application":12000},"presentModeDistribution":{"Hardware: Independent Flip":12000},"presentRuntimeDistribution":{"DXGI":12000},"syncIntervalDistribution":{"0":12000},"swapChainCount":1,"tearingFramePct":100.0,"cpuBusyAvgMs":3.0,"cpuBusyP95Ms":5.0,"gpuBusyAvgMs":7.0,"gpuBusyP95Ms":10.0,"displayLatencyAvgMs":20.0,"displayLatencyP95Ms":25.0,"captureCompatibilityStatus":"ok","gpuUtilSource":"windows-gpu-engine","gpuUtilSampleCount":60,"gpuUtilCoveragePct":100.0,"gpuTempSource":"nvidia-smi","gpuTempSampleCount":60,"gpuTempCoveragePct":100.0,"gpuPowerSource":"nvidia-smi","gpuPowerSampleCount":60,"gpuPowerCoveragePct":100.0,"processCpuAvgPct":35.0,"processCpuMaxPct":55.0,"processCpuSampleCount":59,"processCpuCoveragePct":98.3,"gameWorkingSetAvgMb":8000.0,"gameWorkingSetMaxMb":8500.0,"gamePrivateAvgMb":9000.0,"gamePrivateMaxMb":9500.0,"processMemorySampleCount":60,"systemMemoryUsedAvgPct":65.0,"systemMemoryUsedMaxPct":70.0,"systemMemoryAvailableMinMb":8000.0,"systemCommitUsedAvgPct":60.0,"systemMemorySampleCount":60,"gpuDedicatedMemoryAvgMb":7000.0,"gpuDedicatedMemoryMaxMb":7500.0,"gpuSharedMemoryAvgMb":500.0,"gpuSharedMemoryMaxMb":600.0,"gpuMemorySource":"windows-gpu-process-memory","gpuMemorySampleCount":60,"gpuMemoryCoveragePct":100.0,"gameRenderAdapterLuid":"0x1:0x2","gameRenderAdapterPhysicalIndex":0,"hybridPresentCount":null,"hybridPresentCoveragePct":null,"powerSourceStart":"ac","powerSourceEnd":"ac","powerSourceChanged":false,"batteryPercentStart":null,"batteryPercentEnd":null,"batteryDischargingUnderLoad":null,"chargerInsufficiencySuspected":null}
+'@|ConvertFrom-Json
+function New-TuningPerformanceContextFixture([double]$AvgFps,[double]$Fps1Low,[double]$P99FrameMs,[int]$Stutter50Ms,[int]$Stutter100Ms){
+  $ctx=($script:TuningPerformanceContextTemplate|ConvertTo-Json -Depth 8|ConvertFrom-Json)
+  $ctx.presentedFpsAvg=$AvgFps;$ctx.presentedFps1Low=$Fps1Low;$ctx.presentedP99FrameMs=$P99FrameMs
+  $ctx.displayedFpsAvg=$AvgFps;$ctx.displayedFps1Low=$Fps1Low;$ctx.displayedP99FrameMs=$P99FrameMs
+  $ctx.appFpsAvg=$AvgFps;$ctx.appFps1Low=$Fps1Low
+  $ctx.slowFrame100Ms=$Stutter100Ms;$ctx.slowFrame50Ms=$Stutter50Ms
+  $ctx.slowFrame33Ms=[math]::Max($Stutter50Ms,$Stutter50Ms+10)
+  $ctx.slowFrame25Ms=[math]::Max($ctx.slowFrame33Ms,$ctx.slowFrame33Ms+10)
+  $ctx.slowFrame33Pct=[math]::Round([double]$ctx.slowFrame33Ms*100.0/[double]$ctx.presentedFrameCount,1)
+  $ctx
+}
+
 $stateTemp=Join-Path ([IO.Path]::GetTempPath()) ('dfb-tuning-state-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($stateTemp)
 try{
@@ -533,7 +554,7 @@ function New-PayloadSet {
   $runtime1=[pscustomobject]@{Library=(Get-TuningCandidate 'G1')}
   $reply1=[pscustomobject]@{Results=@($runtime1.Library.ItemIds|ForEach-Object{[pscustomobject]@{Id=$_;Ok=$true;Skipped=$false;Changed=$true}});EngineExitCode=0;BackupError=$null}
   $applied1=New-TuningTelemetryPayload -TuningType variant_applied -State $state -Candidate $candidate1 -Result ([pscustomobject]@{runtime=$runtime1;reply=$reply1;succeeded=$true;changed=$runtime1.Library.ItemIds.Count}) -InstallId $start.installId -Hw $hw
-  $run1=[pscustomobject]@{runId=('run_'+[guid]::NewGuid().ToString('N'));variantId=$candidate1.variantId;runNo=1;sequenceNo=1;validity='valid';invalidReason='';durationSec=120;avgFps=140.0;fps1Low=92.0;p99FrameMs=22.0;stutter50Ms=2;stutter100Ms=0;gpuUtilAvg=71.0;gpuTempAvg=67.0;gpuPowerAvg=130.0;settingsHash=('a'*64);environmentHash=('b'*64);orderControlled=$true}
+  $run1=[pscustomobject]@{runId=('run_'+[guid]::NewGuid().ToString('N'));variantId=$candidate1.variantId;runNo=1;sequenceNo=1;validity='valid';invalidReason='';durationSec=120;frameCount=12000;avgFps=140.0;fps1Low=92.0;p99FrameMs=22.0;stutter50Ms=2;stutter100Ms=0;gpuUtilAvg=71.0;gpuTempAvg=67.0;gpuPowerAvg=130.0;settingsHash=('a'*64);environmentHash=('b'*64);orderControlled=$true;performanceContext=(New-TuningPerformanceContextFixture 140 92 22 2 0)}
   $runPayload1=New-TuningTelemetryPayload -TuningType run_completed -State $state -Run $run1 -InstallId $start.installId -Hw $hw
   $state.runs=@($run1)
 
@@ -546,7 +567,7 @@ function New-PayloadSet {
   $runtime2=[pscustomobject]@{Library=(Get-TuningCandidate 'G2')}
   $reply2=[pscustomobject]@{Results=@($runtime2.Library.ItemIds|ForEach-Object{[pscustomobject]@{Id=$_;Ok=$true;Skipped=$false;Changed=$true}});EngineExitCode=0;BackupError=$null}
   $applied2=New-TuningTelemetryPayload -TuningType variant_applied -State $state -Candidate $candidate2 -Result ([pscustomobject]@{runtime=$runtime2;reply=$reply2;succeeded=$true;changed=$runtime2.Library.ItemIds.Count}) -InstallId $start.installId -Hw $hw
-  $run2=[pscustomobject]@{runId=('run_'+[guid]::NewGuid().ToString('N'));variantId=$candidate2.variantId;runNo=1;sequenceNo=2;validity='valid';invalidReason='';durationSec=120;avgFps=144.0;fps1Low=96.0;p99FrameMs=21.0;stutter50Ms=1;stutter100Ms=0;gpuUtilAvg=72.0;gpuTempAvg=68.0;gpuPowerAvg=132.0;settingsHash=('c'*64);environmentHash=('b'*64);orderControlled=$true}
+  $run2=[pscustomobject]@{runId=('run_'+[guid]::NewGuid().ToString('N'));variantId=$candidate2.variantId;runNo=1;sequenceNo=2;validity='valid';invalidReason='';durationSec=120;frameCount=12000;avgFps=144.0;fps1Low=96.0;p99FrameMs=21.0;stutter50Ms=1;stutter100Ms=0;gpuUtilAvg=72.0;gpuTempAvg=68.0;gpuPowerAvg=132.0;settingsHash=('c'*64);environmentHash=('b'*64);orderControlled=$true;performanceContext=(New-TuningPerformanceContextFixture 144 96 21 1 0)}
   $runPayload2=New-TuningTelemetryPayload -TuningType run_completed -State $state -Run $run2 -InstallId $start.installId -Hw $hw
   $state.status='completed';$state.result='no_significant_gain';$state.stopReason='completed'
   $completed=New-TuningTelemetryPayload -TuningType experiment_completed -State $state -Result ([pscustomobject]@{autoRollback=$false}) -InstallId $start.installId -Hw $hw
@@ -561,9 +582,10 @@ function New-UnstableBaselinePayloadSet {
   for($i=0;$i -lt $averages.Count;$i++){
     $run=[pscustomobject]@{
       runId=('run_'+[guid]::NewGuid().ToString('N'));variantId='baseline';runNo=($i+1);sequenceNo=($i+1)
-      validity='valid';invalidReason='';durationSec=120;avgFps=$averages[$i];fps1Low=55.0;p99FrameMs=24.0
+      validity='valid';invalidReason='';durationSec=120;frameCount=12000;avgFps=$averages[$i];fps1Low=55.0;p99FrameMs=24.0
       stutter50Ms=3;stutter100Ms=1;gpuUtilAvg=68.0;gpuTempAvg=65.0;gpuPowerAvg=118.0
       settingsHash=('e'*64);environmentHash=('f'*64);orderControlled=$true
+      performanceContext=(New-TuningPerformanceContextFixture $averages[$i] 55 24 3 1)
     }
     [void]$events.Add((New-TuningTelemetryPayload -TuningType run_completed -State $state -Run $run -InstallId $installId -Hw $hw))
     $state.runs=@($state.runs)+@($run)
@@ -590,9 +612,10 @@ function New-ContractRunPayload {
         [double]$GpuTempAvg,[string]$SettingsHash)
   $run=[pscustomobject]@{
     runId=('run_'+[guid]::NewGuid().ToString('N'));variantId=$VariantId;runNo=$RunNo;sequenceNo=$SequenceNo
-    validity='valid';invalidReason='';durationSec=120;avgFps=$AvgFps;fps1Low=$Fps1Low;p99FrameMs=$P99FrameMs
+    validity='valid';invalidReason='';durationSec=120;frameCount=12000;avgFps=$AvgFps;fps1Low=$Fps1Low;p99FrameMs=$P99FrameMs
     stutter50Ms=$Stutter50Ms;stutter100Ms=0;gpuUtilAvg=70.0;gpuTempAvg=$GpuTempAvg;gpuPowerAvg=120.0
     settingsHash=$SettingsHash;environmentHash=('b'*64);orderControlled=$true
+    performanceContext=(New-TuningPerformanceContextFixture $AvgFps $Fps1Low $P99FrameMs $Stutter50Ms 0)
   }
   New-TuningTelemetryPayload -TuningType run_completed -State $State -Run $run -InstallId $InstallId -Hw $hw
 }
@@ -647,6 +670,7 @@ $boundaryPayloads=@(New-BoundaryPayloadSet)
 $unstablePayloads=@(New-UnstableBaselinePayloadSet)
 $immediateStopPayloads=@(New-ImmediateStopPayloadSet)
 Assert-True ($payloads.Count -eq 12) 'did not generate complete four-type payload flows for two experiments'
+Assert-True (@($payloads|Where-Object{-not $_.analysisContext}).Count -eq 0) 'current-version tuning payload omitted analysisContext'
 Assert-True ($boundaryPayloads.Count -eq 15) 'deterministic boundary flow is incomplete'
 Assert-True (($unstablePayloads.tuningType -join ',') -eq 'experiment_started,run_completed,run_completed,run_completed,experiment_completed') 'unstable baseline causal flow is incomplete'
 Assert-True (($immediateStopPayloads.tuningType -join ',') -eq 'experiment_started,experiment_completed') 'start + immediate stop causal order changed'

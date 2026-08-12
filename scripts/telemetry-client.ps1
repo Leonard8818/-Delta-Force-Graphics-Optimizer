@@ -129,7 +129,7 @@ $script:DfbTuningOutboxSchemaVersion = 1
 $script:DfbTuningOutboxMaxItems = 512
 $script:DfbTuningOutboxMaxReceipts = 512
 $script:DfbTuningOutboxMaxBytes = 4194304
-$script:DfbTuningPayloadMaxBytes = 7168
+$script:DfbTuningPayloadMaxBytes = 15360
 $script:DfbTuningOutboxMutexName = 'Local\DeltaForceBooster.Telemetry.TuningOutbox'
 
 function Get-DfbTuningOutboxPath([string]$ConfigPath, [string]$OutboxPath = '') {
@@ -179,7 +179,7 @@ function Get-DfbTuningPayloadInfo($Payload) {
   $common = @('installId','event','version','os','build','cpu','gpuVendor','gpuModel','gpuModelVerified',
     'ramGb','deviceType','tuningType','experimentId','driverVersion','gpuCount','displayMode',
     'cpuCores','cpuThreads','cpuPackages','memoryType','memoryConfiguredMhz','memoryRatedMhz',
-    'memoryModuleCount','virtualDisplayCount','pagefileAutoManaged','gpuReportedModelDiffers')
+    'memoryModuleCount','virtualDisplayCount','pagefileAutoManaged','gpuReportedModelDiffers','analysisContext')
   $requiredCommon = @('installId','event','version','os','build','cpu','gpuVendor','gpuModel','gpuModelVerified',
     'ramGb','deviceType','tuningType','experimentId')
   $typeFields = @{
@@ -190,7 +190,7 @@ function Get-DfbTuningPayloadInfo($Payload) {
     run_completed = @('runId','variantId','runNo','sequenceNo','validity','invalidReason','durationSec','avgFps',
       'fps1Low','p99FrameMs','stutter50Ms','stutter100Ms','gpuUtilAvg','gpuTempAvg','gpuPowerAvg',
       'settingsHash','environmentHash','orderControlled','frameCount','frameTimeMadMs','stuttersPerMin',
-      'focusLostSec','gpuTempMax','gameExitedEarly','captureFailed','presentMonExitCode')
+      'focusLostSec','gpuTempMax','gameExitedEarly','captureFailed','presentMonExitCode','performanceContext')
     experiment_completed = @('status','result','stopReason','winningVariantId','autoRollback')
   }
   $type = "$($copy.tuningType)"
@@ -206,7 +206,7 @@ function Get-DfbTuningPayloadInfo($Payload) {
   if ($type -eq 'run_completed') {
     $requiredTypeFields = @($requiredTypeFields | Where-Object { $_ -notin @(
       'frameCount','frameTimeMadMs','stuttersPerMin','focusLostSec','gpuTempMax',
-      'gameExitedEarly','captureFailed','presentMonExitCode'
+      'gameExitedEarly','captureFailed','presentMonExitCode','performanceContext'
     ) })
   }
   foreach ($name in @($requiredCommon + $requiredTypeFields)) {

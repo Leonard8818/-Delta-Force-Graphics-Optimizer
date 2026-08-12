@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.22.1
+  DeltaForceBooster 图形界面 — v0.22.2
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.22.2：修复一些已知问题。
   v0.22.1：①修复部分电脑无法正确检测 NVIDIA、AMD、Intel 显卡控制软件的问题；
         ②诊断反馈新增「游戏内部分区域黑屏 / 黑块」；③修复异常或不完整的性能采样
         被误判为有效记录的问题。
@@ -465,7 +466,7 @@ catch {
 }
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.22.1'
+$script:GuiVersion = '0.22.2'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -844,7 +845,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.22.1 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.22.2 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
@@ -1407,7 +1408,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.22.1 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.22.2 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2272,7 +2273,7 @@ function Update-StreamerPage {
 
 # 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
 # 老用户不会因为条款改了还停留在旧版本的「已同意」上
-$script:DisclaimerVersion = '5'
+$script:DisclaimerVersion = '6'
 $script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
 
 # 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
@@ -2313,7 +2314,7 @@ function Get-DisclaimerText {
     '- 会修改注册表、电源计划、系统服务等系统级设置；可还原的设置改动会先写入受保护备份，可点「还原设置」回退；纯检测项和明确标注不可还原的操作不生成备份，还原也不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
-    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备类型，以及启动、优化、还原和游戏中 120 秒性能采样的汇总结果（平均帧率、1% 低帧率、GPU 占用率、温度、功耗）；性能汇总会附带当前由工具管理的公开优化项目 ID、匿名方案类别和未使用/轻量/均衡/深度档位，自存方案只记为 custom，不发送方案名称或内容，也不发送用户名、机器名、SID、游戏路径、注册表内容或逐帧数据。统计来自客户端自动采样，会做令牌、重放和异常值过滤，但不是独立实验室测量。'
+    '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备与显示类型、驱动和电源/存储/系统功能状态、固定白名单软件是否正在运行、显卡控制软件检测和本工具备份还原状态，以及游戏中最多 120 秒的帧率、帧时间、延迟、帧生成、CPU / GPU / 内存 / 功耗汇总与采样覆盖率。性能汇总会附带当前由工具管理的公开优化项目 ID、匿名方案类别和归属完整度；自存方案只记为 custom，不发送方案名称或内容，也不发送用户名、机器名、SID、游戏路径、任意进程名、注册表路径/键值/原值或逐帧数据。统计来自客户端自动采样，会做令牌、重放、严格字段和异常值过滤，但不是独立实验室测量。'
     '- 服务端定时清理：诊断报告保留 30 天、性能会话保留 90 天、匿名安装标识与按日使用明细保留 180 天。'
     '- 作者不对使用本工具导致的任何损失负责，使用前请自行备份重要数据。'
     ''
@@ -2502,6 +2503,10 @@ function Show-DisclaimerDialog([switch]$ReadOnly) {
 
 $script:TelemetryUploadUrl = 'https://df.ltz88.cn/report/telemetry'
 $script:TelemetryJobs = New-Object System.Collections.ArrayList
+$script:LatestRestoreCatalog = $null
+$script:TelemetryGpuPanelCache = @{}
+$script:TelemetryStorageCache = @{}
+$script:TelemetryDeviceSecurityCache = $null
 
 function Get-TelemetryInstallId {
   $dir = $script:UserConfigDir
@@ -2666,6 +2671,255 @@ function Get-TelemetryDisplayMode($Hw) {
   "${width}x${height}@$refresh"
 }
 
+function Get-TelemetryRegValue([string]$Path, [string]$Name) {
+  try { Get-RegValue $Path $Name } catch { $null }
+}
+
+function Get-TelemetryActiveSoftwareKeys {
+  # 只检查固定白名单并上传稳定 key；不采集任意进程名、命令行或路径。
+  $map = [ordered]@{
+    'DeltaForceClient-Win64-Shipping'='game-client'; 'DeltaForce'='game-launcher'
+    'PresentMon'='presentmon'; 'RTSS'='rtss'; 'MSIAfterburner'='msi-afterburner'
+    'obs64'='obs'; 'Discord'='discord'; 'GameBar'='game-bar'; 'NVIDIA Share'='nvidia-share'
+    'RadeonSoftware'='amd-software'; 'WeGame'='wegame'; 'GamePP'='gamepp'
+    'LosslessScaling'='lossless-scaling'; 'ProcessLasso'='process-lasso'; 'ProcessGovernor'='process-lasso'
+    'ArmouryCrate.UserSessionHelper'='armoury-crate'; 'GHelper'='g-helper'
+    'LenovoVantage'='lenovo-vantage'; 'LenovoVantageService'='lenovo-vantage'
+    'MSI.CentralServer'='msi-center'; 'MSI_Center_Service'='msi-center'
+    'OMEN Gaming Hub'='omen-gaming-hub'; 'OMENCommandCenter'='omen-gaming-hub'
+    'AWCC.Background.Server'='alienware-command-center'; 'AWCCService'='alienware-command-center'
+    'RazerCortex'='razer-cortex'
+  }
+  try {
+    $running = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @(Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique)) {
+      [void]$running.Add("$name")
+    }
+    [string[]]@($map.Keys | Where-Object { $running.Contains("$_") } |
+      ForEach-Object { "$($map[$_])" } | Sort-Object -Unique | Select-Object -First 32)
+  } catch { [string[]]@() }
+}
+
+function Get-TelemetryGpuPanelSnapshot([string]$Vendor) {
+  $key = "$Vendor".Trim().ToUpperInvariant()
+  if (-not $script:TelemetryGpuPanelCache.ContainsKey($key)) {
+    $inventory = $null
+    try { $inventory = Get-GuiGpuPanelInventory $key } catch {}
+    if (-not $inventory) { $inventory = [pscustomobject]@{ Status='not_checked';Apps=@() } }
+    $allowed = @('nv-cpl','nv-app','amd-sw','intel-gcc')
+    $script:TelemetryGpuPanelCache[$key] = [pscustomobject]@{
+      Status = $(if ("$($inventory.Status)" -in 'ok','broker_failed','unsupported_vendor','unavailable_in_compatibility_mode','not_checked') {
+        "$($inventory.Status)"
+      } else { 'not_checked' })
+      InstalledKeys = [string[]]@($inventory.Apps | Where-Object Installed | ForEach-Object { "$($_.Key)" } |
+        Where-Object { $_ -in $allowed } | Sort-Object -Unique)
+      MissingKeys = [string[]]@($inventory.Apps | Where-Object { -not $_.Installed } | ForEach-Object { "$($_.Key)" } |
+        Where-Object { $_ -in $allowed } | Sort-Object -Unique)
+    }
+  }
+  $script:TelemetryGpuPanelCache[$key]
+}
+
+function Get-TelemetryDeviceSecuritySnapshot {
+  if ($script:TelemetryDeviceSecurityCache) { return $script:TelemetryDeviceSecurityCache }
+  $vbs = 'unknown'; $memoryIntegrity = 'unknown'
+  try {
+    $guard = Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName Win32_DeviceGuard -ErrorAction Stop |
+      Select-Object -First 1
+    $vbs = $(switch ([int]$guard.VirtualizationBasedSecurityStatus) { 2 { 'running' }; 1 { 'configured' }; 0 { 'disabled' }; default { 'unknown' } })
+    $running = @($guard.SecurityServicesRunning | ForEach-Object { [int]$_ })
+    $configured = @($guard.SecurityServicesConfigured | ForEach-Object { [int]$_ })
+    $memoryIntegrity = $(if ($running -contains 2) { 'enabled' } elseif ($configured -contains 2) { 'configured_not_running' } else { 'disabled' })
+  } catch {}
+  $script:TelemetryDeviceSecurityCache = [pscustomobject]@{ VbsState=$vbs;MemoryIntegrityState=$memoryIntegrity }
+  $script:TelemetryDeviceSecurityCache
+}
+
+function Get-TelemetryWindowsChannel {
+  try {
+    $branch = "$(Get-TelemetryRegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' 'BuildBranch')"
+    $selfHostPath = 'HKLM:\SOFTWARE\Microsoft\WindowsSelfHost\Applicability'
+    if (-not (Test-Path -LiteralPath $selfHostPath)) {
+      return $(if ($branch -match '(?i)prerelease|canary|dev|beta') { 'preview' } else { 'retail' })
+    }
+    $flight = Get-ItemProperty -LiteralPath $selfHostPath -ErrorAction Stop
+    $value = "$($flight.BranchName) $($flight.Ring) $($flight.ContentType) $branch"
+    if ($value -match '(?i)canary') { return 'canary' }
+    if ($value -match '(?i)(?:^|\W)dev(?:\W|$)|rs_prerelease') { return 'dev' }
+    if ($value -match '(?i)beta') { return 'beta' }
+    if ($value -match '(?i)release[ _-]?preview') { return 'release_preview' }
+    'preview'
+  } catch { 'unknown' }
+}
+
+function Get-TelemetryStorageSnapshot([string]$Path) {
+  $root = ''
+  try { if ($Path) { $root = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Path)) } } catch {}
+  if (-not $root -or $root -notmatch '^[A-Za-z]:\\$') {
+    return [pscustomobject]@{ MediaType='unknown';BusType='unknown';FreeGb=$null }
+  }
+  $cacheKey = $root.ToUpperInvariant()
+  if ($script:TelemetryStorageCache.ContainsKey($cacheKey)) { return $script:TelemetryStorageCache[$cacheKey] }
+  $media = 'unknown'; $bus = 'unknown'; $freeGb = $null
+  try {
+    $deviceId = $root.Substring(0,2)
+    $logical = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$deviceId'" -ErrorAction Stop | Select-Object -First 1
+    if ($logical -and $null -ne $logical.FreeSpace) { $freeGb = [math]::Round([double]$logical.FreeSpace / 1GB, 1) }
+  } catch {}
+  try {
+    $partition = Get-Partition -DriveLetter $root.Substring(0,1) -ErrorAction Stop | Select-Object -First 1
+    $disk = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
+    $busText = "$($disk.BusType)".Trim().ToLowerInvariant()
+    $bus = $(if ($busText -in 'ata','sata','nvme','usb','raid','scsi','sas','mmc','sd','iscsi','virtual','file backed virtual','spaces') {
+      $busText -replace ' ','_'
+    } else { 'unknown' })
+    $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue |
+      Where-Object { "$($_.DeviceId)" -eq "$($disk.Number)" } | Select-Object -First 1
+    $mediaText = "$($physical.MediaType)".Trim().ToLowerInvariant()
+    if ($mediaText -in 'hdd','ssd','scm') { $media = $mediaText }
+  } catch {}
+  $script:TelemetryStorageCache[$cacheKey] = [pscustomobject]@{ MediaType=$media;BusType=$bus;FreeGb=$freeGb }
+  $script:TelemetryStorageCache[$cacheKey]
+}
+
+function Get-TelemetryAnalysisContext($Hw, [string]$GamePath = $script:TargetExe) {
+  if (-not $Hw) { return $null }
+  $gamePathValid = $false
+  try { $gamePathValid = [bool]($GamePath -and (Test-AllowedGameExecutable $GamePath)) } catch {}
+  $gameVersion = ''
+  if ($gamePathValid) {
+    try { $gameVersion = "$((Get-Item -LiteralPath $GamePath -Force).VersionInfo.FileVersion)".Trim() } catch {}
+  }
+  $osVersion = ''; $osUbr = 0
+  try {
+    $osReg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    $osVersion = "$($osReg.DisplayVersion)".Trim()
+    $osUbr = [math]::Max(0, [int]$osReg.UBR)
+  } catch {}
+
+  $hagsValue = Get-TelemetryRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode'
+  $hagsState = $(if ($null -eq $hagsValue) { 'default' } elseif ([int]$hagsValue -eq 2) { 'enabled' }
+    elseif ([int]$hagsValue -eq 1) { 'disabled' } else { 'custom' })
+  $gameModeValue = Get-TelemetryRegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+  $gameModeState = $(if ($null -eq $gameModeValue) { 'default' } elseif ([int]$gameModeValue -eq 1) { 'enabled' }
+    elseif ([int]$gameModeValue -eq 0) { 'disabled' } else { 'custom' })
+  $dvrUser = Get-TelemetryRegValue 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled'
+  $dvrCapture = Get-TelemetryRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled'
+  $gameDvrState = $(if ($null -eq $dvrUser -and $null -eq $dvrCapture) { 'default' }
+    elseif (($null -eq $dvrUser -or [int]$dvrUser -eq 0) -and ($null -eq $dvrCapture -or [int]$dvrCapture -eq 0)) { 'disabled' }
+    elseif (($null -eq $dvrUser -or [int]$dvrUser -eq 1) -and ($null -eq $dvrCapture -or [int]$dvrCapture -eq 1)) { 'enabled' }
+    else { 'mixed' })
+  $mpoValue = Get-TelemetryRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode'
+  $mpoState = $(if ($null -eq $mpoValue) { 'default' } elseif ([int]$mpoValue -eq 5) { 'disabled' } else { 'custom' })
+  $windowedRaw = "$(Get-TelemetryRegValue 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings')"
+  $windowedState = $(if ($windowedRaw -match '(?:^|;)SwapEffectUpgradeEnable=0(?:;|$)') { 'disabled' }
+    elseif ($windowedRaw -match '(?:^|;)SwapEffectUpgradeEnable=1(?:;|$)') { 'enabled' } else { 'default' })
+  $autoHdrState = $(if ($windowedRaw -match '(?:^|;)AutoHDREnable=0(?:;|$)') { 'disabled' }
+    elseif ($windowedRaw -match '(?:^|;)AutoHDREnable=1(?:;|$)') { 'enabled' } else { 'default' })
+  $vrrState = $(if ($windowedRaw -match '(?:^|;)VRROptimizeEnable=0(?:;|$)') { 'disabled' }
+    elseif ($windowedRaw -match '(?:^|;)VRROptimizeEnable=1(?:;|$)') { 'enabled' } else { 'default' })
+  $fsoState = 'unknown'; $gpuPreferenceState = 'unknown'
+  if ($gamePathValid) {
+    $layer = "$(Get-TelemetryRegValue 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers' $GamePath)"
+    $fsoState = $(if ($layer -match '(?i)(?:^|\s)DISABLEDXMAXIMIZEDWINDOWEDMODE(?:\s|$)') { 'disabled' } else { 'default' })
+    $gpuPreference = "$(Get-TelemetryRegValue 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $GamePath)"
+    $gpuPreferenceState = $(if ($gpuPreference -match '(?i)(?:^|;)GpuPreference=2(?:;|$)') { 'high_performance' }
+      elseif ($gpuPreference -match '(?i)(?:^|;)GpuPreference=1(?:;|$)') { 'power_saving' }
+      elseif ([string]::IsNullOrWhiteSpace($gpuPreference)) { 'default' } else { 'custom' })
+  }
+  $activePowerPlanGuid = ''
+  try { $activePowerPlanGuid = "$((Get-ActiveScheme).Guid)".Trim().ToLowerInvariant() } catch {}
+  $rebootPending = $false
+  try {
+    $rebootPending = [bool](
+      (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
+      (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or
+      ($null -ne (Get-TelemetryRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'PendingFileRenameOperations'))
+    )
+  } catch {}
+  $power = $null
+  try { $power = Get-SystemPowerSnapshot } catch {}
+  if (-not $power) { $power = [pscustomobject]@{ Source="$($Hw.PowerSource)"; BatteryPercent=$Hw.BatteryPercent } }
+  $vc = $null
+  try { $vc = Get-VcRedistInventory } catch {}
+  if (-not $vc) { $vc = [pscustomobject]@{ Status='unknown';X64Version='';X86Version='';ComponentCount=0 } }
+  $memoryCompressionState = 'unknown'
+  try { $memoryCompressionState = $(if ([bool](Get-MMAgent -ErrorAction Stop).MemoryCompression) { 'enabled' } else { 'disabled' }) } catch {}
+  $security = Get-TelemetryDeviceSecuritySnapshot
+  $optimization = Get-TelemetryOptimizationContext
+  $panel = Get-TelemetryGpuPanelSnapshot "$($Hw.MainGpuVendor)"
+  $systemStorage = Get-TelemetryStorageSnapshot "$env:SystemDrive\"
+  $gameStorage = Get-TelemetryStorageSnapshot $(if ($gamePathValid) { $GamePath } else { '' })
+  $catalog = $script:LatestRestoreCatalog
+  $catalogStatus = $(if ($catalog) { 'ok' } else { 'unavailable' })
+  $gpuAdapters = @($Hw.Gpus | Select-Object -First 8 | ForEach-Object {
+    [pscustomobject][ordered]@{
+      vendor = "$($_.Vendor)"; model = "$($_.Name)"; modelVerified = [bool]$_.NameVerified
+      reportedModelDiffers = [bool]("$($_.ReportedName)" -ne "$($_.Name)")
+      driverVersion = "$($_.Driver)"; driverDate = "$($_.DriverDate)"
+      virtualDisplay = [bool]$_.IsVirtualDisplay; displayActive = [bool]$_.DisplayActive
+      displayMode = $(if ([int]$_.DisplayWidth -gt 0 -and [int]$_.DisplayHeight -gt 0) {
+        "$([int]$_.DisplayWidth)x$([int]$_.DisplayHeight)@$([int]$_.DisplayRefreshHz)"
+      } else { '' })
+      main = [bool]("$($_.Pnp)" -and "$($_.Pnp)" -ieq "$($Hw.MainGpuPnp)")
+      displayConnected = [bool]("$($_.Pnp)" -and "$($_.Pnp)" -ieq "$($Hw.DisplayGpuPnp)" -and [bool]$_.DisplayActive)
+    }
+  })
+  $presentMonPath = Join-Path $script:RootDir 'tools\PresentMon.exe'
+  [pscustomobject][ordered]@{
+    schemaVersion = 1
+    formFactor = $(if ("$($Hw.FormFactor)" -in 'desktop','laptop','unknown') { "$($Hw.FormFactor)" } else { 'unknown' })
+    formFactorConfidence = $(if ("$($Hw.FormFactorConfidence)" -in 'high','medium','low') { "$($Hw.FormFactorConfidence)" } else { 'low' })
+    chassisTypes = [int[]]@($Hw.ChassisTypes | Select-Object -First 8)
+    hasBattery = $(if ($null -eq $Hw.HasBattery) { $null } else { [bool]$Hw.HasBattery })
+    hasInternalDisplay = $(if ($null -eq $Hw.HasInternalDisplay) { $null } else { [bool]$Hw.HasInternalDisplay })
+    upsAmbiguous = [bool]$Hw.IsUpsAmbiguous
+    manufacturer = "$($Hw.ComputerManufacturer)"
+    modelFamily = "$($Hw.ComputerModelFamily)"
+    cpuEfficiencyClasses = [int[]]@($Hw.CpuEfficiencyClasses | Sort-Object -Unique | Select-Object -First 16)
+    hybridCpu = [bool]$Hw.HybridCpu
+    hypervisorPresent = $(if ($null -eq $Hw.HypervisorPresent) { $null } else { [bool]$Hw.HypervisorPresent })
+    gpuAdapters = [object[]]$gpuAdapters
+    displayAdapterVendor = "$($Hw.DisplayGpuVendor)"
+    displayAdapterModel = "$($Hw.DisplayGpuName)"
+    displayAdapterModelVerified = [bool]$Hw.DisplayGpuNameVerified
+    hybridGraphics = [bool]$Hw.HybridGraphics
+    activeDisplayCount = [math]::Min(16,[math]::Max(0,[int]$Hw.ActiveDisplayCount))
+    internalDisplayCount = [math]::Min(16,[math]::Max(0,[int]$Hw.InternalDisplayCount))
+    externalDisplayCount = [math]::Min(16,[math]::Max(0,[int]$Hw.ExternalDisplayCount))
+    displayConnectors = [string[]]@($Hw.DisplayConnectors | Select-Object -First 8)
+    windowsDisplayVersion = $osVersion
+    windowsBuildRevision = $osUbr
+    windowsReleaseChannel = Get-TelemetryWindowsChannel
+    vbsState = "$($security.VbsState)"; memoryIntegrityState = "$($security.MemoryIntegrityState)"
+    hagsState = $hagsState; gameModeState = $gameModeState; gameDvrState = $gameDvrState
+    mpoState = $mpoState; windowedOptimizationState = $windowedState
+    autoHdrState = $autoHdrState; vrrState = $vrrState; memoryCompressionState = $memoryCompressionState
+    fsoState = $fsoState; gpuPreferenceState = $gpuPreferenceState
+    optimizationScheme = "$($optimization.Scheme)"; optimizationItemIds = [string[]]@($optimization.ItemIds)
+    optimizationItemSetHash = "$($optimization.ItemSetHash)"; optimizationItemsComplete = [bool]$optimization.ItemsComplete
+    gpuPanelStatus = "$($panel.Status)"; gpuPanelInstalledKeys = [string[]]@($panel.InstalledKeys)
+    gpuPanelMissingKeys = [string[]]@($panel.MissingKeys); activeSoftwareKeys = [string[]]@(Get-TelemetryActiveSoftwareKeys)
+    restoreCatalogStatus = $catalogStatus
+    activeBackupCount = $(if ($catalog) { [math]::Max(0,[int]$catalog.ActiveBackupCount) } else { 0 })
+    activeRestoreItemCount = $(if ($catalog) { [math]::Max(0,[int]$catalog.ActiveItemCount) } else { 0 })
+    activeRestoreOpCount = $(if ($catalog) { [math]::Max(0,[int]$catalog.ActiveOpCount) } else { 0 })
+    legacyBackupCount = $(if ($catalog) { [math]::Max(0,[int]$catalog.LegacyBackupCount) } else { 0 })
+    pendingBackupCount = $(if ($catalog) { [math]::Max(0,[int]$catalog.PendingBackupCount) } else { 0 })
+    restoreConflictItemCount = $(if ($catalog) { [math]::Max(0,[int]$catalog.ConflictItemCount) } else { 0 })
+    systemDriveMediaType = "$($systemStorage.MediaType)"; systemDriveBusType = "$($systemStorage.BusType)"
+    systemDriveFreeGb = $systemStorage.FreeGb; gameDriveMediaType = "$($gameStorage.MediaType)"
+    gameDriveBusType = "$($gameStorage.BusType)"; gameDriveFreeGb = $gameStorage.FreeGb
+    activePowerPlanGuid = $activePowerPlanGuid; rebootPending = [bool]$rebootPending
+    gameExeVersion = $gameVersion
+    powerSource = $(if ("$($power.Source)" -in 'ac','battery','unknown') { "$($power.Source)" } else { 'unknown' })
+    batteryPercent = $(if ($null -ne $power.BatteryPercent -and [int]$power.BatteryPercent -ge 0 -and [int]$power.BatteryPercent -le 100) { [int]$power.BatteryPercent } else { $null })
+    vcRuntimeStatus = "$($vc.Status)"; vcRuntimeX64Version = "$($vc.X64Version)"
+    vcRuntimeX86Version = "$($vc.X86Version)"; vcRuntimeComponentCount = [math]::Min(128,[math]::Max(0,[int]$vc.ComponentCount))
+    captureCompatibilityStatus = $(if (Test-Path -LiteralPath $presentMonPath -PathType Leaf) { 'available' } else { 'missing_presentmon' })
+  }
+}
+
 function ConvertTo-OptimizationTelemetryIds([object[]]$Values, [switch]$OperationIds) {
   $pattern = $(if ($OperationIds) { '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' } else { '^[a-z0-9][a-z0-9-]{0,63}$' })
   @($Values | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ -match $pattern } | Sort-Object -Unique)
@@ -2753,6 +3007,7 @@ function Update-TelemetryOptimizationContextFromCatalog {
     [object[]]$KnownChangedItemIds = @(),
     [switch]$MutationIncomplete
   )
+  $script:LatestRestoreCatalog = $Catalog
   $before = Get-TelemetryOptimizationContext
   $ids = @(ConvertTo-TelemetryOptimizationItemIds @($Catalog.ActiveItemIds))
   $hasActive = [bool]$Catalog.HasActiveChanges
@@ -2808,7 +3063,8 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
       gpuCount   = [math]::Min(16, @($Hw.Gpus).Count)
       displayMode = Get-TelemetryDisplayMode $Hw
       ramGb      = [double]$Hw.RamGB
-      deviceType = $(if ($Hw.IsLaptop) { 'laptop' } else { 'desktop' })
+      deviceType = $(if ("$($Hw.FormFactor)" -in 'desktop','laptop','unknown') { "$($Hw.FormFactor)" }
+        elseif ($Hw.IsLaptop) { 'laptop' } else { 'unknown' })
       cpuCores   = [math]::Max(0, [int]$Hw.Cores)
       cpuThreads = [math]::Max(0, [int]$Hw.Threads)
       cpuPackages = [math]::Max(0, [int]$Hw.CpuPackages)
@@ -2822,6 +3078,8 @@ function Send-AnonymousTelemetry([string]$Event, $Hw, [int]$Ok = 0, [int]$Failed
       ok         = [math]::Max(0, $Ok)
       failed     = [math]::Max(0, $Failed)
     }
+    $analysisContext = Get-TelemetryAnalysisContext $Hw $script:TargetExe
+    if ($analysisContext) { $payload.analysisContext = $analysisContext }
     if ($Operation) { $payload.operation = $Operation }
     if (-not (Get-Command Send-DfbTelemetryEvent -ErrorAction SilentlyContinue)) { return }
     $body = $payload | ConvertTo-Json -Compress -Depth 6
@@ -2864,7 +3122,8 @@ $script:PerformanceCaptureWorker = {
         $UploadUrl, $InstallId, $Version,
         $GpuVendor, $GpuModel, $GpuVerified, $GpuPciLocation, $NvidiaSmi,
         $ConfigTier, $OptimizationScheme, $OptimizationItemSetHash, $OptimizationItemIdsCsv,
-        $OptimizationItemsComplete, $WarmupSeconds, $SampleSeconds, $CaptureMode)
+        $OptimizationItemsComplete, $WarmupSeconds, $SampleSeconds, $CaptureMode,
+        $AnalysisContextJson, $PresentMonVersion)
   $ErrorActionPreference = 'SilentlyContinue'
   $OptimizationItemIds = @("$OptimizationItemIdsCsv" -split ',' | Where-Object { $_ })
 
@@ -2876,13 +3135,18 @@ $script:PerformanceCaptureWorker = {
   }
   function Get-Average($Values) {
     $clean = @($Values | Where-Object { $null -ne $_ })
-    if (-not $clean.Count) { return 0.0 }
+    if (-not $clean.Count) { return $null }
     [math]::Round(($clean | Measure-Object -Average).Average, 1)
   }
   function Get-Maximum($Values) {
     $clean = @($Values | Where-Object { $null -ne $_ })
-    if (-not $clean.Count) { return 0.0 }
+    if (-not $clean.Count) { return $null }
     [math]::Round(($clean | Measure-Object -Maximum).Maximum, 1)
+  }
+  function Get-Minimum($Values) {
+    $clean = @($Values | Where-Object { $null -ne $_ })
+    if (-not $clean.Count) { return $null }
+    [math]::Round(($clean | Measure-Object -Minimum).Minimum, 1)
   }
   function Get-Median($Values) {
     $clean = @($Values | ForEach-Object { [double]$_ } | Sort-Object)
@@ -2897,6 +3161,98 @@ $script:PerformanceCaptureWorker = {
     $index = [math]::Min($clean.Count - 1, [math]::Max(0, [math]::Ceiling($clean.Count * $Fraction) - 1))
     [double]$clean[$index]
   }
+  function Get-FrameSummary($Values) {
+    $clean = @($Values | ForEach-Object { [double]$_ } | Where-Object { $_ -gt 0 -and $_ -le 1000 })
+    if ($clean.Count -lt 30) {
+      return [pscustomobject]@{ Count=[int]$clean.Count;AvgFps=$null;Fps1Low=$null;P50FrameMs=$null
+        P90FrameMs=$null;P95FrameMs=$null;P99FrameMs=$null;MadMs=$null;CvPct=$null }
+    }
+    $avgMs = ($clean | Measure-Object -Average).Average
+    $slowCount = [math]::Max(1, [math]::Ceiling($clean.Count * 0.01))
+    $avgSlowMs = (@($clean | Sort-Object -Descending | Select-Object -First $slowCount) | Measure-Object -Average).Average
+    $median = Get-Median $clean
+    $variance = (@($clean | ForEach-Object { [math]::Pow([double]$_ - $avgMs, 2) }) | Measure-Object -Average).Average
+    [pscustomobject]@{
+      Count = [int]$clean.Count
+      AvgFps = $(if ($avgMs -gt 0) { [math]::Round(1000.0 / $avgMs,1) } else { $null })
+      Fps1Low = $(if ($avgSlowMs -gt 0) { [math]::Round(1000.0 / $avgSlowMs,1) } else { $null })
+      P50FrameMs = [math]::Round((Get-Percentile $clean 0.50),2)
+      P90FrameMs = [math]::Round((Get-Percentile $clean 0.90),2)
+      P95FrameMs = [math]::Round((Get-Percentile $clean 0.95),2)
+      P99FrameMs = [math]::Round((Get-Percentile $clean 0.99),2)
+      MadMs = [math]::Round((Get-Median @($clean | ForEach-Object { [math]::Abs([double]$_ - $median) })),2)
+      CvPct = $(if ($avgMs -gt 0) { [math]::Round([math]::Sqrt([math]::Max(0,$variance))*100.0/$avgMs,2) } else { $null })
+    }
+  }
+  function Get-RowNumber($Row, [string[]]$Names) {
+    foreach ($name in $Names) {
+      if ($Row.PSObject.Properties[$name]) {
+        $number = Get-Number $Row.$name
+        if ($null -ne $number) { return $number }
+      }
+    }
+    $null
+  }
+  function ConvertTo-Distribution($Counter, [int]$Limit = 12) {
+    $out = [ordered]@{}
+    foreach ($entry in @($Counter.GetEnumerator() |
+      Sort-Object @{Expression='Value';Descending=$true},@{Expression='Name';Descending=$false} |
+      Select-Object -First $Limit)) {
+      $name = ("$($entry.Name)" -replace '[\x00-\x1f\x7f]',' ').Trim()
+      if ($name.Length -gt 48) { $name = $name.Substring(0,48) }
+      if ($name) { $out[$name] = [int]$entry.Value }
+    }
+    [pscustomobject]$out
+  }
+  function Get-CapturePowerSnapshot {
+    try {
+      if (-not ('DfbCapturePowerStatus' -as [type])) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class DfbCapturePowerStatus {
+  [StructLayout(LayoutKind.Sequential)] public struct S {
+    public byte ACLineStatus, BatteryFlag, BatteryLifePercent, SystemStatusFlag;
+    public uint BatteryLifeTime, BatteryFullLifeTime;
+  }
+  [DllImport("kernel32.dll")] static extern bool GetSystemPowerStatus(out S value);
+  public static S Read() { S value; if (!GetSystemPowerStatus(out value)) throw new InvalidOperationException(); return value; }
+}
+'@
+      }
+      $value = [DfbCapturePowerStatus]::Read()
+      [pscustomobject]@{
+        Source=$(if($value.ACLineStatus -eq 1){'ac'}elseif($value.ACLineStatus -eq 0){'battery'}else{'unknown'})
+        BatteryPercent=$(if($value.BatteryLifePercent -le 100){[int]$value.BatteryLifePercent}else{$null})
+      }
+    } catch { [pscustomobject]@{Source='unknown';BatteryPercent=$null} }
+  }
+  function Get-CaptureMemorySnapshot {
+    try {
+      if (-not ('DfbMemoryStatus' -as [type])) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class DfbMemoryStatus {
+  [StructLayout(LayoutKind.Sequential)] public class S {
+    public uint Length = (uint)Marshal.SizeOf(typeof(S)); public uint MemoryLoad;
+    public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual;
+  }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GlobalMemoryStatusEx([In, Out] S value);
+  public static S Read() { var value = new S(); if (!GlobalMemoryStatusEx(value)) throw new InvalidOperationException(); return value; }
+}
+'@
+      }
+      $value = [DfbMemoryStatus]::Read()
+      [pscustomobject]@{
+        UsedPct = [double]$value.MemoryLoad
+        AvailableMb = [math]::Round([double]$value.AvailPhys / 1MB,1)
+        CommitUsedPct = $(if ($value.TotalPageFile -gt 0) {
+          [math]::Round(([double]($value.TotalPageFile-$value.AvailPageFile))*100.0/[double]$value.TotalPageFile,1)
+        } else { $null })
+      }
+    } catch { $null }
+  }
   function Expand-PerformanceSessions([object]$Value) {
     foreach ($entry in @($Value)) {
       if ($null -eq $entry) { continue }
@@ -2906,6 +3262,8 @@ $script:PerformanceCaptureWorker = {
     }
   }
   function New-FailedCapture([string]$Reason, [bool]$Exited) {
+    $analysisContext = $null
+    try { if ($AnalysisContextJson) { $analysisContext = $AnalysisContextJson | ConvertFrom-Json } } catch {}
     [pscustomobject][ordered]@{
       recordedAt = [DateTime]::UtcNow.ToString('o'); startedAt = [DateTime]::UtcNow.ToString('o')
       completedAt = [DateTime]::UtcNow.ToString('o'); durationSec = 0; frameCount = 0
@@ -2913,10 +3271,11 @@ $script:PerformanceCaptureWorker = {
       optimizationItemSetHash = "$OptimizationItemSetHash"; optimizationItemIds = @($OptimizationItemIds)
       optimizationItemsComplete = [bool]$OptimizationItemsComplete; avgFps = 0.0; fps1Low = 0.0
       p99FrameMs = 0.0; frameTimeMadMs = 0.0; stutter50Ms = 0; stutter100Ms = 0
-      stuttersPerMin = 0.0; focusLostSec = 0.0; gpuUtilAvg = 0.0; gpuUtilMax = 0.0
-      gpuTempAvg = 0.0; gpuTempMax = 0.0; gpuPowerAvg = 0.0; gpuPowerMax = 0.0
+      stuttersPerMin = 0.0; focusLostSec = 0.0; gpuUtilAvg = $null; gpuUtilMax = $null
+      gpuTempAvg = $null; gpuTempMax = $null; gpuPowerAvg = $null; gpuPowerMax = $null
       presentMonExitCode = -1; gameExitedEarly = [bool]$Exited; captureFailed = $true; captureError = $Reason
       validity = 'invalid'; invalidReason = $(if ($Exited) { 'game_exited' } else { 'capture_failed' })
+      analysisContext = $analysisContext; performanceContext = $null
     }
   }
 
@@ -2930,6 +3289,7 @@ $script:PerformanceCaptureWorker = {
 
   $startedUtc = [DateTime]::UtcNow
   $started = Get-Date
+  $powerStart = Get-CapturePowerSnapshot
   $tmp = Join-Path ([IO.Path]::GetTempPath()) "dfb-presentmon-$GamePid-$([guid]::NewGuid().ToString('N')).csv"
   try {
     # PresentMon must not inherit the product root as CWD.  A capture can outlive an abrupt GUI
@@ -2937,6 +3297,7 @@ $script:PerformanceCaptureWorker = {
     $pm = Start-Process -FilePath $PresentMon -WorkingDirectory ([Environment]::SystemDirectory) -WindowStyle Hidden -PassThru -ArgumentList @(
       '--process_id', "$GamePid", '--output_file', "`"$tmp`"", '--timed', "$SampleSeconds",
       '--terminate_after_timed', '--terminate_on_proc_exit', '--no_console_stats',
+      '--v2_metrics', '--track_frame_type', '--track_hybrid_present',
       '--session_name', "DFB-$GamePid-$([guid]::NewGuid().ToString('N'))")
   } catch {
     if ($CaptureMode -eq 'experiment') { New-FailedCapture "PresentMon 启动失败：$($_.Exception.Message)" $false }
@@ -2957,10 +3318,36 @@ public static class DfbForegroundWindow {
   } catch {}
 
   $util = @(); $temp = @(); $power = @(); $focusLostSec = 0.0
+  $processCpu = @(); $gameWorkingSetMb = @(); $gamePrivateMb = @()
+  $systemMemoryUsed = @(); $systemMemoryAvailableMb = @(); $systemCommitUsed = @()
+  $gpuDedicatedMb = @(); $gpuSharedMb = @(); $gpuMemorySource = 'unavailable'
+  $utilSource = 'unavailable'; $tempSource = 'unavailable'; $powerSource = 'unavailable'
+  $loopSamples = 0; $gameRenderAdapterLuid = ''; $gameRenderAdapterPhysicalIndex = $null
   $gameExitedEarly = $false; $lastLoop = Get-Date
+  $lastGameCpuSeconds = $null; $lastGameCpuAt = $null
+  $logicalProcessors = [math]::Max(1,[Environment]::ProcessorCount)
   while ($pm -and -not $pm.HasExited -and ((Get-Date) - $started).TotalSeconds -lt ($SampleSeconds + 15)) {
+    $loopSamples++
     $now = Get-Date; $elapsed = [math]::Max(0, ($now - $lastLoop).TotalSeconds); $lastLoop = $now
-    if (-not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { $gameExitedEarly = $true; break }
+    $gameProcess = Get-Process -Id $GamePid -ErrorAction SilentlyContinue
+    if (-not $gameProcess) { $gameExitedEarly = $true; break }
+    try {
+      $cpuSeconds = [double]$gameProcess.TotalProcessorTime.TotalSeconds
+      if ($null -ne $lastGameCpuSeconds -and $lastGameCpuAt) {
+        $cpuElapsed = [math]::Max(0.001,($now-$lastGameCpuAt).TotalSeconds)
+        $cpuPct = [math]::Min(100.0,[math]::Max(0.0,($cpuSeconds-$lastGameCpuSeconds)*100.0/$cpuElapsed/$logicalProcessors))
+        $processCpu += $cpuPct
+      }
+      $lastGameCpuSeconds = $cpuSeconds; $lastGameCpuAt = $now
+      $gameWorkingSetMb += [double]$gameProcess.WorkingSet64 / 1MB
+      $gamePrivateMb += [double]$gameProcess.PrivateMemorySize64 / 1MB
+    } catch {}
+    $memorySnapshot = Get-CaptureMemorySnapshot
+    if ($memorySnapshot) {
+      $systemMemoryUsed += [double]$memorySnapshot.UsedPct
+      $systemMemoryAvailableMb += [double]$memorySnapshot.AvailableMb
+      if ($null -ne $memorySnapshot.CommitUsedPct) { $systemCommitUsed += [double]$memorySnapshot.CommitUsedPct }
+    }
     try {
       [uint32]$foregroundPid = 0
       [void][DfbForegroundWindow]::GetWindowThreadProcessId([DfbForegroundWindow]::GetForegroundWindow(), [ref]$foregroundPid)
@@ -2983,30 +3370,140 @@ public static class DfbForegroundWindow {
         }
         if ($parts -and $parts.Count -ge 4) {
           $u = Get-Number $parts[1]; $t = Get-Number $parts[2]; $w = Get-Number $parts[3]
-          if ($null -ne $u) { $util += $u; $sampled = $true }
-          if ($null -ne $t) { $temp += $t }
-          if ($null -ne $w) { $power += $w }
+          if ($null -ne $u) { $util += $u; $sampled = $true; $utilSource = 'nvidia-smi' }
+          if ($null -ne $t) { $temp += $t; $tempSource = 'nvidia-smi' }
+          if ($null -ne $w) { $power += $w; $powerSource = 'nvidia-smi' }
         }
       }
     }
-    if (-not $sampled) {
+    if (-not $sampled -or -not $gameRenderAdapterLuid) {
       $counters = @(Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples |
         Where-Object { $_.InstanceName -match "pid_$($GamePid)_" -and $_.InstanceName -match 'engtype_3D' }
-      if ($counters.Count) { $util += [math]::Min(100.0, [double](($counters | Measure-Object CookedValue -Sum).Sum)) }
+      if ($counters.Count) {
+        $byAdapter = @{}; $physicalIndexByAdapter = @{}
+        foreach ($counter in $counters) {
+          $instance = "$($counter.InstanceName)"
+          $adapterKey = 'unknown'
+          if ($instance -match '(?i)luid_(0x[0-9a-f]+)_(0x[0-9a-f]+)') {
+            $adapterKey = "$($Matches[1]):$($Matches[2])".ToLowerInvariant()
+          }
+          if (-not $byAdapter.ContainsKey($adapterKey)) { $byAdapter[$adapterKey] = 0.0 }
+          $byAdapter[$adapterKey] += [double]$counter.CookedValue
+          if ($adapterKey -ne 'unknown' -and -not $physicalIndexByAdapter.ContainsKey($adapterKey) -and
+              $instance -match '(?i)_phys_(\d+)_') {
+            $physicalIndexByAdapter[$adapterKey] = [int]$Matches[1]
+          }
+        }
+        $primaryAdapter = @($byAdapter.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1)
+        if ($primaryAdapter.Count -and "$($primaryAdapter[0].Key)" -ne 'unknown') {
+          $gameRenderAdapterLuid = "$($primaryAdapter[0].Key)"
+          if ($physicalIndexByAdapter.ContainsKey($gameRenderAdapterLuid)) {
+            $gameRenderAdapterPhysicalIndex = [int]$physicalIndexByAdapter[$gameRenderAdapterLuid]
+          }
+        }
+        if (-not $sampled) {
+          $util += [math]::Min(100.0, [double](($counters | Measure-Object CookedValue -Sum).Sum))
+          $utilSource = 'windows-gpu-engine'
+        }
+      }
     }
+    try {
+      $memoryCounters = @(Get-Counter @('\GPU Process Memory(*)\Dedicated Usage','\GPU Process Memory(*)\Shared Usage') -ErrorAction Stop).CounterSamples |
+        Where-Object { $_.InstanceName -match "(?i)(?:^|_)pid_$($GamePid)(?:_|$)" }
+      if ($memoryCounters.Count) {
+        $dedicatedCounters = @($memoryCounters | Where-Object { "$($_.Path)" -match '(?i)Dedicated Usage$' })
+        $sharedCounters = @($memoryCounters | Where-Object { "$($_.Path)" -match '(?i)Shared Usage$' })
+        if ($dedicatedCounters.Count) {
+          $dedicatedBytes = ($dedicatedCounters | Measure-Object CookedValue -Sum).Sum
+          $gpuDedicatedMb += [math]::Max(0,[double]$dedicatedBytes/1MB)
+        }
+        if ($sharedCounters.Count) {
+          $sharedBytes = ($sharedCounters | Measure-Object CookedValue -Sum).Sum
+          $gpuSharedMb += [math]::Max(0,[double]$sharedBytes/1MB)
+        }
+        if ($dedicatedCounters.Count -or $sharedCounters.Count) { $gpuMemorySource = 'windows-gpu-process-memory' }
+      }
+    } catch {}
     Start-Sleep -Seconds 2
     try { $pm.Refresh() } catch {}
   }
   if ($pm -and -not $pm.HasExited) { try { $pm.Kill() } catch {} }
   if ($pm) { try { $pm.WaitForExit(5000) | Out-Null } catch {} }
   $presentMonExitCode = $(if ($pm -and $pm.HasExited) { [int]$pm.ExitCode } else { -1 })
+  $powerEnd = Get-CapturePowerSnapshot
 
   $frameMs = New-Object 'System.Collections.Generic.List[double]'
+  $displayFrameMs = New-Object 'System.Collections.Generic.List[double]'
+  $appFrameMs = New-Object 'System.Collections.Generic.List[double]'
+  $cpuBusyMs = New-Object 'System.Collections.Generic.List[double]'
+  $gpuBusyMs = New-Object 'System.Collections.Generic.List[double]'
+  $displayLatencyMs = New-Object 'System.Collections.Generic.List[double]'
+  $frameTypes = @{}; $presentModes = @{}; $presentRuntimes = @{}; $syncIntervals = @{}; $swapChains = @{}
+  $rowCount = 0; $displayTrackedRows = 0; $frameTypeRows = 0; $tearingRows = 0; $tearingCount = 0
+  $generatedFrameCount = 0; $repeatedFrameCount = 0; $droppedFrameCount = 0
+  $hybridPresentRows = 0; $hybridPresentCount = 0; $displayMetricSource = 'unavailable'; $headers = @()
   if (Test-Path -LiteralPath $tmp) {
     try {
-      foreach ($row in @(Import-Csv -LiteralPath $tmp)) {
-        $ms = Get-Number $row.MsBetweenPresents
+      $rows = @(Import-Csv -LiteralPath $tmp)
+      $headers = $(if ($rows.Count) { @($rows[0].PSObject.Properties.Name) } else { @() })
+      $hasDisplayedTime = $headers -contains 'DisplayedTime'
+      $hasDisplayDelta = $headers -contains 'MsBetweenDisplayChange'
+      $displayMetricSource = $(if ($hasDisplayedTime) { 'displayed_time' } elseif ($hasDisplayDelta) { 'display_change' } else { 'unavailable' })
+      $hybridHeader = @($headers | Where-Object { $_ -match '(?i)hybrid' } | Select-Object -First 1)
+      foreach ($row in $rows) {
+        $rowCount++
+        $ms = Get-RowNumber $row @('MsBetweenPresents','FrameTime')
         if ($null -ne $ms -and $ms -gt 0 -and $ms -le 1000) { $frameMs.Add([double]$ms) }
+        if ($hasDisplayedTime) {
+          $displayValue = Get-Number $row.DisplayedTime
+          if ($null -ne $displayValue -and $displayValue -gt 0 -and $displayValue -le 1000) {
+            $displayFrameMs.Add([double]$displayValue); $displayTrackedRows++
+          } elseif ("$($row.DisplayedTime)".Trim() -match '^(?i:NA|N/A)$') { $droppedFrameCount++ }
+        } elseif ($hasDisplayDelta) {
+          $displayValue = Get-Number $row.MsBetweenDisplayChange
+          if ($null -ne $displayValue -and $displayValue -gt 0 -and $displayValue -le 1000) {
+            $displayFrameMs.Add([double]$displayValue); $displayTrackedRows++
+          }
+        }
+        $frameType = $(if ($row.PSObject.Properties['FrameType']) { "$($row.FrameType)".Trim() } else { '' })
+        if ($frameType -and $frameType -notmatch '^(?i:NA|N/A|Unknown|NotSet)$') {
+          $frameTypeRows++
+          if (-not $frameTypes.ContainsKey($frameType)) { $frameTypes[$frameType] = 0 }; $frameTypes[$frameType]++
+          if ($frameType -match '(?i)generated|frame\s*generation|interpolat|xess|afmf|dlss\s*fg') { $generatedFrameCount++ }
+          elseif ($frameType -match '(?i)repeat') { $repeatedFrameCount++ }
+          elseif ($frameType -match '(?i)^app(?:lication)?$|application') {
+            $appMs = Get-RowNumber $row @('MsBetweenAppStart')
+            if ($null -ne $appMs -and $appMs -gt 0 -and $appMs -le 1000) { $appFrameMs.Add([double]$appMs) }
+          }
+        }
+        foreach ($field in @('PresentMode','PresentRuntime','SyncInterval')) {
+          $counter = $(if ($field -eq 'PresentMode') { $presentModes } elseif ($field -eq 'PresentRuntime') { $presentRuntimes } else { $syncIntervals })
+          if ($row.PSObject.Properties[$field]) {
+            $value = "$($row.$field)".Trim()
+            if ($value -and $value -notmatch '^(?i:NA|N/A)$') {
+              if (-not $counter.ContainsKey($value)) { $counter[$value] = 0 }; $counter[$value]++
+            }
+          }
+        }
+        if ($row.PSObject.Properties['SwapChainAddress']) {
+          $swap = "$($row.SwapChainAddress)".Trim(); if ($swap) { $swapChains[$swap] = $true }
+        }
+        if ($row.PSObject.Properties['AllowsTearing']) {
+          $tearing = "$($row.AllowsTearing)".Trim()
+          if ($tearing -match '^(?:0|1|true|false)$') { $tearingRows++; if ($tearing -match '^(?:1|true)$') { $tearingCount++ } }
+        }
+        if ($hybridHeader.Count) {
+          $hybridValue = "$($row.($hybridHeader[0]))".Trim()
+          if ($hybridValue -and $hybridValue -notmatch '^(?i:NA|N/A)$') {
+            $hybridPresentRows++; if ($hybridValue -match '^(?i:1|true|yes|hybrid)$') { $hybridPresentCount++ }
+          }
+        }
+        $cpuValue = Get-RowNumber $row @('MsCPUBusy','CPUBusy')
+        if ($null -ne $cpuValue -and $cpuValue -ge 0 -and $cpuValue -le 1000) { $cpuBusyMs.Add([double]$cpuValue) }
+        $gpuValue = Get-RowNumber $row @('MsGPUBusy','GPUBusy')
+        if ($null -ne $gpuValue -and $gpuValue -ge 0 -and $gpuValue -le 1000) { $gpuBusyMs.Add([double]$gpuValue) }
+        $latencyValue = Get-RowNumber $row @('DisplayLatency','MsUntilDisplayed')
+        if ($null -ne $latencyValue -and $latencyValue -ge 0 -and $latencyValue -le 1000) { $displayLatencyMs.Add([double]$latencyValue) }
       }
     } catch {}
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
@@ -3014,20 +3511,80 @@ public static class DfbForegroundWindow {
   $completedUtc = [DateTime]::UtcNow
   $durationSec = [math]::Min($SampleSeconds, [math]::Round(((Get-Date) - $started).TotalSeconds))
   if ($durationSec -lt ($SampleSeconds - 5) -and -not (Get-Process -Id $GamePid -ErrorAction SilentlyContinue)) { $gameExitedEarly = $true }
-  $avgFps = 0.0; $fps1Low = 0.0; $p99 = 0.0; $mad = 0.0
-  if ($frameMs.Count -ge 30) {
-    $avgMs = ($frameMs | Measure-Object -Average).Average
-    if ($avgMs -gt 0) { $avgFps = [math]::Round(1000.0 / $avgMs, 1) }
-    # 1% 低帧率 = 最慢 1% 帧的平均帧时间所对应帧率。
-    $slowCount = [math]::Max(1, [math]::Ceiling($frameMs.Count * 0.01))
-    $avgSlowMs = (@($frameMs | Sort-Object -Descending | Select-Object -First $slowCount) | Measure-Object -Average).Average
-    if ($avgSlowMs -gt 0) { $fps1Low = [math]::Round(1000.0 / $avgSlowMs, 1) }
-    $p99 = [math]::Round((Get-Percentile $frameMs 0.99), 2)
-    $median = Get-Median $frameMs
-    $mad = [math]::Round((Get-Median @($frameMs | ForEach-Object { [math]::Abs([double]$_ - $median) })), 2)
-  }
+  $presented = Get-FrameSummary $frameMs
+  $displayed = Get-FrameSummary $displayFrameMs
+  $appFrames = Get-FrameSummary $appFrameMs
+  $avgFps = $(if ($null -ne $presented.AvgFps) { [double]$presented.AvgFps } else { 0.0 })
+  $fps1Low = $(if ($null -ne $presented.Fps1Low) { [double]$presented.Fps1Low } else { 0.0 })
+  $p99 = $(if ($null -ne $presented.P99FrameMs) { [double]$presented.P99FrameMs } else { 0.0 })
+  $mad = $(if ($null -ne $presented.MadMs) { [double]$presented.MadMs } else { 0.0 })
   $stutter50 = @($frameMs | Where-Object { $_ -gt 50 }).Count
   $stutter100 = @($frameMs | Where-Object { $_ -gt 100 }).Count
+  $slow25 = @($frameMs | Where-Object { $_ -gt 25 }).Count
+  $slow33 = @($frameMs | Where-Object { $_ -gt 33.333 }).Count
+  $powerSourceChanged = $(if ($powerStart.Source -ne 'unknown' -and $powerEnd.Source -ne 'unknown') {
+    [bool]($powerStart.Source -ne $powerEnd.Source)
+  } else { $null })
+  $batteryDischarging = $(if ($null -ne $powerStart.BatteryPercent -and $null -ne $powerEnd.BatteryPercent) {
+    [bool]([int]$powerEnd.BatteryPercent -lt [int]$powerStart.BatteryPercent)
+  } else { $null })
+  $chargerInsufficiency = $(if ($null -ne $batteryDischarging -and $powerStart.Source -eq 'ac' -and $powerEnd.Source -eq 'ac') {
+    [bool]$batteryDischarging
+  } else { $null })
+  $analysisContext = $null
+  try { if ($AnalysisContextJson) { $analysisContext = $AnalysisContextJson | ConvertFrom-Json } } catch {}
+  $performanceContext = [pscustomobject][ordered]@{
+    schemaVersion=1;legacyFpsSource='presented';captureTool='presentmon';captureToolVersion="$PresentMonVersion"
+    captureMode='etw_summary';overlayEnabled=$false;captureOverheadMeasured=$false
+    presentedFrameCount=[int]$presented.Count;presentedFpsAvg=$presented.AvgFps;presentedFps1Low=$presented.Fps1Low
+    presentedP50FrameMs=$presented.P50FrameMs;presentedP90FrameMs=$presented.P90FrameMs
+    presentedP95FrameMs=$presented.P95FrameMs;presentedP99FrameMs=$presented.P99FrameMs
+    presentedFrameTimeCvPct=$presented.CvPct
+    slowFrame25Ms=[int]$slow25;slowFrame33Ms=[int]$slow33;slowFrame50Ms=[int]$stutter50;slowFrame100Ms=[int]$stutter100
+    slowFrame33Pct=$(if($presented.Count -gt 0){[math]::Round($slow33*100.0/$presented.Count,1)}else{$null})
+    displayedFrameCount=[int]$displayed.Count;displayedFpsAvg=$displayed.AvgFps;displayedFps1Low=$displayed.Fps1Low
+    displayedP95FrameMs=$displayed.P95FrameMs;displayedP99FrameMs=$displayed.P99FrameMs;displayMetricSource=$displayMetricSource
+    appFrameCount=[int]$appFrames.Count;appFpsAvg=$appFrames.AvgFps;appFps1Low=$appFrames.Fps1Low
+    generatedFrameCount=$(if($frameTypeRows -gt 0){[int]$generatedFrameCount}else{$null})
+    repeatedFrameCount=$(if($frameTypeRows -gt 0){[int]$repeatedFrameCount}else{$null})
+    droppedFrameCount=$(if($headers -contains 'DisplayedTime'){[int]$droppedFrameCount}else{$null})
+    frameGenerationDetected=$(if($frameTypeRows -gt 0){[bool]($generatedFrameCount -gt 0)}else{$null})
+    displayTrackingCoveragePct=$(if($rowCount -gt 0){[math]::Round($displayTrackedRows*100.0/$rowCount,1)}else{$null})
+    frameTypeCoveragePct=$(if($rowCount -gt 0){[math]::Round($frameTypeRows*100.0/$rowCount,1)}else{$null})
+    frameTypeDistribution=ConvertTo-Distribution $frameTypes
+    presentModeDistribution=ConvertTo-Distribution $presentModes
+    presentRuntimeDistribution=ConvertTo-Distribution $presentRuntimes
+    syncIntervalDistribution=ConvertTo-Distribution $syncIntervals
+    swapChainCount=[int]$swapChains.Count
+    tearingFramePct=$(if($tearingRows -gt 0){[math]::Round($tearingCount*100.0/$tearingRows,1)}else{$null})
+    cpuBusyAvgMs=Get-Average $cpuBusyMs;cpuBusyP95Ms=$(if($cpuBusyMs.Count){[math]::Round((Get-Percentile $cpuBusyMs 0.95),2)}else{$null})
+    gpuBusyAvgMs=Get-Average $gpuBusyMs;gpuBusyP95Ms=$(if($gpuBusyMs.Count){[math]::Round((Get-Percentile $gpuBusyMs 0.95),2)}else{$null})
+    displayLatencyAvgMs=Get-Average $displayLatencyMs;displayLatencyP95Ms=$(if($displayLatencyMs.Count){[math]::Round((Get-Percentile $displayLatencyMs 0.95),2)}else{$null})
+    captureCompatibilityStatus=$(if($frameMs.Count -gt 0){'ok'}else{'no_frame_data'})
+    gpuUtilSource=$utilSource;gpuUtilSampleCount=[int]$util.Count;gpuUtilCoveragePct=$(if($loopSamples){[math]::Round($util.Count*100.0/$loopSamples,1)}else{$null})
+    gpuTempSource=$tempSource;gpuTempSampleCount=[int]$temp.Count;gpuTempCoveragePct=$(if($loopSamples){[math]::Round($temp.Count*100.0/$loopSamples,1)}else{$null})
+    gpuPowerSource=$powerSource;gpuPowerSampleCount=[int]$power.Count;gpuPowerCoveragePct=$(if($loopSamples){[math]::Round($power.Count*100.0/$loopSamples,1)}else{$null})
+    processCpuAvgPct=Get-Average $processCpu;processCpuMaxPct=Get-Maximum $processCpu
+    processCpuSampleCount=[int]$processCpu.Count;processCpuCoveragePct=$(if($loopSamples){[math]::Round($processCpu.Count*100.0/$loopSamples,1)}else{$null})
+    gameWorkingSetAvgMb=Get-Average $gameWorkingSetMb;gameWorkingSetMaxMb=Get-Maximum $gameWorkingSetMb
+    gamePrivateAvgMb=Get-Average $gamePrivateMb;gamePrivateMaxMb=Get-Maximum $gamePrivateMb
+    processMemorySampleCount=[int][math]::Min($gameWorkingSetMb.Count,$gamePrivateMb.Count)
+    systemMemoryUsedAvgPct=Get-Average $systemMemoryUsed;systemMemoryUsedMaxPct=Get-Maximum $systemMemoryUsed
+    systemMemoryAvailableMinMb=Get-Minimum $systemMemoryAvailableMb;systemCommitUsedAvgPct=Get-Average $systemCommitUsed
+    systemMemorySampleCount=[int]$systemMemoryUsed.Count
+    gpuDedicatedMemoryAvgMb=Get-Average $gpuDedicatedMb;gpuDedicatedMemoryMaxMb=Get-Maximum $gpuDedicatedMb
+    gpuSharedMemoryAvgMb=Get-Average $gpuSharedMb;gpuSharedMemoryMaxMb=Get-Maximum $gpuSharedMb
+    # 部分 Windows/驱动只暴露 Dedicated 或 Shared 其中一类计数器。公共样本数表示
+    # “至少有一类进程 GPU 内存读数”的轮次，取最小值会把真实样本误记成 0。
+    gpuMemorySource=$gpuMemorySource;gpuMemorySampleCount=[int][math]::Max($gpuDedicatedMb.Count,$gpuSharedMb.Count)
+    gpuMemoryCoveragePct=$(if($loopSamples){[math]::Round(([math]::Max($gpuDedicatedMb.Count,$gpuSharedMb.Count))*100.0/$loopSamples,1)}else{$null})
+    gameRenderAdapterLuid=$gameRenderAdapterLuid;gameRenderAdapterPhysicalIndex=$gameRenderAdapterPhysicalIndex
+    hybridPresentCount=$(if($hybridPresentRows){[int]$hybridPresentCount}else{$null})
+    hybridPresentCoveragePct=$(if($rowCount -gt 0 -and $hybridPresentRows){[math]::Round($hybridPresentRows*100.0/$rowCount,1)}else{$null})
+    powerSourceStart="$($powerStart.Source)";powerSourceEnd="$($powerEnd.Source)";powerSourceChanged=$powerSourceChanged
+    batteryPercentStart=$powerStart.BatteryPercent;batteryPercentEnd=$powerEnd.BatteryPercent
+    batteryDischargingUnderLoad=$batteryDischarging;chargerInsufficiencySuspected=$chargerInsufficiency
+  }
   $session = [pscustomobject][ordered]@{
     recordedAt = $completedUtc.ToString('o'); startedAt = $startedUtc.ToString('o'); completedAt = $completedUtc.ToString('o')
     durationSec = [int]$durationSec; frameCount = [int]$frameMs.Count
@@ -3043,6 +3600,7 @@ public static class DfbForegroundWindow {
     presentMonExitCode = $presentMonExitCode; gameExitedEarly = [bool]$gameExitedEarly
     captureFailed = [bool]($frameMs.Count -eq 0 -or $presentMonExitCode -ne 0)
     captureError = $(if ($frameMs.Count -eq 0) { 'PresentMon 未返回帧数据' } elseif ($presentMonExitCode -ne 0) { "PresentMon 退出码 $presentMonExitCode" } else { '' })
+    analysisContext = $analysisContext; performanceContext = $performanceContext
   }
 
   # 普通性能会话过去只在“帧率和 GPU 占用同时为 0”时丢弃，因此 0 FPS、低帧率 0
@@ -3101,10 +3659,16 @@ public static class DfbForegroundWindow {
         optimizationItemSetHash = $OptimizationItemSetHash; optimizationItemIds = @($OptimizationItemIds)
         optimizationItemsComplete = [bool]$OptimizationItemsComplete
         durationSec = $session.durationSec; avgFps = $session.avgFps; fps1Low = $session.fps1Low
+        frameCount = $session.frameCount; p99FrameMs = $session.p99FrameMs
+        frameTimeMadMs = $session.frameTimeMadMs; stutter50Ms = $session.stutter50Ms
+        stutter100Ms = $session.stutter100Ms; stuttersPerMin = $session.stuttersPerMin
+        focusLostSec = $session.focusLostSec
         gpuUtilAvg = $session.gpuUtilAvg; gpuUtilMax = $session.gpuUtilMax
         gpuTempAvg = $session.gpuTempAvg; gpuTempMax = $session.gpuTempMax
         gpuPowerAvg = $session.gpuPowerAvg; gpuPowerMax = $session.gpuPowerMax
+        performanceContext = $session.performanceContext
       }
+      if ($session.analysisContext) { $payload.analysisContext = $session.analysisContext }
       . $TelemetryModule
       Send-DfbTelemetryEvent -UploadUrl $UploadUrl -Payload ([pscustomobject]$payload) -ConfigPath $TelemetryConfigPath | Out-Null
     } catch {}
@@ -3116,6 +3680,10 @@ function Add-PerformanceWorkerArguments($PowerShell, [int]$GamePid, $Hw, [string
   $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
   $nvidiaSmi = $(if ($Hw.MainGpuVendor -eq 'NVIDIA') { Get-NvidiaSmiPath } else { $null })
   $optimization = Get-TelemetryOptimizationContext
+  $analysisContextJson = ''
+  try { $analysisContextJson = (Get-TelemetryAnalysisContext $Hw $script:TargetExe) | ConvertTo-Json -Compress -Depth 6 } catch {}
+  $presentMonVersion = ''
+  try { $presentMonVersion = "$((Get-Item -LiteralPath $presentMon -Force).VersionInfo.FileVersion)".Trim() } catch {}
   foreach ($arg in @($GamePid, $presentMon, (Join-Path $script:UserConfigDir 'performance-sessions.json'),
                       $script:TelemetryClientPath, (Join-Path $script:UserConfigDir 'telemetry.json'),
                       $script:TelemetryUploadUrl, (Get-TelemetryInstallId), $script:GuiVersion,
@@ -3123,7 +3691,8 @@ function Add-PerformanceWorkerArguments($PowerShell, [int]$GamePid, $Hw, [string
                       "$($Hw.MainGpuPciLocation)", "$nvidiaSmi", "$($optimization.ConfigTier)",
                       "$($optimization.Scheme)", "$($optimization.ItemSetHash)", (@($optimization.ItemIds) -join ','),
                       [bool]$optimization.ItemsComplete,
-                      $WarmupSeconds, $script:PerformanceSampleSeconds, $Mode)) {
+                      $WarmupSeconds, $script:PerformanceSampleSeconds, $Mode,
+                      $analysisContextJson, $presentMonVersion)) {
     [void]$PowerShell.AddArgument($arg)
   }
 }
@@ -3248,7 +3817,9 @@ function Assert-TuningGuiState($State) {
         if([int64]$pending.payload.$name -ne [int64]$run.$name){throw "待提交运行遥测字段不一致：$name"}
       }
       foreach($name in 'avgFps','fps1Low','p99FrameMs','gpuUtilAvg','gpuTempAvg','gpuPowerAvg'){
-        if([double]$pending.payload.$name -ne [double]$run.$name){throw "待提交运行遥测字段不一致：$name"}
+        $pendingValue=$pending.payload.$name;$runValue=$run.$name
+        if(($null -eq $pendingValue) -ne ($null -eq $runValue) -or
+            ($null -ne $pendingValue -and [double]$pendingValue -ne [double]$runValue)){throw "待提交运行遥测字段不一致：$name"}
       }
       foreach($name in 'validity','invalidReason','settingsHash','environmentHash'){
         if("$($pending.payload.$name)" -cne "$($run.$name)"){throw "待提交运行遥测字段不一致：$name"}
@@ -3427,13 +3998,17 @@ function New-TuningTelemetryPayload {
     installId=$InstallId;event='tuning';version="$script:GuiVersion";os="$($Hw.OS)";build="$($Hw.Build)";cpu="$($Hw.CPU)"
     gpuVendor="$($Hw.MainGpuVendor)";gpuModel="$($Hw.MainGpuName)";gpuModelVerified=[bool]$Hw.MainGpuNameVerified
     driverVersion=$driverVersion;gpuCount=[math]::Min(16,@($Hw.Gpus).Count);displayMode=$displayMode
-    ramGb=[double]$Hw.RamGB;deviceType=$(if($Hw.IsLaptop){'laptop'}else{'desktop'})
+    ramGb=[double]$Hw.RamGB;deviceType=$(if("$($Hw.FormFactor)" -in 'desktop','laptop','unknown'){"$($Hw.FormFactor)"}elseif($Hw.IsLaptop){'laptop'}else{'unknown'})
     cpuCores=[math]::Max(0,[int]$Hw.Cores);cpuThreads=[math]::Max(0,[int]$Hw.Threads);cpuPackages=[math]::Max(0,[int]$Hw.CpuPackages)
     memoryType="$($Hw.MemoryType)";memoryConfiguredMhz=[math]::Max(0,[int]$Hw.MemoryConfiguredMHz)
     memoryRatedMhz=[math]::Max(0,[int]$Hw.MemoryRatedMHz);memoryModuleCount=[math]::Max(0,[int]$Hw.MemoryModuleCount)
     virtualDisplayCount=[math]::Min(16,[math]::Max(0,[int]$Hw.VirtualDisplayCount));pagefileAutoManaged=[bool]$Hw.AutomaticManagedPagefile
     gpuReportedModelDiffers=[bool]("$($Hw.MainGpuReportedName)" -ne "$($Hw.MainGpuName)")
     tuningType=$TuningType;experimentId="$($State.experimentId)"
+  }
+  if(Get-Command Get-TelemetryAnalysisContext -ErrorAction SilentlyContinue){
+    $analysisContext=Get-TelemetryAnalysisContext $Hw $script:TargetExe
+    if($analysisContext){$payload.analysisContext=$analysisContext}
   }
   switch($TuningType){
     'experiment_started'{
@@ -3469,15 +4044,18 @@ function New-TuningTelemetryPayload {
       $payload.validity="$($Run.validity)";$payload.invalidReason="$($Run.invalidReason)";$payload.durationSec=[int]$Run.durationSec
       $payload.avgFps=[double]$Run.avgFps;$payload.fps1Low=[double]$Run.fps1Low;$payload.p99FrameMs=[double]$Run.p99FrameMs
       $payload.stutter50Ms=[int]$Run.stutter50Ms;$payload.stutter100Ms=[int]$Run.stutter100Ms
-      $payload.gpuUtilAvg=[double]$Run.gpuUtilAvg;$payload.gpuTempAvg=[double]$Run.gpuTempAvg;$payload.gpuPowerAvg=[double]$Run.gpuPowerAvg
+      $payload.gpuUtilAvg=$(if($null -ne $Run.gpuUtilAvg){[double]$Run.gpuUtilAvg}else{$null})
+      $payload.gpuTempAvg=$(if($null -ne $Run.gpuTempAvg){[double]$Run.gpuTempAvg}else{$null})
+      $payload.gpuPowerAvg=$(if($null -ne $Run.gpuPowerAvg){[double]$Run.gpuPowerAvg}else{$null})
       if($Run.PSObject.Properties['frameCount']){$payload.frameCount=[int]$Run.frameCount}
       if($Run.PSObject.Properties['frameTimeMadMs']){$payload.frameTimeMadMs=[double]$Run.frameTimeMadMs}
       if($Run.PSObject.Properties['stuttersPerMin']){$payload.stuttersPerMin=[double]$Run.stuttersPerMin}
       if($Run.PSObject.Properties['focusLostSec']){$payload.focusLostSec=[double]$Run.focusLostSec}
-      if($Run.PSObject.Properties['gpuTempMax']){$payload.gpuTempMax=[double]$Run.gpuTempMax}
+      if($Run.PSObject.Properties['gpuTempMax']){$payload.gpuTempMax=$(if($null -ne $Run.gpuTempMax){[double]$Run.gpuTempMax}else{$null})}
       if($Run.PSObject.Properties['gameExitedEarly']){$payload.gameExitedEarly=[bool]$Run.gameExitedEarly}
       if($Run.PSObject.Properties['captureFailed']){$payload.captureFailed=[bool]$Run.captureFailed}
       if($Run.PSObject.Properties['presentMonExitCode']){$payload.presentMonExitCode=[int]$Run.presentMonExitCode}
+      if($Run.PSObject.Properties['performanceContext'] -and $Run.performanceContext){$payload.performanceContext=$Run.performanceContext}
       $payload.settingsHash="$($Run.settingsHash)";$payload.environmentHash="$($Run.environmentHash)";$payload.orderControlled=[bool]$Run.orderControlled
     }
     'experiment_completed'{
@@ -4274,8 +4852,13 @@ $script:DiagnosticIssueChoices = @(
   [pscustomobject]@{ Id = 'low_one_percent'; Label = '1% Low 偏低（画面不流畅）' }
   [pscustomobject]@{ Id = 'input_latency'; Label = '输入延迟高 / 操作粘滞' }
   [pscustomobject]@{ Id = 'slow_loading'; Label = '游戏加载慢 / 切换场景卡' }
-  [pscustomobject]@{ Id = 'game_crash'; Label = '游戏闪退 / 全屏黑屏 / 无响应' }
+  [pscustomobject]@{ Id = 'game_crash'; Label = '游戏闪退 / 无响应' }
+  [pscustomobject]@{ Id = 'black_screen_audio'; Label = '游戏全屏黑屏，但仍有声音' }
+  [pscustomobject]@{ Id = 'black_screen_no_audio'; Label = '游戏全屏黑屏，声音也中断' }
   [pscustomobject]@{ Id = 'partial_black_screen'; Label = '游戏内部分区域黑屏 / 黑块' }
+  [pscustomobject]@{ Id = 'black_screen_alt_tab'; Label = 'Alt+Tab / 切换显示模式后黑屏' }
+  [pscustomobject]@{ Id = 'black_screen_frame_generation'; Label = '开启帧生成后出现黑屏' }
+  [pscustomobject]@{ Id = 'black_screen_external_display'; Label = '外接显示器 / 独显直连时黑屏' }
   [pscustomobject]@{ Id = 'system_lag'; Label = '电脑整体卡顿 / 响应慢' }
   [pscustomobject]@{ Id = 'cpu_heat'; Label = 'CPU 占用或温度过高' }
   [pscustomobject]@{ Id = 'gpu_heat'; Label = 'GPU 占用或温度过高' }
@@ -4485,7 +5068,14 @@ function New-DiagnosticReport($Feedback) {
     'DeltaForceClient-Win64-Shipping'='game-client'; 'DeltaForce'='game-launcher'
     'PresentMon'='presentmon'; 'RTSS'='rtss'; 'MSIAfterburner'='msi-afterburner'
     'obs64'='obs'; 'Discord'='discord'; 'GameBar'='game-bar'
-    'NVIDIA Share'='nvidia-share'; 'WeGame'='wegame'
+    'NVIDIA Share'='nvidia-share'; 'RadeonSoftware'='amd-software'; 'WeGame'='wegame'
+    'GamePP'='gamepp'; 'LosslessScaling'='lossless-scaling'; 'ProcessLasso'='process-lasso'
+    'ProcessGovernor'='process-lasso'; 'ArmouryCrate.UserSessionHelper'='armoury-crate'
+    'GHelper'='g-helper'; 'LenovoVantage'='lenovo-vantage'; 'LenovoVantageService'='lenovo-vantage'
+    'MSI.CentralServer'='msi-center'; 'MSI_Center_Service'='msi-center'
+    'OMEN Gaming Hub'='omen-gaming-hub'; 'OMENCommandCenter'='omen-gaming-hub'
+    'AWCC.Background.Server'='alienware-command-center'; 'AWCCService'='alienware-command-center'
+    'RazerCortex'='razer-cortex'
   }
   $runningRelatedProcesses = @(); $runningRelatedProcessKeys = @()
   try {
@@ -4533,14 +5123,14 @@ function New-DiagnosticReport($Feedback) {
     $gpuPanelInventory = Get-GuiGpuPanelInventory "$($hw.MainGpuVendor)"
     $panelApps = @($gpuPanelInventory.Apps)
     $lines.Add("显卡软件检测：$($gpuPanelInventory.Status)｜已安装 $(if (@($panelApps | Where-Object Installed).Count) { @($panelApps | Where-Object Installed | ForEach-Object Key) -join ',' } else { 'none' })｜未安装 $(if (@($panelApps | Where-Object { -not $_.Installed }).Count) { @($panelApps | Where-Object { -not $_.Installed } | ForEach-Object Key) -join ',' } else { 'none' })")
-    $lines.Add("机型：$(if ($hw.IsLaptop) { '笔记本' } else { '台式机' })")
+    $lines.Add("机型：$(switch ("$($hw.FormFactor)") { 'laptop' { '笔记本' }; 'desktop' { '台式机' }; default { '未知' } })")
   } catch { $lines.Add("读取失败：$($_.Exception.Message)") }
   $lines.Add('')
 
   # 机器可读、稳定命名的分析字段。诊断报告属于“遇到问题后主动提交”的有偏样本，
   # 服务端会与普通使用/性能遥测分开统计；字段本身不含账户、路径或硬件序列号。
-  $lines.Add('== 分析字段（schema v2） ==')
-  $lines.Add('diagnostic_schema=2')
+  $lines.Add('== 分析字段（schema v3） ==')
+  $lines.Add('diagnostic_schema=3')
   $lines.Add("app_version=$(ConvertTo-DiagnosticFieldValue $script:GuiVersion)")
   $lines.Add("feedback_issue_ids=$(ConvertTo-DiagnosticFieldValue ($issueIds -join ','))")
   $lines.Add("feedback_benefit_ids=$(ConvertTo-DiagnosticFieldValue ($benefitIds -join ','))")
@@ -4564,7 +5154,14 @@ function New-DiagnosticReport($Feedback) {
     $lines.Add("memory_configured_mhz=$([int]$hw.MemoryConfiguredMHz)")
     $lines.Add("memory_rated_mhz=$([int]$hw.MemoryRatedMHz)")
     $lines.Add("memory_module_count=$([int]$hw.MemoryModuleCount)")
-    $lines.Add("device_type=$(if ($hw.IsLaptop) { 'laptop' } else { 'desktop' })")
+    $lines.Add("device_type=$(ConvertTo-DiagnosticFieldValue $hw.FormFactor)")
+    $lines.Add("form_factor_confidence=$(ConvertTo-DiagnosticFieldValue $hw.FormFactorConfidence)")
+    $lines.Add("chassis_types=$(ConvertTo-DiagnosticFieldValue (@($hw.ChassisTypes) -join ','))")
+    $lines.Add("has_battery=$(if ($null -eq $hw.HasBattery) { 'unknown' } else { "$([bool]$hw.HasBattery)".ToLowerInvariant() })")
+    $lines.Add("has_internal_display=$(if ($null -eq $hw.HasInternalDisplay) { 'unknown' } else { "$([bool]$hw.HasInternalDisplay)".ToLowerInvariant() })")
+    $lines.Add("ups_ambiguous=$([bool]$hw.IsUpsAmbiguous)".ToLowerInvariant())
+    $lines.Add("computer_manufacturer=$(ConvertTo-DiagnosticFieldValue $hw.ComputerManufacturer)")
+    $lines.Add("computer_model_family=$(ConvertTo-DiagnosticFieldValue $hw.ComputerModelFamily)")
     $lines.Add("gpu_count=$(@($hw.Gpus).Count)")
     $lines.Add("main_gpu_vendor=$(ConvertTo-DiagnosticFieldValue $hw.MainGpuVendor)")
     $lines.Add("main_gpu_model=$(ConvertTo-DiagnosticFieldValue $hw.MainGpuName)")
@@ -4578,10 +5175,30 @@ function New-DiagnosticReport($Feedback) {
     $lines.Add("main_gpu_reported_model_differs=$([bool]("$($hw.MainGpuReportedName)" -ne "$($hw.MainGpuName)"))".ToLowerInvariant())
     $lines.Add("virtual_display_count=$([int]$hw.VirtualDisplayCount)")
     $lines.Add("display_mode=$(ConvertTo-DiagnosticFieldValue (Get-TelemetryDisplayMode $hw))")
+    $lines.Add("display_adapter_vendor=$(ConvertTo-DiagnosticFieldValue $hw.DisplayGpuVendor)")
+    $lines.Add("display_adapter_model=$(ConvertTo-DiagnosticFieldValue $hw.DisplayGpuName)")
+    $lines.Add("hybrid_graphics=$([bool]$hw.HybridGraphics)".ToLowerInvariant())
+    $lines.Add("active_display_count=$([int]$hw.ActiveDisplayCount)")
+    $lines.Add("internal_display_count=$([int]$hw.InternalDisplayCount)")
+    $lines.Add("external_display_count=$([int]$hw.ExternalDisplayCount)")
+    $lines.Add("display_connectors=$(ConvertTo-DiagnosticFieldValue (@($hw.DisplayConnectors) -join ','))")
     $lines.Add("pagefile_auto_managed=$([bool]$hw.AutomaticManagedPagefile)".ToLowerInvariant())
     $lines.Add("gpu_panel_status=$(ConvertTo-DiagnosticFieldValue $gpuPanelInventory.Status)")
     $lines.Add("gpu_panel_installed_keys=$(ConvertTo-DiagnosticFieldValue ($installedPanelKeys -join ','))")
     $lines.Add("gpu_panel_missing_keys=$(ConvertTo-DiagnosticFieldValue ($missingPanelKeys -join ','))")
+    $analysis = Get-TelemetryAnalysisContext $hw $script:TargetExe
+    foreach ($pair in ([ordered]@{
+      windows_display_version=$analysis.windowsDisplayVersion;windows_build_revision=$analysis.windowsBuildRevision
+      hags_state=$analysis.hagsState;game_mode_state=$analysis.gameModeState;game_dvr_state=$analysis.gameDvrState
+      mpo_state=$analysis.mpoState;windowed_optimization_state=$analysis.windowedOptimizationState
+      fso_state=$analysis.fsoState;gpu_preference_state=$analysis.gpuPreferenceState
+      active_power_plan_guid=$analysis.activePowerPlanGuid;reboot_pending=$analysis.rebootPending
+      game_exe_version=$analysis.gameExeVersion;power_source=$analysis.powerSource;battery_percent=$analysis.batteryPercent
+      vc_runtime_status=$analysis.vcRuntimeStatus;vc_runtime_x64_version=$analysis.vcRuntimeX64Version
+      vc_runtime_x86_version=$analysis.vcRuntimeX86Version;capture_compatibility_status=$analysis.captureCompatibilityStatus
+    }).GetEnumerator()) {
+      $lines.Add("$($pair.Key)=$(ConvertTo-DiagnosticFieldValue $pair.Value)")
+    }
   } else {
     $lines.Add('hardware_status=read_failed')
   }
@@ -6938,7 +7555,9 @@ $ui.ApplyBtn.Add_Click({
       $telemetryScheme = $(if ($selectedPreset.Builtin -and "$($selectedPreset.Id)" -in 'main','balanced','safe-only') {
           "$($selectedPreset.Id)"
         } else { 'custom' })
-      $telemetrySchemeItemIds = @($selectedPreset.Items)
+      # 只上报本次实际选择并准备执行的系统修改项；方案声明中已达标、不可用、
+      # 纯检测或被用户取消的项目不得混入归因集合。
+      $telemetrySchemeItemIds = @($selectedItems | Where-Object { $_.Kind -notin 'check','cache' } | ForEach-Object Id)
     }
     $localItems = @($selectedItems | Where-Object { $_.Kind -in 'cache','check' })
     $elevatedIds = @($selectedItems | Where-Object { $_.Kind -notin 'cache','check' } | ForEach-Object { $_.Id })

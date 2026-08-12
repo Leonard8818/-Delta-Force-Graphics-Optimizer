@@ -3,7 +3,7 @@ param()
 
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$path=Join-Path $root 'website\admin\legacy\index.html'
+$path=Join-Path $root 'website\admin\data\index.html'
 if(-not (Test-Path -LiteralPath $path -PathType Leaf)){
   Write-Host 'SKIP: private admin dashboard is not present in this checkout'
   exit 0

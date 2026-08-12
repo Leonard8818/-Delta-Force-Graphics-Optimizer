@@ -141,6 +141,15 @@ try {
   [void](Get-PciBusLocation 'PCI\NONEXISTENT')
   Assert-True ([bool]('DfbPciLocation' -as [type])) 'PCI BDF 映射 helper 应可加载'
 
+  $portable = Resolve-FormFactor @(9) $true $true
+  $desktopWithUps = Resolve-FormFactor @(3) $true $false
+  $batteryOnly = Resolve-FormFactor @() $true $false
+  Assert-True ($portable.FormFactor -eq 'laptop' -and $portable.Confidence -eq 'high') `
+    'SMBIOS 笔记本机箱类型应优先于启发式判断'
+  Assert-True ($desktopWithUps.FormFactor -eq 'desktop' -and $desktopWithUps.Confidence -eq 'high' -and
+    $desktopWithUps.IsUpsAmbiguous) '带 UPS 电池的台式机不得误判为笔记本'
+  Assert-True ($batteryOnly.FormFactor -eq 'unknown') '只有电池、没有内屏证据时不得猜测机型'
+
   $mainPreset = Get-BuiltinPresets | Where-Object Id -eq 'main'
   Assert-True ($mainPreset.Items -notcontains 'nvidia-profile') 'NPI 不得进入主推方案'
   Assert-True ($mainPreset.Items -notcontains 'nv-autoopt-off') '用户可写 NVIDIA 配置文件不得进入提权主推方案'

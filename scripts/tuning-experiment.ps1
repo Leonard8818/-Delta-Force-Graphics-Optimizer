@@ -176,11 +176,14 @@ function Test-TuningRunMetrics($Run, [bool]$RequireValidCapture) {
     stuttersPerMin=@(0,100000,$false); focusLostSec=@(0,600,$false); gpuUtilAvg=@(0,100,$false)
     gpuTempAvg=@(0,120,$false); gpuTempMax=@(0,120,$false); gpuPowerAvg=@(0,1500,$false)
   }
+  $nullableSensors = @('gpuUtilAvg','gpuTempAvg','gpuTempMax','gpuPowerAvg')
   foreach ($entry in $ranges.GetEnumerator()) {
     $v = $Run.PSObject.Properties[$entry.Key]
+    if ($v -and $null -eq $v.Value -and $nullableSensors -contains $entry.Key) { continue }
     if (-not $v -or -not (Test-TuningFiniteNumber $v.Value $entry.Value[0] $entry.Value[1] -MinimumExclusive:([bool]$entry.Value[2]))) { return $false }
   }
-  if ([double]$Run.fps1Low -gt [double]$Run.avgFps -or [double]$Run.gpuTempAvg -gt [double]$Run.gpuTempMax -or
+  if ([double]$Run.fps1Low -gt [double]$Run.avgFps -or
+      ($null -ne $Run.gpuTempAvg -and $null -ne $Run.gpuTempMax -and [double]$Run.gpuTempAvg -gt [double]$Run.gpuTempMax) -or
       [double]$Run.focusLostSec -gt [double]$Run.durationSec -or [int64]$Run.stutter100Ms -gt [int64]$Run.stutter50Ms) { return $false }
   if ([double]$Run.frameCount -ne [math]::Truncate([double]$Run.frameCount) -or
       [double]$Run.stutter50Ms -ne [math]::Truncate([double]$Run.stutter50Ms) -or
@@ -290,7 +293,7 @@ function Assert-TuningExperimentState($State) {
       'invalidReason','durationSec','frameCount','avgFps','fps1Low','p99FrameMs','frameTimeMadMs','stutter50Ms',
       'stutter100Ms','stuttersPerMin','focusLostSec','gpuUtilAvg','gpuTempAvg','gpuTempMax','gpuPowerAvg',
       'settingsHash','environmentHash','orderControlled')
-    Assert-TuningExactProperties $run $runFields @('presentMonExitCode','gameExitedEarly','captureFailed') '运行记录'
+    Assert-TuningExactProperties $run $runFields @('presentMonExitCode','gameExitedEarly','captureFailed','performanceContext') '运行记录'
     if ("$($run.runId)" -notmatch '^run_[0-9a-f]{32}$') { throw '运行记录 ID 无效' }
     if (-not $runIds.Add("$($run.runId)")) { throw '运行记录 ID 重复' }
     if ("$($run.experimentId)" -ne "$($State.experimentId)" -or "$($run.variantId)" -notin $knownVariants) { throw '运行记录归属无效' }
@@ -315,6 +318,33 @@ function Assert-TuningExperimentState($State) {
          [double]$run.presentMonExitCode -ne [math]::Truncate([double]$run.presentMonExitCode))) { throw 'PresentMon 退出码无效' }
     foreach ($name in 'gameExitedEarly','captureFailed') {
       if ($run.PSObject.Properties[$name] -and $run.$name -isnot [bool]) { throw "运行状态字段无效：$name" }
+    }
+    if ($run.PSObject.Properties['performanceContext']) {
+      $contextFields = @('schemaVersion','legacyFpsSource','captureTool','captureToolVersion','captureMode',
+        'overlayEnabled','captureOverheadMeasured','presentedFrameCount','presentedFpsAvg','presentedFps1Low',
+        'presentedP50FrameMs','presentedP90FrameMs','presentedP95FrameMs','presentedP99FrameMs','presentedFrameTimeCvPct',
+        'slowFrame25Ms','slowFrame33Ms','slowFrame50Ms','slowFrame100Ms','slowFrame33Pct',
+        'displayedFrameCount','displayedFpsAvg','displayedFps1Low',
+        'displayedP95FrameMs','displayedP99FrameMs','displayMetricSource','appFrameCount','appFpsAvg','appFps1Low',
+        'generatedFrameCount','repeatedFrameCount','droppedFrameCount','frameGenerationDetected',
+        'displayTrackingCoveragePct','frameTypeCoveragePct','frameTypeDistribution','presentModeDistribution',
+        'presentRuntimeDistribution','syncIntervalDistribution','swapChainCount','tearingFramePct','cpuBusyAvgMs',
+        'cpuBusyP95Ms','gpuBusyAvgMs','gpuBusyP95Ms','displayLatencyAvgMs','displayLatencyP95Ms',
+        'captureCompatibilityStatus','gpuUtilSource','gpuUtilSampleCount','gpuUtilCoveragePct','gpuTempSource',
+        'gpuTempSampleCount','gpuTempCoveragePct','gpuPowerSource','gpuPowerSampleCount','gpuPowerCoveragePct',
+        'processCpuAvgPct','processCpuMaxPct','processCpuSampleCount','processCpuCoveragePct',
+        'gameWorkingSetAvgMb','gameWorkingSetMaxMb','gamePrivateAvgMb','gamePrivateMaxMb','processMemorySampleCount',
+        'systemMemoryUsedAvgPct','systemMemoryUsedMaxPct','systemMemoryAvailableMinMb','systemCommitUsedAvgPct',
+        'systemMemorySampleCount','gpuDedicatedMemoryAvgMb','gpuDedicatedMemoryMaxMb','gpuSharedMemoryAvgMb',
+        'gpuSharedMemoryMaxMb','gpuMemorySource','gpuMemorySampleCount','gpuMemoryCoveragePct',
+        'gameRenderAdapterLuid','gameRenderAdapterPhysicalIndex','hybridPresentCount','hybridPresentCoveragePct',
+        'powerSourceStart','powerSourceEnd','powerSourceChanged','batteryPercentStart','batteryPercentEnd',
+        'batteryDischargingUnderLoad','chargerInsufficiencySuspected')
+      Assert-TuningExactProperties $run.performanceContext $contextFields @() '运行性能上下文'
+      if ([int]$run.performanceContext.schemaVersion -ne 1 -or
+          [Text.Encoding]::UTF8.GetByteCount(($run.performanceContext | ConvertTo-Json -Compress -Depth 6)) -gt 8192) {
+        throw '运行性能上下文无效'
+      }
     }
     if ("$($run.validity)" -eq 'valid' -and (($run.PSObject.Properties['captureFailed'] -and [bool]$run.captureFailed) -or
         ($run.PSObject.Properties['gameExitedEarly'] -and [bool]$run.gameExitedEarly))) { throw '有效运行与采集状态矛盾' }
@@ -587,9 +617,9 @@ function Get-TuningRunValidity {
   elseif (-not $GameVersionMatches) { $reason = 'game_version_changed' }
   elseif (-not $SettingsMatch -or $ExpectedEnvironmentHash -ne $ActualEnvironmentHash) { $reason = 'settings_changed' }
   elseif ([double]$Metrics.focusLostSec -gt 5) { $reason = 'focus_lost' }
-  elseif ([double]$Metrics.gpuTempMax -ge 95) { $reason = 'thermal_anomaly' }
+  elseif ($null -ne $Metrics.gpuTempMax -and [double]$Metrics.gpuTempMax -ge 95) { $reason = 'thermal_anomaly' }
   if ($reason) { return [pscustomobject]@{ validity='invalid'; invalidReason=$reason } }
-  if ([double]$Metrics.focusLostSec -gt 0 -or [double]$Metrics.gpuTempMax -ge 90) {
+  if ([double]$Metrics.focusLostSec -gt 0 -or ($null -ne $Metrics.gpuTempMax -and [double]$Metrics.gpuTempMax -ge 90)) {
     return [pscustomobject]@{ validity='suspect'; invalidReason=$(if ([double]$Metrics.focusLostSec -gt 0) {'focus_lost'} else {'thermal_anomaly'}) }
   }
   [pscustomobject]@{ validity='valid'; invalidReason='' }
@@ -627,10 +657,15 @@ function New-TuningRunRecord {
     p99FrameMs = [double]$Metrics.p99FrameMs; frameTimeMadMs = [double]$Metrics.frameTimeMadMs
     stutter50Ms = [int]$Metrics.stutter50Ms; stutter100Ms = [int]$Metrics.stutter100Ms
     stuttersPerMin = [double]$Metrics.stuttersPerMin; focusLostSec = [double]$Metrics.focusLostSec
-    gpuUtilAvg = [double]$Metrics.gpuUtilAvg; gpuTempAvg = [double]$Metrics.gpuTempAvg
-    gpuTempMax = [double]$Metrics.gpuTempMax; gpuPowerAvg = [double]$Metrics.gpuPowerAvg
+    gpuUtilAvg = $(if ($null -ne $Metrics.gpuUtilAvg) { [double]$Metrics.gpuUtilAvg } else { $null })
+    gpuTempAvg = $(if ($null -ne $Metrics.gpuTempAvg) { [double]$Metrics.gpuTempAvg } else { $null })
+    gpuTempMax = $(if ($null -ne $Metrics.gpuTempMax) { [double]$Metrics.gpuTempMax } else { $null })
+    gpuPowerAvg = $(if ($null -ne $Metrics.gpuPowerAvg) { [double]$Metrics.gpuPowerAvg } else { $null })
     settingsHash = $SettingsHash; environmentHash = $EnvironmentHash
     orderControlled = [bool]$OrderControlled
+  }
+  if ($Metrics.PSObject.Properties['performanceContext'] -and $Metrics.performanceContext) {
+    $record | Add-Member -NotePropertyName performanceContext -NotePropertyValue $Metrics.performanceContext
   }
   if (-not (Test-TuningRunMetrics $record ($Validity.validity -eq 'valid'))) { throw '运行指标无效' }
   $record

@@ -1,9 +1,9 @@
 {
-    "version":  "0.22.1",
+    "version":  "0.22.2",
     "minimumSupportedVersion":  "0.21.6",
-    "notes":  "- 修复部分电脑无法正确检测 NVIDIA、AMD、Intel 显卡控制软件的问题。\n- 诊断反馈新增「游戏内部分区域黑屏 / 黑块」选项。\n- 修复异常或不完整的性能采样被误判为有效记录的问题。",
+    "notes":  "- 修复一些已知问题。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "504e02d899cda26ad800399e52e8a2930caec5f8defbcb41905dfc5f937097cd",
-    "size":  868352
+    "sha256":  "d95e02589064703f4fab5ee6479390530dbda4943d5bb4f4a5cec40b71815366",
+    "size":  882688
 }
