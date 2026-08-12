@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="/favicon.ico?v=20260810-5" type="image/x-icon" sizes="16x16 32x32 48x48">
 <link rel="shortcut icon" href="/favicon.ico?v=20260810-5" type="image/x-icon">
@@ -12,20 +12,23 @@
 <style>
   :root { --green:#00E884; --gold:#E5C46A; --bg:#0A1512; --panel:#101A17; --line:#1C3529; --tx:#fff; --tx2:#9AA5A0; }
   * { box-sizing:border-box }
-  body { margin:0; background:linear-gradient(180deg,#0A1512,#10201C); color:var(--tx);
+  html { overflow-x:hidden; }
+  body { margin:0; overflow-x:hidden; background:linear-gradient(180deg,#0A1512,#10201C); color:var(--tx);
          font-family:"Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif; line-height:1.7 }
-  .wrap { max-width:960px; margin:0 auto; padding:48px 20px 64px }
+  .wrap { width:100%; max-width:960px; margin:0 auto; padding:48px max(20px,env(safe-area-inset-right)) 64px max(20px,env(safe-area-inset-left)) }
+  .wrap,.brand,.hero-actions,.downloads,.proof,.proof-head,.proof-grid,.proof-card,.card,.release { min-width:0 }
   .brand { display:flex; align-items:center; gap:10px; margin-bottom:36px }
   .tri { width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:16px solid var(--green) }
   .brand b { font-size:15px; letter-spacing:.12em }
   h1 { font-size:26px; margin:0 0 6px }
   .sub { color:var(--tx2); font-size:13px; font-family:Consolas,monospace; letter-spacing:.18em; margin-bottom:28px }
-  .cta { display:inline-block; background:var(--green); color:#04231A; font-weight:700; font-size:16px;
-         padding:14px 40px; text-decoration:none; margin:4px 10px 4px 0;
+  .hero-actions { display:flex; flex-wrap:wrap; gap:10px; margin:4px 0 }
+  .cta { display:inline-flex; align-items:center; justify-content:center; min-height:52px; background:var(--green); color:#04231A; font-weight:700; font-size:16px;
+         padding:12px 40px; text-decoration:none;
          clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px) }
-  .cta.alt { background:transparent; color:var(--green); border:1px solid var(--green); font-weight:400; font-size:14px; padding:13px 28px }
+  .cta.alt { background:transparent; color:var(--green); border:1px solid var(--green); font-weight:400; font-size:14px; padding:11px 28px }
   .downloads { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 0 }
-  .download-link { display:flex; align-items:center; gap:8px; min-width:130px; padding:8px 12px; border:1px solid var(--line);
+  .download-link { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:130px; min-height:44px; padding:8px 12px; border:1px solid var(--line);
                    color:var(--tx2); text-decoration:none; font:12px Consolas,monospace; background:rgba(16,26,23,.72) }
   .download-link:hover { border-color:var(--green); color:var(--tx) }
   .download-link strong { color:var(--green); font-size:13px }
@@ -65,12 +68,51 @@
   .release ul { margin:0; padding-left:18px; color:var(--tx2); font-size:13px }
   .latest { display:inline-block; margin-top:5px; padding:1px 5px; color:#2F2508; background:var(--gold); font:700 8px Consolas,monospace }
   details.history { border-top:1px solid var(--line); margin-top:3px; padding-top:11px }
-  details.history summary { color:var(--green); cursor:pointer; font-size:12px; user-select:none }
+  details.history summary { display:flex; align-items:center; min-height:44px; color:var(--green); cursor:pointer; font-size:12px; user-select:none }
   details.history[open] summary { margin-bottom:8px }
   footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:#5E7A6C; font-size:12px;
            font-family:Consolas,monospace; letter-spacing:.1em }
-  @media (max-width:760px) { .proof-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-  @media (max-width:520px) { .release { grid-template-columns:1fr; gap:5px } .release-ver small { display:inline; margin-left:8px } .proof{padding:16px}.proof-head{align-items:flex-start;flex-direction:column}.proof-card{min-height:132px}.proof-value{font-size:23px} }
+  @media (max-width:820px) {
+    .wrap { padding-top:36px; padding-right:max(24px,env(safe-area-inset-right)); padding-bottom:52px; padding-left:max(24px,env(safe-area-inset-left)) }
+    .brand { margin-bottom:30px }
+    .proof-grid { grid-template-columns:repeat(2,minmax(0,1fr)) }
+    .proof-card { min-height:132px }
+    .cta,.download-link,details.history summary { touch-action:manipulation }
+  }
+  @media (max-width:600px) {
+    .wrap { padding-top:24px; padding-right:max(14px,env(safe-area-inset-right)); padding-bottom:40px; padding-left:max(14px,env(safe-area-inset-left)) }
+    .brand { margin-bottom:24px }
+    .brand b { font-size:13px }
+    h1 { font-size:clamp(22px,7vw,26px); line-height:1.35 }
+    .sub { margin-bottom:22px; font-size:11px; line-height:1.6; letter-spacing:.11em; overflow-wrap:anywhere }
+    .hero-actions { display:grid; grid-template-columns:1fr; gap:9px }
+    .cta { width:100%; min-height:50px; margin:0; padding-right:20px; padding-left:20px }
+    .ver { margin:14px 0 0; line-height:1.6 }
+    .downloads { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; gap:8px }
+    .download-link { min-width:0; padding-right:10px; padding-left:10px }
+    .proof { margin-top:24px; padding:16px 12px }
+    .proof-head { align-items:flex-start; flex-direction:column; gap:9px; margin-bottom:12px }
+    .proof-head p { line-height:1.55 }
+    .proof-grid { gap:8px }
+    .proof-card { min-height:126px; padding:13px 11px 10px }
+    .proof-arrow { right:10px; top:11px }
+    .proof-label { padding-right:16px; line-height:1.45 }
+    .proof-value { margin-top:11px; font-size:23px }
+    .proof-hint { line-height:1.45 }
+    .proof-note { line-height:1.6 }
+    .card { margin:18px 0; padding:16px 14px }
+    .card h2 { line-height:1.45 }
+    .card ul { padding-left:18px; font-size:13px }
+    .card li + li { margin-top:5px }
+    .release { grid-template-columns:1fr; gap:5px; padding:12px 0 }
+    .release-ver small { display:inline; margin-left:8px }
+    .release ul { padding-left:17px; font-size:12px }
+    footer { margin-top:30px; line-height:1.6; overflow-wrap:anywhere }
+  }
+  @media (max-width:340px) {
+    .downloads,.proof-grid { grid-template-columns:1fr }
+    .proof-card { min-height:122px }
+  }
 </style>
 </head>
 <body>
@@ -82,7 +124,7 @@
 
   <p>把网上那些一步步改电脑设置的帧率优化教程做成一键完成：检测硬件 → 勾选优化项 → 应用（自动备份）→ 随时一键还原。游戏更新后<strong>解决掉帧</strong>、卡顿的常用手段也一并做进去了。</p>
 
-  <p>
+  <p class="hero-actions">
     <a class="cta" href="DeltaForceBooster-Setup.exe">下载最新版</a>
     <a class="cta alt" href="https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer">GitHub 仓库</a>
   </p>

@@ -37,5 +37,11 @@ Assert-True (-not $raw.Contains('client_hash')) 'private dashboard exposes a raw
 Assert-True ($raw.Contains("fetch('/admin/api/stats'")) 'dashboard no longer loads the protected aggregate stats API'
 Assert-True ($raw.Contains("history.replaceState(null,'',selected==='experiments'?'#experiments':'#usage')")) 'main tab selection is not addressable by hash'
 Assert-True ($raw.Contains('不会上传项目的注册表路径、键值、原值或新值')) 'privacy notice does not explain the new project-level telemetry boundary'
+foreach($needle in @(
+  'viewport-fit=cover','@media (max-width:1024px)','@media (max-width:760px)','@media (max-width:520px)',
+  'class="table-scroll"','← 左右滑动查看完整表格 →','activeTouchChartHit',"event.pointerType==='touch'",
+  "wrap.setAttribute('role','region')",'grid-template-columns:repeat(2,minmax(0,1fr))'
+)){Assert-True $raw.Contains($needle) "responsive dashboard is missing: $needle"}
+Assert-True (-not $raw.Contains('style="overflow-x:auto"')) 'responsive tables still use inaccessible inline scrolling containers'
 
 Write-Host "admin experiment dashboard tests passed: $script:Assertions assertions"
