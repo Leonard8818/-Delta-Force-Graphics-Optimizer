@@ -133,8 +133,8 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
 
 ```json
 {
-  "version": "0.22.2",
-  "minimumSupportedVersion": "0.21.6",
+  "version": "0.22.3",
+  "minimumSupportedVersion": "0.22.3",
   "notes": "- 修复一些已知问题。",
   "url": "https://df.ltz88.cn/",
   "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
