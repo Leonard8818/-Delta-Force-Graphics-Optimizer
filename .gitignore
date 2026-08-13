@@ -28,5 +28,11 @@ desktop.ini
 __pycache__/
 *.pyc
 
-# 私有周报工作台只部署到受 Basic Auth 保护的服务器，不公开到 GitHub。
-website/admin/
+# 私有运营与部署源码不属于开源桌面软件仓库，仅保留在本地部署工作区。
+/AGENTS.md
+/server/
+/website/
+/tests/admin-dashboard-navigation-tests.ps1
+/tests/admin-experiment-dashboard-tests.ps1
+/tests/website-responsive-tests.ps1
+/tests/website-stats-highlight-tests.js
