@@ -4215,10 +4215,10 @@ function Write-DetectText($r) {
 if ($Json) { try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {} }
 
 if ($RequestFile) {
-  if ($Detect -or $Preview -or $Apply -or $Restore -or $ListRestoreItems -or $ListItems -or
-      $ListPresets -or $SavePreset -or $DeletePreset -or $Preset -or @($Items).Count -gt 0 -or
-      $GamePath -or $BackupFile -or @($RestoreItems).Count -gt 0 -or $ResultId -or $UserSid -or
-      $UserLocalAppData -or $UserStateRoot -or $GpuSpoofModel -or $Risky -or $Json) {
+  # Windows PowerShell 5.1 的脚本参数绑定会让未绑定的 [string[]] 参数在
+  # @($Items).Count 中表现为 1。直接检查实际绑定键，避免把空 Items/RestoreItems
+  # 误判成与 -RequestFile 同时传入的业务参数。
+  if ($PSBoundParameters.Count -ne 1 -or -not $PSBoundParameters.ContainsKey('RequestFile')) {
     throw '-RequestFile 不能与其他动作或业务参数同时使用'
   }
   $engineRequest = Import-EngineActionRequest $RequestFile

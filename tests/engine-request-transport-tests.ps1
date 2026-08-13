@@ -32,6 +32,33 @@ foreach ($needle in "'-File'","'-RequestFile'",'Diagnostics.ProcessStartInfo','R
 Assert-True ($invokeText.Contains('本次系统设置可能已部分执行') -and $invokeText.Contains('请不要重复点击')) `
   'missing-result path does not warn against an unsafe duplicate Apply'
 
+# 必须通过真实 Windows PowerShell 5.1 -File 参数绑定路径回归。点源测试不会复现脚本级
+# 未绑定 [string[]] 参数在 @($Items).Count 中变成 1 的行为，正是这次实机故障漏测的原因。
+$winPs = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$probeRequest = 'C:\ProgramData\DeltaForceBooster\session-temp\fixture\engine-request-00000000-0000-0000-0000-000000000000.json'
+$savedEngineSession = $env:DFB_ENGINE_HOST_SESSION
+$savedErrorActionPreference = $ErrorActionPreference
+try {
+  Remove-Item Env:DFB_ENGINE_HOST_SESSION -ErrorAction SilentlyContinue
+  $ErrorActionPreference = 'Continue'
+  $singleOutput = (& $winPs -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $enginePath -RequestFile $probeRequest 2>&1 | Out-String)
+  $singleExit = $LASTEXITCODE
+  Assert-True ($singleExit -ne 0 -and $singleOutput -notlike '*-RequestFile 不能与其他动作或业务参数同时使用*' -and
+    $singleOutput -like '*EngineHost 会话标记*') `
+    "RequestFile-only WinPS5.1 launch was rejected as a mixed request: $singleOutput"
+
+  $mixedOutput = (& $winPs -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $enginePath -RequestFile $probeRequest -Apply 2>&1 | Out-String)
+  Assert-True ($LASTEXITCODE -ne 0 -and
+    $mixedOutput -like '*-RequestFile 不能与其他动作或业务参数同时使用*') `
+    'RequestFile mixed with a business action was not rejected'
+} finally {
+  $ErrorActionPreference = $savedErrorActionPreference
+  if ($null -eq $savedEngineSession) { Remove-Item Env:DFB_ENGINE_HOST_SESSION -ErrorAction SilentlyContinue }
+  else { $env:DFB_ENGINE_HOST_SESSION = $savedEngineSession }
+}
+
 # PowerShell 会让 `$null | ForEach-Object { "$_" }` 产生一个空字符串。直接执行生产函数里的
 # 两条归一化赋值，确保未绑定的 ItemIds / RestoreItemIds 始终得到真正的空数组。
 $normalizationAssignments = @($invokeFunctions[0].Body.FindAll({
