@@ -641,9 +641,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复部分电脑执行优化或读取还原项目时，管理员引擎异常退出并提示「未返回可信结果」的问题。
+- 修复执行优化时错误提示「优化请求包含还原参数」的问题。
+- 修复打开还原设置时错误提示「还原目录查询不能与复原项目或指定备份同时使用」的问题。
 - 改进管理员引擎与安全软件、PowerShell 应用控制策略的兼容性。
-- 执行异常时会显示系统返回的具体原因，反馈定位更准确。
 '@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让

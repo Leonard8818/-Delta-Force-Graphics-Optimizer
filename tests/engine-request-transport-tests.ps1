@@ -32,6 +32,83 @@ foreach ($needle in "'-File'","'-RequestFile'",'Diagnostics.ProcessStartInfo','R
 Assert-True ($invokeText.Contains('本次系统设置可能已部分执行') -and $invokeText.Contains('请不要重复点击')) `
   'missing-result path does not warn against an unsafe duplicate Apply'
 
+# PowerShell 会让 `$null | ForEach-Object { "$_" }` 产生一个空字符串。直接执行生产函数里的
+# 两条归一化赋值，确保未绑定的 ItemIds / RestoreItemIds 始终得到真正的空数组。
+$normalizationAssignments = @($invokeFunctions[0].Body.FindAll({
+  param($node)
+  $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -in @('$itemIdsForRequest','$restoreIdsForRequest')
+}, $true))
+Assert-True ($normalizationAssignments.Count -eq 2) 'request array normalization assignments missing or duplicated'
+$normalizationScript = [scriptblock]::Create(@"
+param([string[]]`$ItemIds, [string[]]`$RestoreItemIds)
+$($normalizationAssignments[0].Extent.Text)
+$($normalizationAssignments[1].Extent.Text)
+[pscustomobject]@{ ItemIds = [string[]]`$itemIdsForRequest; RestoreItemIds = [string[]]`$restoreIdsForRequest }
+"@)
+$emptyNormalization = & $normalizationScript
+Assert-True (@($emptyNormalization.ItemIds).Count -eq 0 -and
+  @($emptyNormalization.RestoreItemIds).Count -eq 0) `
+  'unbound request arrays were normalized to an empty-string element instead of empty arrays'
+$valueNormalization = & $normalizationScript @('game-mode') @('gpu-pref')
+Assert-True (@($valueNormalization.ItemIds).Count -eq 1 -and
+  $valueNormalization.ItemIds[0] -eq 'game-mode' -and
+  @($valueNormalization.RestoreItemIds).Count -eq 1 -and
+  $valueNormalization.RestoreItemIds[0] -eq 'gpu-pref') `
+  'request array normalization changed valid item IDs'
+
+# 行为级复现截图中的两个入口。拦截请求落盘，证明 Apply 与还原目录查询都能通过
+# GUI 参数组合校验，并且未绑定的另一类项目数组在请求中确实为空。
+& {
+  param([string]$FunctionText, [string]$RepositoryRoot)
+  Invoke-Expression $FunctionText
+  $isAdminGui = $true
+  $saved = @{
+    Validated = $script:EngineHostSessionValidated; Root = $script:RootDir
+    Local = $script:OriginalUserLocalAppData; Sid = $script:OriginalUserSid
+    State = $script:ProtectedUserStateRoot
+  }
+  try {
+    $script:EngineHostSessionValidated = $true
+    $script:RootDir = $RepositoryRoot
+    $script:OriginalUserLocalAppData = 'C:\Users\Fixture\AppData\Local'
+    $script:OriginalUserSid = 'S-1-5-21-111111111-222222222-333333333-1001'
+    $script:ProtectedUserStateRoot = 'C:\ProgramData\DeltaForceBooster\users\S-1-5-21-111111111-222222222-333333333-1001'
+    function Test-ProtectedProgramRoot { $true }
+    function Get-ProtectedEngineExchangeRoot { 'C:\ProgramData\DeltaForceBooster\session-temp\fixture' }
+    function Remove-ProtectedEngineExchangeFile {}
+    function Write-ProtectedEngineRequest([string]$Path, $Request) {
+      $script:CapturedRequest = $Request
+      throw 'REQUEST_CAPTURED'
+    }
+
+    $caught = ''
+    try { Invoke-ElevatedEngineAction -Action Apply -ItemIds @('game-mode') -GamePath 'D:\Games\DeltaForce.exe' }
+    catch { $caught = $_.Exception.Message }
+    Assert-True ($caught -eq 'REQUEST_CAPTURED') "normal Apply failed before request creation: $caught"
+    Assert-True ($script:CapturedRequest.Action -eq 'Apply' -and
+      @($script:CapturedRequest.ItemIds).Count -eq 1 -and
+      @($script:CapturedRequest.RestoreItemIds).Count -eq 0 -and
+      -not $script:CapturedRequest.ListRestoreItems) `
+      'normal Apply request contains restore parameters'
+
+    $script:CapturedRequest = $null; $caught = ''
+    try { Invoke-ElevatedEngineAction -Action Restore -ListRestoreItems }
+    catch { $caught = $_.Exception.Message }
+    Assert-True ($caught -eq 'REQUEST_CAPTURED') "restore catalog query failed before request creation: $caught"
+    Assert-True ($script:CapturedRequest.Action -eq 'Restore' -and
+      @($script:CapturedRequest.ItemIds).Count -eq 0 -and
+      @($script:CapturedRequest.RestoreItemIds).Count -eq 0 -and
+      $script:CapturedRequest.ListRestoreItems) `
+      'restore catalog request contains Apply or selective-restore parameters'
+  } finally {
+    $script:EngineHostSessionValidated = $saved.Validated; $script:RootDir = $saved.Root
+    $script:OriginalUserLocalAppData = $saved.Local; $script:OriginalUserSid = $saved.Sid
+    $script:ProtectedUserStateRoot = $saved.State
+    Remove-Variable CapturedRequest -Scope Script -ErrorAction SilentlyContinue
+  }
+} $invokeText $root
+
 foreach ($helper in 'ConvertTo-NativeFileArgument','ConvertTo-EngineDiagnosticSummary') {
   $matches = @($guiAst.FindAll({
     param($node)
