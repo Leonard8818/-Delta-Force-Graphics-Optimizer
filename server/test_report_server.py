@@ -1446,6 +1446,106 @@ class TelemetryTests(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=3)
 
+    def test_notification_http_public_history_and_admin_management(self):
+        SERVER.ADMIN_API_TOKEN = "notice-admin-token"
+        httpd = SERVER.http.server.ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
+
+        def get(path, authorized=False):
+            headers = {"X-DFB-Admin-Token": "notice-admin-token"} if authorized else {}
+            request = urllib.request.Request(base + path, headers=headers)
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, json.load(response), response.headers
+
+        def post(path, payload, authorized=False):
+            headers = {"Content-Type": "application/json"}
+            if authorized:
+                headers["X-DFB-Admin-Token"] = "notice-admin-token"
+            request = urllib.request.Request(
+                base + path,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, json.load(response)
+
+        try:
+            status, empty, headers = get("/report/notifications")
+            self.assertEqual(200, status)
+            self.assertEqual([], empty["notifications"])
+            self.assertEqual(0, empty["latestId"])
+            self.assertEqual("public, max-age=15", headers["Cache-Control"])
+
+            with self.assertRaises(urllib.error.HTTPError) as denied_create:
+                post("/api/notifications", {"title": "维护", "content": "今晚维护"})
+            self.assertEqual(403, denied_create.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as denied_history:
+                get("/api/notifications")
+            self.assertEqual(403, denied_history.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as bad_level:
+                post(
+                    "/api/notifications",
+                    {"title": "错误等级", "content": "不会发布", "level": "urgent"},
+                    authorized=True,
+                )
+            self.assertEqual(400, bad_level.exception.code)
+
+            status, first = post(
+                "/api/notifications",
+                {"title": " 版本提醒 ", "content": " v0.22.4 已发布。 ", "level": "important"},
+                authorized=True,
+            )
+            self.assertEqual(201, status)
+            first_notice = first["notification"]
+            self.assertEqual("版本提醒", first_notice["title"])
+            self.assertEqual("v0.22.4 已发布。", first_notice["content"])
+            self.assertTrue(first_notice["active"])
+
+            status, second = post(
+                "/api/notifications",
+                {"title": "使用提示", "content": "优化前请关闭游戏。", "level": "info"},
+                authorized=True,
+            )
+            self.assertEqual(201, status)
+            second_notice = second["notification"]
+
+            status, public_history, _ = get("/report/notifications")
+            self.assertEqual(200, status)
+            self.assertEqual(
+                [second_notice["id"], first_notice["id"]],
+                [item["id"] for item in public_history["notifications"]],
+            )
+            self.assertEqual(second_notice["id"], public_history["latestId"])
+
+            status, withdrawn = post(
+                "/api/notifications/%d/withdraw" % first_notice["id"],
+                {"confirm": True},
+                authorized=True,
+            )
+            self.assertEqual(200, status)
+            self.assertTrue(withdrawn["ok"])
+            with self.assertRaises(urllib.error.HTTPError) as duplicate_withdraw:
+                post(
+                    "/api/notifications/%d/withdraw" % first_notice["id"],
+                    {"confirm": True},
+                    authorized=True,
+                )
+            self.assertEqual(404, duplicate_withdraw.exception.code)
+
+            _, public_history, _ = get("/report/notifications")
+            self.assertEqual([second_notice["id"]], [item["id"] for item in public_history["notifications"]])
+            _, admin_history, _ = get("/api/notifications", authorized=True)
+            self.assertEqual(2, len(admin_history["notifications"]))
+            inactive = next(item for item in admin_history["notifications"] if item["id"] == first_notice["id"])
+            self.assertFalse(inactive["active"])
+            self.assertIn("withdrawnAt", inactive)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=3)
+
     def test_stats_exposes_daily_and_last_24_beijing_hours_in_one_user_analysis(self):
         now = int(dt.datetime(2026, 8, 10, 13, 42, tzinfo=dt.timezone.utc).timestamp())
         hour_12 = int(dt.datetime(2026, 8, 10, 12, 10, tzinfo=dt.timezone.utc).timestamp())

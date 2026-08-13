@@ -30,6 +30,7 @@ TELEMETRY_PEPPER = os.environ.get("DFB_TELEMETRY_PEPPER", "")
 MAX_REPORT_BODY = 256 * 1024
 MAX_TELEMETRY_BODY = 16 * 1024
 MAX_WEBSITE_VISIT_BODY = 1024
+MAX_NOTIFICATION_BODY = 8 * 1024
 MAX_ADMIN_RESPONSE_BODY = 1024 * 1024
 MAX_WEEKLY_SNAPSHOT_BODY = 768 * 1024
 PORT = int(os.environ.get("DFB_REPORT_PORT", "8899"))
@@ -57,6 +58,10 @@ PERFORMANCE_CONTEXT_REQUIRED_VERSION = (0, 22, 1)
 ANALYSIS_CONTEXT_REQUIRED_VERSION = (0, 22, 2)
 WEEKLY_SCHEMA_VERSION = 3
 WEEKLY_FILTER_LIMITS = {"version": 24, "gpu": 160, "deviceType": 24}
+NOTIFICATION_LEVELS = ("info", "important", "warning")
+NOTIFICATION_TITLE_LIMIT = 80
+NOTIFICATION_CONTENT_LIMIT = 2000
+NOTIFICATION_HISTORY_LIMIT = 50
 CUSTOM_PERIOD_MAX_DAYS = 92
 REPORTING_EPOCH_WEEK = dt.date(2026, 8, 3)
 REPORT_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
@@ -516,6 +521,18 @@ def _init_db():
                 visitor_hash TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_website_visits_seen_at ON website_visits(seen_at);
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                level TEXT NOT NULL DEFAULT 'info',
+                published_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                withdrawn_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_notifications_active_published
+                ON notifications(active, published_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS weekly_snapshots (
                 week_start TEXT PRIMARY KEY,
                 generated_at INTEGER NOT NULL,
@@ -5664,6 +5681,102 @@ def _build_period_report(
     }
 
 
+def _notification_row(row):
+    result = {
+        "id": int(row["id"]),
+        "title": row["title"],
+        "content": row["content"],
+        "level": row["level"],
+        "publishedAt": int(row["published_at"]),
+        "active": bool(row["active"]),
+    }
+    if row["withdrawn_at"] is not None:
+        result["withdrawnAt"] = int(row["withdrawn_at"])
+    return result
+
+
+def _list_notifications(include_inactive=False, limit=NOTIFICATION_HISTORY_LIMIT):
+    try:
+        limit = max(1, min(int(limit), NOTIFICATION_HISTORY_LIMIT))
+    except (TypeError, ValueError):
+        limit = NOTIFICATION_HISTORY_LIMIT
+    conn = _connect()
+    try:
+        where = "" if include_inactive else "WHERE active=1"
+        rows = conn.execute(
+            """SELECT id, title, content, level, published_at, active, withdrawn_at
+               FROM notifications %s
+               ORDER BY published_at DESC, id DESC LIMIT ?""" % where,
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    notifications = [_notification_row(row) for row in rows]
+    return {
+        "notifications": notifications,
+        "latestId": max((item["id"] for item in notifications if item["active"]), default=0),
+        "serverTime": int(time.time()),
+    }
+
+
+def _create_notification(payload, now=None):
+    if not isinstance(payload, dict) or set(payload) - {"title", "content", "level"}:
+        raise ValueError("bad notification")
+    title = payload.get("title")
+    content = payload.get("content")
+    level = payload.get("level", "info")
+    if not isinstance(title, str) or not isinstance(content, str) or not isinstance(level, str):
+        raise ValueError("bad notification")
+    title = title.strip()
+    content = content.strip()
+    level = level.strip().lower()
+    if not title or len(title) > NOTIFICATION_TITLE_LIMIT:
+        raise ValueError("notification title must be 1-%d characters" % NOTIFICATION_TITLE_LIMIT)
+    if not content or len(content) > NOTIFICATION_CONTENT_LIMIT:
+        raise ValueError("notification content must be 1-%d characters" % NOTIFICATION_CONTENT_LIMIT)
+    if level not in NOTIFICATION_LEVELS:
+        raise ValueError("bad notification level")
+    published_at = int(time.time() if now is None else now)
+    conn = _connect()
+    try:
+        with conn:
+            cursor = conn.execute(
+                """INSERT INTO notifications
+                   (title, content, level, published_at, created_at, active)
+                   VALUES (?, ?, ?, ?, ?, 1)""",
+                (title, content, level, published_at, published_at),
+            )
+            row = conn.execute(
+                """SELECT id, title, content, level, published_at, active, withdrawn_at
+                   FROM notifications WHERE id=?""",
+                (cursor.lastrowid,),
+            ).fetchone()
+    finally:
+        conn.close()
+    return _notification_row(row)
+
+
+def _withdraw_notification(notification_id, now=None):
+    try:
+        notification_id = int(notification_id)
+    except (TypeError, ValueError):
+        raise ValueError("bad notification id")
+    if notification_id <= 0:
+        raise ValueError("bad notification id")
+    withdrawn_at = int(time.time() if now is None else now)
+    conn = _connect()
+    try:
+        with conn:
+            cursor = conn.execute(
+                """UPDATE notifications SET active=0, withdrawn_at=?
+                   WHERE id=? AND active=1""",
+                (withdrawn_at, notification_id),
+            )
+            return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def _admin_authorized(handler):
     supplied = handler.headers.get("X-DFB-Admin-Token", "")
     return bool(ADMIN_API_TOKEN) and hmac.compare_digest(supplied, ADMIN_API_TOKEN)
@@ -5696,6 +5809,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path.rstrip("/")
         ip = _client_ip(self)
+        if path == "/api/notifications":
+            if not _admin_authorized(self):
+                return self._reply_json(403, {"error": "forbidden"})
+            try:
+                raw = self._read_body(MAX_NOTIFICATION_BODY)
+                payload = json.loads(raw.decode("utf-8"))
+                notification = _create_notification(payload)
+            except OverflowError:
+                return self._reply_json(413, {"error": "body too large"})
+            except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+                return self._reply_json(400, {"error": str(error) or "bad notification"})
+            return self._reply_json(201, {"ok": True, "notification": notification})
+
+        notification_withdraw = re.fullmatch(r"/api/notifications/(\d+)/withdraw", path)
+        if notification_withdraw:
+            if not _admin_authorized(self):
+                return self._reply_json(403, {"error": "forbidden"})
+            try:
+                raw = self._read_body(MAX_NOTIFICATION_BODY)
+                payload = json.loads(raw.decode("utf-8"))
+                if payload not in ({}, {"confirm": True}):
+                    raise ValueError("bad withdraw request")
+                found = _withdraw_notification(notification_withdraw.group(1))
+            except OverflowError:
+                return self._reply_json(413, {"error": "body too large"})
+            except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+                return self._reply_json(400, {"error": str(error) or "bad withdraw request"})
+            if not found:
+                return self._reply_json(404, {"error": "notification not found or already withdrawn"})
+            return self._reply_json(200, {"ok": True})
+
         if path == "/report/website-visit":
             if not _rate_ok("website-visit:" + ip, 120):
                 return self._reply_json(429, {"error": "too many visits, try later"})
@@ -5828,8 +5972,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path.rstrip("/")
         if path == "/report/health":
             return self._reply_json(200, {"ok": True, "telemetry": bool(TELEMETRY_PEPPER)})
+        if path == "/report/notifications":
+            if not _rate_ok("notifications:" + _client_ip(self), 120):
+                return self._reply_json(429, {"error": "too many requests, try later"})
+            return self._reply_json(200, _list_notifications(), "public, max-age=15")
         if path == "/report/public-stats":
             return self._reply_json(200, _build_public_stats(), "public, max-age=15")
+        if path == "/api/notifications":
+            if not _admin_authorized(self):
+                return self._reply_json(403, {"error": "forbidden"})
+            return self._reply_json(200, _list_notifications(include_inactive=True))
         if path == "/api/stats":
             if not _admin_authorized(self):
                 return self._reply_json(403, {"error": "forbidden"})

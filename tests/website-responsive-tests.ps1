@@ -15,7 +15,7 @@ foreach($needle in @(
 )){Assert-True $raw.Contains($needle) "responsive homepage is missing: $needle"}
 
 Assert-True ($raw.Contains('href="DeltaForceBooster-Setup.exe"')) 'homepage latest installer link changed unexpectedly'
-Assert-True ($raw.Contains('当前版本 v0.22.3')) 'homepage version marker changed unexpectedly'
+Assert-True ($raw.Contains('当前版本 v0.22.4')) 'homepage version marker changed unexpectedly'
 Assert-True ($raw.Contains("fetch('/report/public-stats'")) 'homepage public statistics endpoint changed unexpectedly'
 Assert-True (-not $raw.Contains('client_hash')) 'homepage exposes a private client identifier'
 

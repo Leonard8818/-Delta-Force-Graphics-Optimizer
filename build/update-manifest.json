@@ -1,9 +1,9 @@
 {
-    "version":  "0.22.3",
+    "version":  "0.22.4",
     "minimumSupportedVersion":  "0.22.3",
-    "notes":  "- 修复一些已知问题。",
+    "notes":  "- 新增「通知中心」，支持新通知实时提醒、未读角标和历史消息查看。\n- 最近消息会缓存在本机，网络暂时不可用时仍可查看已同步内容。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "7a0da8c710508a23192f8994a21598aafad40bc60a5d53ecde6b97aa9ff62fd0",
-    "size":  882176
+    "sha256":  "c8bcf5630f8c911f1f7f777c21c6471be295024563f12041d2683d54e7959383",
+    "size":  885760
 }
