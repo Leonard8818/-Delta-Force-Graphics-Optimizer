@@ -80,7 +80,8 @@ param(
                'NVIDIA GeForce RTX 2050', 'NVIDIA GeForce RTX 2060', 'AMD Radeon RX560')]
   [string]$GpuSpoofModel,
   [switch]$Risky,
-  [switch]$Json
+  [switch]$Json,
+  [string]$RequestFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -117,6 +118,7 @@ $script:BackupSchemaVersion = 3
 $script:LegacySignedBackupSchemaVersion = 2
 $script:BackupCatalogVersion = 3
 $script:RestoreReceiptSchemaVersion = 1
+$script:EngineResultFile = $null
 $script:AppVersion = '0.0.0'
 $guiVersionFile = Join-Path $script:Root 'gui\DeltaForceBooster-GUI.ps1'
 if (Test-Path -LiteralPath $guiVersionFile -PathType Leaf) {
@@ -508,14 +510,32 @@ function Write-IpcResult([string]$Id, [string]$Action, $Data, [int]$ExitCode, [s
   if (-not $Id) { return }
   $parsed = [guid]::Empty
   if (-not [guid]::TryParseExact($Id, 'D', [ref]$parsed)) { throw 'ResultId 必须是标准 D 格式 GUID' }
-  Initialize-IpcStore
+  $outputPath = $null
+  if ($script:EngineResultFile) {
+    $sessionRoot = Get-ValidatedEngineSessionRoot
+    $expectedPath = Join-Path $sessionRoot ("engine-result-{0}.json" -f $parsed.ToString('D'))
+    $outputPath = [IO.Path]::GetFullPath($script:EngineResultFile)
+    if ($outputPath -ine [IO.Path]::GetFullPath($expectedPath) -or
+        (Test-Path -LiteralPath $outputPath) -and (Test-PathHasReparsePoint $outputPath)) {
+      throw '管理员引擎结果文件不在当前受保护会话目录'
+    }
+  } else {
+    Initialize-IpcStore
+    $outputPath = Join-Path $script:IpcDir ($parsed.ToString('D') + '.json')
+  }
   $body = [ordered]@{
     SchemaVersion = 1; ResultId = $parsed.ToString('D'); Action = $Action
     CreatedUtc = [DateTime]::UtcNow.ToString('o'); ExitCode = $ExitCode
     Ok = ($ExitCode -eq 0); Data = $Data; Error = $ErrorMessage
   }
   $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($body | ConvertTo-Json -Depth 10))
-  Write-BytesAtomic (Join-Path $script:IpcDir ($parsed.ToString('D') + '.json')) $bytes
+  Write-BytesAtomic $outputPath $bytes
+  if ($script:EngineResultFile) {
+    Set-ProtectedFileAcl $outputPath
+    if ((Test-PathHasReparsePoint $outputPath) -or -not (Test-ProtectedFileAcl $outputPath)) {
+      throw '管理员引擎结果文件权限校验失败'
+    }
+  }
 }
 
 function Enter-EngineMutex {
@@ -2577,6 +2597,125 @@ function Assert-ExactProperties($Object, [string[]]$Required, [string[]]$Optiona
   if ($unknown.Count -gt 0) { throw "$Label 包含未知字段：$($unknown -join '、')" }
 }
 
+# EngineHost 为每次 GUI 会话创建只允许 Administrators/SYSTEM 访问的临时目录。
+# GUI 与短生命周期管理员引擎只通过该目录交换严格 JSON，避免把动态 PowerShell 代码
+# 放进 -EncodedCommand，也不再依赖普通 Users 可读的全局 IPC 目录。
+function Get-ValidatedEngineSessionRoot {
+  $session = "$env:DFB_ENGINE_HOST_SESSION"
+  if ($session -notmatch '^[0-9a-fA-F]{32}$') { throw '管理员引擎缺少有效的 EngineHost 会话标记' }
+  if (-not $script:CommonAppData) { throw '系统未提供 ProgramData 目录' }
+  $expected = [IO.Path]::GetFullPath((Join-Path $script:CommonAppData "DeltaForceBooster\session-temp\$session")).TrimEnd('\')
+  $actual = $(if ($env:TEMP) { [IO.Path]::GetFullPath("$env:TEMP").TrimEnd('\') } else { '' })
+  if (-not $actual -or $actual -ine $expected -or "$env:TMP" -ine $actual -or
+      -not (Test-Path -LiteralPath $actual -PathType Container) -or
+      (Test-PathHasReparsePoint $actual) -or -not (Test-ProtectedDirectoryAclExact $actual $false)) {
+    throw '管理员引擎会话目录校验失败'
+  }
+  $actual
+}
+
+function Get-EngineRequestOptionalString($Value, [string]$Name, [int]$MaxLength = 32767) {
+  if ($null -eq $Value) { return $null }
+  if ($Value -isnot [string] -or $Value.Length -gt $MaxLength) { throw "管理员引擎请求字段无效：$Name" }
+  "$Value"
+}
+
+function Get-EngineRequestItemIds($Value, [string]$Name) {
+  if ($null -eq $Value -or $Value -isnot [Array]) { throw "管理员引擎请求字段必须是数组：$Name" }
+  if ($Value.Count -gt 128) { throw "管理员引擎请求项目过多：$Name" }
+  $seen = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+  foreach ($id in @($Value)) {
+    if ($id -isnot [string] -or "$id" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') {
+      throw "管理员引擎请求项目 ID 无效：$Name"
+    }
+    if (-not $seen.Add("$id")) { throw "管理员引擎请求包含重复项目：$id" }
+    "$id"
+  }
+}
+
+function Import-EngineActionRequest([string]$Path, [string]$ExpectedSessionRoot) {
+  if (-not $Path -or -not [IO.Path]::IsPathRooted($Path)) { throw '管理员引擎请求文件不是绝对路径' }
+  $sessionRoot = $(if ($ExpectedSessionRoot) {
+      [IO.Path]::GetFullPath($ExpectedSessionRoot).TrimEnd('\')
+    } else { Get-ValidatedEngineSessionRoot })
+  if (-not (Test-Path -LiteralPath $sessionRoot -PathType Container) -or
+      (Test-PathHasReparsePoint $sessionRoot) -or -not (Test-ProtectedDirectoryAclExact $sessionRoot $false)) {
+    throw '管理员引擎请求目录不可信'
+  }
+  $full = [IO.Path]::GetFullPath($Path)
+  if ((Split-Path -Parent $full).TrimEnd('\') -ine $sessionRoot -or
+      (Split-Path -Leaf $full) -notmatch '^engine-request-([0-9a-fA-F-]{36})\.json$') {
+    throw '管理员引擎请求文件不在当前会话目录'
+  }
+  $fileResultId = $Matches[1]
+  $parsedFileResultId = [guid]::Empty
+  if (-not [guid]::TryParseExact($fileResultId, 'D', [ref]$parsedFileResultId) -or
+      -not (Test-Path -LiteralPath $full -PathType Leaf) -or (Test-PathHasReparsePoint $full) -or
+      -not (Test-ProtectedFileAcl $full)) {
+    throw '管理员引擎请求文件类型、名称或权限无效'
+  }
+  $fileInfo = Get-Item -LiteralPath $full -Force
+  if ($fileInfo.Length -le 0 -or $fileInfo.Length -gt 65536) { throw '管理员引擎请求文件大小无效' }
+  try { $document = Get-Content -LiteralPath $full -Raw -Encoding UTF8 | ConvertFrom-Json }
+  catch { throw "管理员引擎请求 JSON 无效：$($_.Exception.Message)" }
+  Assert-ExactProperties $document @(
+    'SchemaVersion','ResultId','Action','ItemIds','GamePath','AllowRisky','GpuSpoofModel',
+    'BackupFile','ListRestoreItems','RestoreItemIds','UserSid','UserLocalAppData','UserStateRoot'
+  ) @() '管理员引擎请求'
+  if (($document.SchemaVersion -isnot [int] -and $document.SchemaVersion -isnot [long]) -or
+      [int]$document.SchemaVersion -ne 1) { throw '管理员引擎请求版本不受支持' }
+  if ($document.ResultId -isnot [string]) { throw '管理员引擎请求 ResultId 无效' }
+  $parsedResultId = [guid]::Empty
+  if (-not [guid]::TryParseExact("$($document.ResultId)", 'D', [ref]$parsedResultId) -or
+      $parsedResultId -ne $parsedFileResultId) { throw '管理员引擎请求 ResultId 与文件名不匹配' }
+  $resultId = $parsedResultId.ToString('D')
+  if ($document.Action -isnot [string] -or "$($document.Action)" -notin @('Apply','Restore')) {
+    throw '管理员引擎请求动作无效'
+  }
+  if ($document.AllowRisky -isnot [bool] -or $document.ListRestoreItems -isnot [bool]) {
+    throw '管理员引擎请求布尔字段无效'
+  }
+  $itemIds = @(Get-EngineRequestItemIds $document.ItemIds 'ItemIds')
+  $restoreItemIds = @(Get-EngineRequestItemIds $document.RestoreItemIds 'RestoreItemIds')
+  $gamePath = Get-EngineRequestOptionalString $document.GamePath 'GamePath'
+  $gpuSpoofModel = Get-EngineRequestOptionalString $document.GpuSpoofModel 'GpuSpoofModel' 128
+  $backupFile = Get-EngineRequestOptionalString $document.BackupFile 'BackupFile'
+  $userSid = Get-EngineRequestOptionalString $document.UserSid 'UserSid' 184
+  $userLocalAppData = Get-EngineRequestOptionalString $document.UserLocalAppData 'UserLocalAppData'
+  $userStateRoot = Get-EngineRequestOptionalString $document.UserStateRoot 'UserStateRoot'
+  if (-not $userSid -or -not $userLocalAppData -or -not $userStateRoot) {
+    throw '管理员引擎请求缺少目标用户上下文'
+  }
+  try { $sid = New-Object Security.Principal.SecurityIdentifier($userSid) }
+  catch { throw '管理员引擎请求用户 SID 无效' }
+  if (-not $sid.IsAccountSid() -or -not [IO.Path]::IsPathRooted($userLocalAppData) -or
+      -not [IO.Path]::IsPathRooted($userStateRoot)) { throw '管理员引擎请求用户上下文无效' }
+  $supportedSpoofModels = @('NVIDIA GeForce GTX 750 Ti','NVIDIA GeForce GTX 1050 Ti',
+    'NVIDIA GeForce RTX 2050','NVIDIA GeForce RTX 2060','AMD Radeon RX560')
+  if ($gpuSpoofModel -and $gpuSpoofModel -notin $supportedSpoofModels) { throw '管理员引擎请求显卡伪装型号无效' }
+
+  if ("$($document.Action)" -eq 'Apply') {
+    if ($itemIds.Count -eq 0 -or $document.ListRestoreItems -or $restoreItemIds.Count -gt 0 -or $backupFile) {
+      throw '管理员引擎 Apply 请求参数组合无效'
+    }
+  } else {
+    if ($itemIds.Count -gt 0 -or $gamePath -or $document.AllowRisky -or $gpuSpoofModel) {
+      throw '管理员引擎 Restore 请求包含 Apply 参数'
+    }
+    $restoreModeCount = [int][bool]$document.ListRestoreItems + [int][bool]($restoreItemIds.Count -gt 0) + [int][bool]$backupFile
+    if ($restoreModeCount -gt 1) { throw '管理员引擎 Restore 请求参数组合无效' }
+  }
+  [pscustomobject]@{
+    ResultId = $resultId; Action = "$($document.Action)"; ItemIds = [string[]]$itemIds
+    GamePath = $gamePath; AllowRisky = [bool]$document.AllowRisky; GpuSpoofModel = $gpuSpoofModel
+    BackupFile = $backupFile; ListRestoreItems = [bool]$document.ListRestoreItems
+    RestoreItemIds = [string[]]$restoreItemIds; UserSid = $userSid
+    UserLocalAppData = [IO.Path]::GetFullPath($userLocalAppData)
+    UserStateRoot = [IO.Path]::GetFullPath($userStateRoot); SessionRoot = $sessionRoot
+    ResultFile = Join-Path $sessionRoot ("engine-result-$resultId.json")
+  }
+}
+
 function Get-BackupOpFields([string]$Kind, [int]$SchemaVersion) {
   $base = @(switch ($SchemaVersion) {
     3 { 'Id','Status','ApplyId','ItemId','RestoreGroupId','OpIndex','Kind' }
@@ -4074,6 +4213,30 @@ function Write-DetectText($r) {
 # ---------- 入口分发（被 GUI 点源加载时所有开关为 false，不执行任何动作） ----------
 
 if ($Json) { try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {} }
+
+if ($RequestFile) {
+  if ($Detect -or $Preview -or $Apply -or $Restore -or $ListRestoreItems -or $ListItems -or
+      $ListPresets -or $SavePreset -or $DeletePreset -or $Preset -or @($Items).Count -gt 0 -or
+      $GamePath -or $BackupFile -or @($RestoreItems).Count -gt 0 -or $ResultId -or $UserSid -or
+      $UserLocalAppData -or $UserStateRoot -or $GpuSpoofModel -or $Risky -or $Json) {
+    throw '-RequestFile 不能与其他动作或业务参数同时使用'
+  }
+  $engineRequest = Import-EngineActionRequest $RequestFile
+  $script:EngineResultFile = $engineRequest.ResultFile
+  $ResultId = $engineRequest.ResultId
+  $UserSid = $engineRequest.UserSid
+  $UserLocalAppData = $engineRequest.UserLocalAppData
+  $UserStateRoot = $engineRequest.UserStateRoot
+  $Apply = $engineRequest.Action -eq 'Apply'
+  $ListRestoreItems = $engineRequest.Action -eq 'Restore' -and $engineRequest.ListRestoreItems
+  $Restore = $engineRequest.Action -eq 'Restore' -and -not $engineRequest.ListRestoreItems
+  $Items = [string[]]@($engineRequest.ItemIds)
+  $GamePath = $engineRequest.GamePath
+  $Risky = [bool]$engineRequest.AllowRisky
+  $GpuSpoofModel = $engineRequest.GpuSpoofModel
+  $BackupFile = $engineRequest.BackupFile
+  $RestoreItems = [string[]]@($engineRequest.RestoreItemIds)
+}
 
 $didDispatch = [bool]($ListItems -or $Detect -or $Preview -or $ListPresets -or $SavePreset -or $DeletePreset -or $Apply -or $Restore -or $ListRestoreItems)
 if ($didDispatch) {

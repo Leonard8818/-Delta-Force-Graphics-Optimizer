@@ -641,9 +641,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 新增「通知中心」，支持新通知实时提醒、未读角标和历史消息查看。
-- 最近消息会缓存在本机，网络暂时不可用时仍可查看已同步内容。
-- 官网实时使用数据会在数值变化时短暂高亮，更容易看到最新变化。
+- 修复部分电脑执行优化或读取还原项目时，管理员引擎异常退出并提示「未返回可信结果」的问题。
+- 改进管理员引擎与安全软件、PowerShell 应用控制策略的兼容性。
+- 执行异常时会显示系统返回的具体原因，反馈定位更准确。
 '@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让

@@ -63,6 +63,15 @@ function Find-EngineFunction([string]$Name) {
   $matches[0]
 }
 
+function Find-GuiFunction([string]$Name) {
+  $matches = @($guiAst.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+  }, $true))
+  Assert-True ($matches.Count -eq 1) "GUI helper missing or duplicated: $Name"
+  $matches[0]
+}
+
 $virtualDisplayFunction = Find-EngineFunction 'Test-VirtualDisplayAdapter'
 $gpuPreferenceFunction = Find-EngineFunction 'Get-GpuPreferenceScore'
 Invoke-Expression $virtualDisplayFunction.Extent.Text
@@ -143,9 +152,20 @@ Assert-True ($gui -match 'DeltaForceBooster\\users\\\$sessionText|DeltaForceBoos
 Assert-True ($gui -match 'Initialize-ProtectedUserStateStore' -and $gui -match '\$script:BoosterUserConfigDir = \$configRoot') `
   'GUI/updater state is not consistently redirected to protected ProgramData'
 Assert-True ($engine -match 'Get-ProtectedUserStateRoot \$script:TargetUserSid' -and
-  $engine -match '\[string\]\$UserStateRoot') 'child engine does not derive/accept protected per-SID state'
-Assert-True ($gui -match '-UserStateRoot ' -and $engine -match 'UserStateRoot 与受保护 per-SID 状态分区不匹配') `
+  $engine -match '\[string\]\$UserStateRoot' -and $engine -match '\[string\]\$RequestFile') `
+  'child engine does not derive/accept protected per-SID state or action request'
+Assert-True ($gui -match 'UserStateRoot\s*=\s*\[IO\.Path\]::GetFullPath\(\$script:ProtectedUserStateRoot\)' -and
+  $engine -match 'UserStateRoot 与受保护 per-SID 状态分区不匹配') `
   'Apply/Restore child action can fall back to elevated LocalAppData'
+$adminActionFunction = Find-GuiFunction 'Invoke-ElevatedEngineAction'
+$adminActionText = $adminActionFunction.Extent.Text
+Assert-True (-not $adminActionText.Contains('-EncodedCommand') -and $adminActionText.Contains("'-File'") -and
+  $adminActionText.Contains("'-RequestFile'") -and $adminActionText.Contains('RedirectStandardError = $true') -and
+  $adminActionText.Contains('ReadToEndAsync()')) `
+  'Apply/Restore still uses encoded dynamic code or drops child-process diagnostics'
+Assert-True ($gui -match 'Get-ProtectedEngineExchangeRoot' -and $engine -match 'Import-EngineActionRequest' -and
+  $engine -match 'engine-result-\{0\}\.json') `
+  'protected per-session request/result transport is incomplete'
 Assert-True ($updater -match 'BoosterUserConfigDir' -and $updater -match '管理员更新器缺少受保护 per-SID 配置目录') `
   'elevated updater can fall back to the approval administrator LocalAppData'
 

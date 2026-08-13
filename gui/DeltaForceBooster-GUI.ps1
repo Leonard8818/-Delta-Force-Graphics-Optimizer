@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.22.4
+  DeltaForceBooster 图形界面 — v0.22.5
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.22.5：修复部分电脑执行优化或读取还原项目时管理员引擎异常退出的问题，并回传具体错误原因。
   v0.22.4：新增软件通知中心、未读提醒与历史消息，本地缓存支持断网查看。
   v0.22.3：修复一些已知问题。
   v0.22.2：修复一些已知问题。
@@ -468,7 +469,7 @@ catch {
 }
 
 # 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.22.4'
+$script:GuiVersion = '0.22.5'
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -847,7 +848,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.22.4 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.22.5 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1422,7 +1423,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.22.4 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.22.5 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -6078,8 +6079,64 @@ function Test-ProtectedProgramRoot {
   } catch { return $false }
 }
 
-function ConvertTo-PsSingleQuotedLiteral([string]$Value) {
-  "'" + $(if ($null -eq $Value) { '' } else { $Value.Replace("'", "''") }) + "'"
+function Get-ProtectedEngineExchangeRoot {
+  $session = "$env:DFB_ENGINE_HOST_SESSION"
+  if ($session -notmatch '^[0-9a-fA-F]{32}$') { throw '管理员引擎会话标记无效' }
+  $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+  if (-not $programData -or -not $env:TEMP) { throw '系统未提供管理员引擎会话目录' }
+  $expected = [IO.Path]::GetFullPath((Join-Path $programData "DeltaForceBooster\session-temp\$session")).TrimEnd('\')
+  $actual = [IO.Path]::GetFullPath("$env:TEMP").TrimEnd('\')
+  if ($actual -ine $expected -or "$env:TMP" -ine $actual -or
+      -not (Test-Path -LiteralPath $actual -PathType Container) -or
+      (Test-PathHasReparsePoint $actual) -or -not (Test-ProtectedDirectoryAclExact $actual $false)) {
+    throw '管理员引擎会话目录不可信'
+  }
+  $actual
+}
+
+function Remove-ProtectedEngineExchangeFile([string]$Path, [string]$ExchangeRoot) {
+  $full = [IO.Path]::GetFullPath($Path)
+  if ((Split-Path -Parent $full).TrimEnd('\') -ine [IO.Path]::GetFullPath($ExchangeRoot).TrimEnd('\')) {
+    throw '管理员引擎交换文件越出会话目录'
+  }
+  if (-not (Test-Path -LiteralPath $full)) { return }
+  if (-not (Test-Path -LiteralPath $full -PathType Leaf) -or (Test-PathHasReparsePoint $full) -or
+      -not (Test-ProtectedFileAcl $full)) { throw '管理员引擎交换文件类型或权限无效' }
+  Remove-Item -LiteralPath $full -Force
+}
+
+function Write-ProtectedEngineRequest([string]$Path, $Request) {
+  if (Test-Path -LiteralPath $Path) { throw '管理员引擎请求文件已存在' }
+  $json = $Request | ConvertTo-Json -Depth 5 -Compress
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json)
+  if ($bytes.Length -le 0 -or $bytes.Length -gt 65536) { throw '管理员引擎请求大小无效' }
+  Write-BytesAtomic $Path $bytes
+  Set-ProtectedFileAcl $Path
+  if ((Test-PathHasReparsePoint $Path) -or -not (Test-ProtectedFileAcl $Path)) {
+    throw '管理员引擎请求文件权限校验失败'
+  }
+}
+
+function ConvertTo-NativeFileArgument([string]$Path) {
+  if (-not $Path -or $Path -match '[\x00\r\n"]' -or $Path.EndsWith('\')) {
+    throw '管理员引擎原生进程路径无法安全引用'
+  }
+  '"' + $Path + '"'
+}
+
+function ConvertTo-EngineDiagnosticSummary([string]$StandardError, [string]$StandardOutput) {
+  $text = $(if ($StandardError -and $StandardError.Trim()) { $StandardError }
+            elseif ($StandardOutput -and $StandardOutput.Trim()) { $StandardOutput } else { '' })
+  if (-not $text) { return '' }
+  if ($text.StartsWith('#< CLIXML', [StringComparison]::Ordinal)) {
+    try {
+      $xml = $text.Substring($text.IndexOf("`n") + 1)
+      $text = ([Management.Automation.PSSerializer]::Deserialize($xml) | Out-String)
+    } catch {}
+  }
+  $text = [regex]::Replace($text, '_x000D__x000A_|\s+', ' ').Trim()
+  if ($text.Length -gt 1200) { $text = '…' + $text.Substring($text.Length - 1199) }
+  $text
 }
 
 function Invoke-ElevatedEngineAction {
@@ -6103,83 +6160,125 @@ function Invoke-ElevatedEngineAction {
   $engine = Join-Path $script:RootDir 'scripts\delta-booster.ps1'
   if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) { throw '核心优化引擎缺失，请重新安装软件' }
 
-  $resultId = $(if ($ResultId) { "$ResultId" } else { [guid]::NewGuid().ToString('D') })
-  if ($resultId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+  $resultIdText = $(if ($ResultId) { "$ResultId" } else { [guid]::NewGuid().ToString('D') })
+  $parsedResultId = [guid]::Empty
+  if (-not [guid]::TryParseExact($resultIdText, 'D', [ref]$parsedResultId)) {
     throw '管理员执行结果 ID 无效'
   }
-  $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+  $resultId = $parsedResultId.ToString('D')
   $userLocalAppData = $script:OriginalUserLocalAppData
-  if (-not $programData -or -not $userLocalAppData) { throw '系统未提供用户数据目录' }
-  $resultFile = Join-Path (Join-Path $programData 'DeltaForceBooster\ipc') ($resultId + '.json')
+  if (-not $userLocalAppData) { throw '系统未提供用户数据目录' }
   $userSid = $script:OriginalUserSid
   $userLocalAppData = [IO.Path]::GetFullPath($userLocalAppData)
-  $parts = New-Object System.Collections.Generic.List[string]
-  $parts.Add('& ' + (ConvertTo-PsSingleQuotedLiteral $engine))
-  $parts.Add('-' + $Action)
-  $parts.Add('-ResultId ' + (ConvertTo-PsSingleQuotedLiteral $resultId))
-  # 原交互用户上下文来自全生命周期 asInvoker 启动器的认证管道；引擎还会
-  # 将 HKCU 映射到 HKEY_USERS\<SID> 并按 ProfileList 二次校验 LocalAppData。
-  $parts.Add('-UserSid ' + (ConvertTo-PsSingleQuotedLiteral $userSid))
-  $parts.Add('-UserLocalAppData ' + (ConvertTo-PsSingleQuotedLiteral $userLocalAppData))
-  $parts.Add('-UserStateRoot ' + (ConvertTo-PsSingleQuotedLiteral $script:ProtectedUserStateRoot))
+  $itemIdsForRequest = [string[]]@($ItemIds | ForEach-Object { "$_" })
+  $restoreIdsForRequest = [string[]]@($RestoreItemIds | ForEach-Object { "$_" })
+  $normalizedGamePath = $(if ($GamePath) { [IO.Path]::GetFullPath($GamePath) } else { $null })
+  $normalizedBackupFile = $null
   if ($Action -eq 'Apply') {
-    $itemLiterals = @($ItemIds | ForEach-Object { ConvertTo-PsSingleQuotedLiteral "$_" })
-    $parts.Add('-Items @(' + ($itemLiterals -join ',') + ')')
-    if ($GamePath) { $parts.Add('-GamePath ' + (ConvertTo-PsSingleQuotedLiteral $GamePath)) }
-    if ($GpuSpoofModel) { $parts.Add('-GpuSpoofModel ' + (ConvertTo-PsSingleQuotedLiteral $GpuSpoofModel)) }
-    if ($AllowRisky) { $parts.Add('-Risky') }
+    if ($itemIdsForRequest.Count -eq 0) { throw '管理员执行请求没有优化项目' }
+    if ($ListRestoreItems -or $restoreIdsForRequest.Count -gt 0 -or $BackupFile) { throw '优化请求包含还原参数' }
   } else {
-    if ($ListRestoreItems -and (@($RestoreItemIds).Count -gt 0 -or $BackupFile)) { throw '还原目录查询不能与复原项目或指定备份同时使用' }
-    if (@($RestoreItemIds).Count -gt 0 -and $BackupFile) { throw '按项目复原不能同时指定整份备份' }
-    if ($ListRestoreItems) { $parts.Add('-ListRestoreItems') }
-    elseif (@($RestoreItemIds).Count -gt 0) {
-      foreach ($id in @($RestoreItemIds)) { if ("$id" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') { throw "复原项目 ID 无效：$id" } }
-      $restoreLiterals = @($RestoreItemIds | ForEach-Object { ConvertTo-PsSingleQuotedLiteral "$_" })
-      $parts.Add('-RestoreItems @(' + ($restoreLiterals -join ',') + ')')
-    } elseif ($BackupFile) {
+    if ($ListRestoreItems -and ($restoreIdsForRequest.Count -gt 0 -or $BackupFile)) { throw '还原目录查询不能与复原项目或指定备份同时使用' }
+    if ($restoreIdsForRequest.Count -gt 0 -and $BackupFile) { throw '按项目复原不能同时指定整份备份' }
+    foreach ($id in $restoreIdsForRequest) { if ("$id" -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') { throw "复原项目 ID 无效：$id" } }
+    if ($BackupFile) {
       # Beta 回滚必须指向它自己刚刚生成的备份，绝不退化为“还原全部”。
       if (-not (Test-TuningBackupReference $BackupFile)) { throw '指定的实验备份路径无效' }
-      $parts.Add('-BackupFile ' + (ConvertTo-PsSingleQuotedLiteral ([IO.Path]::GetFullPath($BackupFile))))
+      $normalizedBackupFile = [IO.Path]::GetFullPath($BackupFile)
     }
   }
-  $command = ($parts -join ' ') + '; exit $LASTEXITCODE'
-  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+
+  $exchangeRoot = Get-ProtectedEngineExchangeRoot
+  $requestFile = Join-Path $exchangeRoot ("engine-request-$resultId.json")
+  $resultFile = Join-Path $exchangeRoot ("engine-result-$resultId.json")
+  foreach ($path in @($requestFile, $resultFile)) { Remove-ProtectedEngineExchangeFile $path $exchangeRoot }
+  $request = [ordered]@{
+    SchemaVersion = 1; ResultId = $resultId; Action = $Action
+    ItemIds = $itemIdsForRequest; GamePath = $normalizedGamePath; AllowRisky = [bool]$AllowRisky
+    GpuSpoofModel = $(if ($GpuSpoofModel) { "$GpuSpoofModel" } else { $null })
+    BackupFile = $normalizedBackupFile; ListRestoreItems = [bool]$ListRestoreItems
+    RestoreItemIds = $restoreIdsForRequest; UserSid = $userSid
+    UserLocalAppData = $userLocalAppData; UserStateRoot = [IO.Path]::GetFullPath($script:ProtectedUserStateRoot)
+  }
+  Write-ProtectedEngineRequest $requestFile $request
+
   # 即使已在管理员会话，系统可执行文件仍只从 Known Folder 取得。
   $windowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
   if (-not $windowsDir) { throw '系统未提供 Windows 目录' }
   $powershellExe = Join-Path $windowsDir 'System32\WindowsPowerShell\v1.0\powershell.exe'
-
+  $proc = $null; $stdoutTask = $null; $stderrTask = $null
+  $standardOutput = ''; $standardError = ''; $exitCode = -1
   try {
-    # 继承 EngineHost 的 high token，不跨越新的 UAC 边界。
-    $proc = Start-Process -FilePath $powershellExe -WindowStyle Hidden -PassThru `
-      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded)
-  } catch {
-    throw "引擎子进程启动失败：$($_.Exception.Message)"
-  }
-  while (-not $proc.HasExited) {
-    $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Background)
-    Start-Sleep -Milliseconds 80
-    $proc.Refresh()
-  }
+    try {
+      # 继承 EngineHost 的 high token，不跨越新的 UAC 边界。请求是数据文件，命令行只含固定开关与受保护路径。
+      $startInfo = New-Object Diagnostics.ProcessStartInfo
+      $startInfo.FileName = $powershellExe
+      $startInfo.Arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-OutputFormat','Text',
+        '-File',(ConvertTo-NativeFileArgument $engine),'-RequestFile',(ConvertTo-NativeFileArgument $requestFile)) -join ' '
+      $startInfo.WorkingDirectory = [Environment]::SystemDirectory
+      $startInfo.UseShellExecute = $false
+      $startInfo.CreateNoWindow = $true
+      $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+      $startInfo.RedirectStandardOutput = $true
+      $startInfo.RedirectStandardError = $true
+      $proc = New-Object Diagnostics.Process
+      $proc.StartInfo = $startInfo
+      if (-not $proc.Start()) { throw '系统未创建管理员引擎进程' }
+      $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+      $stderrTask = $proc.StandardError.ReadToEndAsync()
+    } catch {
+      throw "引擎子进程启动失败：$($_.Exception.Message)"
+    }
+    while (-not $proc.HasExited) {
+      $window.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Background)
+      Start-Sleep -Milliseconds 80
+      $proc.Refresh()
+    }
+    $proc.WaitForExit()
+    $exitCode = $proc.ExitCode
+    if ($stdoutTask) { try { $standardOutput = $stdoutTask.GetAwaiter().GetResult() } catch {} }
+    if ($stderrTask) { try { $standardError = $stderrTask.GetAwaiter().GetResult() } catch {} }
 
-  # 引擎会在退出前 Flush(true) 并原子发布结果；仍短暂重试以容忍杀毒软件扫描造成的共享延迟。
-  $deadline = [DateTime]::UtcNow.AddSeconds(5)
-  while (-not (Test-Path -LiteralPath $resultFile) -and [DateTime]::UtcNow -lt $deadline) {
-    Start-Sleep -Milliseconds 80
+    # 引擎会在退出前 Flush(true) 并原子发布结果；仍短暂重试以容忍实时扫描造成的共享延迟。
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (-not (Test-Path -LiteralPath $resultFile) -and [DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Milliseconds 80
+    }
+    if (-not (Test-Path -LiteralPath $resultFile)) {
+      $detail = ConvertTo-EngineDiagnosticSummary $standardError $standardOutput
+      $recoveryHint = $(if ($Action -eq 'Apply') {
+          '本次系统设置可能已部分执行，请不要重复点击「执行优化」；请先「重新检测」，必要时使用「还原设置」。'
+        } elseif ($ListRestoreItems) {
+          '还原项目读取未完成，请稍后重新检测。'
+        } else {
+          '本次还原状态未知，请重新打开还原清单核对。'
+        })
+      if ($detail) { throw "管理员引擎在写回结果前异常退出（退出码 $exitCode）：$detail`n`n$recoveryHint" }
+      throw "管理员引擎在写回结果前异常退出（退出码 $exitCode），系统未返回错误文本；请检查安全软件或 PowerShell 应用控制记录。`n`n$recoveryHint"
+    }
+    if ((Test-PathHasReparsePoint $resultFile) -or -not (Test-ProtectedFileAcl $resultFile)) {
+      throw '管理员执行结果文件权限校验失败'
+    }
+    $resultInfo = Get-Item -LiteralPath $resultFile -Force
+    if ($resultInfo.Length -le 0 -or $resultInfo.Length -gt 4MB) { throw '管理员执行结果文件大小无效' }
+    try { $reply = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { throw "管理员执行结果读取失败：$($_.Exception.Message)" }
+    if ([int]$reply.SchemaVersion -ne 1 -or "$($reply.ResultId)" -ne $resultId -or "$($reply.Action)" -ne $Action -or
+        [int]$reply.ExitCode -ne $exitCode) {
+      throw '管理员执行结果校验失败'
+    }
+    if ($null -eq $reply.Data) {
+      throw $(if ("$($reply.Error)") { "$($reply.Error)" } else { "执行失败（退出码 $($reply.ExitCode)）" })
+    }
+    $reply.Data | Add-Member -NotePropertyName EngineExitCode -NotePropertyValue ([int]$reply.ExitCode) -Force
+    $reply.Data
+  } finally {
+    if ($proc) { try { $proc.Dispose() } catch {} }
+    foreach ($path in @($requestFile, $resultFile)) {
+      try { Remove-ProtectedEngineExchangeFile $path $exchangeRoot }
+      catch { try { Write-Log "管理员引擎会话文件清理失败：$($_.Exception.Message)" } catch {} }
+    }
   }
-  if (-not (Test-Path -LiteralPath $resultFile)) {
-    throw "管理员执行进程未返回可信结果（退出码 $($proc.ExitCode)）"
-  }
-  try { $reply = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json }
-  catch { throw "管理员执行结果读取失败：$($_.Exception.Message)" }
-  if ([int]$reply.SchemaVersion -ne 1 -or "$($reply.ResultId)" -ne $resultId -or "$($reply.Action)" -ne $Action) {
-    throw '管理员执行结果校验失败'
-  }
-  if ($null -eq $reply.Data) {
-    throw $(if ("$($reply.Error)") { "$($reply.Error)" } else { "执行失败（退出码 $($reply.ExitCode)）" })
-  }
-  $reply.Data | Add-Member -NotePropertyName EngineExitCode -NotePropertyValue ([int]$reply.ExitCode) -Force
-  $reply.Data
 }
 
 # 主题化确认/信息对话框：原生 MessageBox 白底系统样式与深色主题完全不搭（用户实测吐槽），
