@@ -17,6 +17,11 @@ foreach($needle in @(
 Assert-True ($raw.Contains('href="DeltaForceBooster-Setup.exe"')) 'homepage latest installer link changed unexpectedly'
 Assert-True ($raw.Contains('当前版本 v0.22.4')) 'homepage version marker changed unexpectedly'
 Assert-True ($raw.Contains("fetch('/report/public-stats'")) 'homepage public statistics endpoint changed unexpectedly'
+foreach($needle in @(
+  '.proof-card.stat-changed','proof-value.stat-changed','@keyframes statCardFlash','@keyframes statValueFlash',
+  'const highlightTimers=new WeakMap()','if(previous!==undefined&&start!==end)highlightChange(node)',
+  "target.classList.add('stat-changed')",'prefers-reduced-motion:reduce'
+)){Assert-True $raw.Contains($needle) "homepage statistic change highlight is missing: $needle"}
 Assert-True (-not $raw.Contains('client_hash')) 'homepage exposes a private client identifier'
 
 $ids=@([regex]::Matches($raw,'\bid="([A-Za-z][A-Za-z0-9_-]*)"')|ForEach-Object{$_.Groups[1].Value})

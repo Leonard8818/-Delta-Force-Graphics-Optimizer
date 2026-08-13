@@ -643,6 +643,7 @@ $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
 - 新增「通知中心」，支持新通知实时提醒、未读角标和历史消息查看。
 - 最近消息会缓存在本机，网络暂时不可用时仍可查看已同步内容。
+- 官网实时使用数据会在数值变化时短暂高亮，更容易看到最新变化。
 '@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
