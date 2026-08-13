@@ -17,8 +17,8 @@ function Assert-True([bool]$Condition, [string]$Message) {
 $installerBuildSource = [IO.File]::ReadAllText((Join-Path $root 'build\make-installer.ps1'))
 $releaseManifest = Get-Content -LiteralPath (Join-Path $root 'build\update-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.22\.3'" -and
-  "$($releaseManifest.version)" -eq '0.22.7' -and "$($releaseManifest.minimumSupportedVersion)" -eq '0.22.3') `
-  'release policy must force every version below v0.22.3 to upgrade to the latest v0.22.7'
+  "$($releaseManifest.version)" -eq '0.22.8' -and "$($releaseManifest.minimumSupportedVersion)" -eq '0.22.3') `
+  'release policy must force every version below v0.22.3 to upgrade to the latest v0.22.8'
 $disclaimerText = [IO.File]::ReadAllText((Join-Path $root 'DISCLAIMER.md'))
 Assert-True ($disclaimerText -notmatch '自动寻找最佳配置|自动调优|experiments') `
   'usage notice still exposes automatic best-configuration Beta information'
@@ -28,22 +28,22 @@ $updaterPolicyDir = Join-Path $testBase 'updater-policy'
 [void][IO.Directory]::CreateDirectory($updaterPolicyDir)
 $policyManifestPath = Join-Path $updaterPolicyDir 'manifest.json'
 $policyManifest = [ordered]@{
-  version = '0.22.7'; minimumSupportedVersion = '0.22.3'; notes = '- test'
+  version = '0.22.8'; minimumSupportedVersion = '0.22.3'; notes = '- test'
   url = 'https://df.ltz88.cn/'; setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'
   sha256 = ('0' * 64); size = 1
 }
 [IO.File]::WriteAllText($policyManifestPath, ($policyManifest | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 $script:BoosterUserConfigDir = Join-Path $updaterPolicyDir 'config'
 . (Join-Path $root 'scripts\updater.ps1')
-Set-BoosterSkipVersion '0.22.7' | Out-Null
+Set-BoosterSkipVersion '0.22.8' | Out-Null
 $mandatoryUpdate = Test-BoosterUpdate -CurrentVersion '0.22.2' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri
 Assert-True ($mandatoryUpdate -and $mandatoryUpdate.Mandatory -and $mandatoryUpdate.CanInline -and
   "$($mandatoryUpdate.MinimumSupportedVersion)" -eq '0.22.3') `
-  'v0.22.2 can skip or defer the mandatory v0.22.7 update'
+  'v0.22.2 can skip or defer the mandatory v0.22.8 update'
 $optionalUpdate = Test-BoosterUpdate -CurrentVersion '0.22.3' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri -IncludeSkipped
-Assert-True ($optionalUpdate -and -not $optionalUpdate.Mandatory) 'v0.22.3 does not see v0.22.7 as an optional update'
-Assert-True ($null -eq (Test-BoosterUpdate -CurrentVersion '0.22.7' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri)) `
-  'v0.22.7 incorrectly detects its own release as an update'
+Assert-True ($optionalUpdate -and -not $optionalUpdate.Mandatory) 'v0.22.3 does not see v0.22.8 as an optional update'
+Assert-True ($null -eq (Test-BoosterUpdate -CurrentVersion '0.22.8' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri)) `
+  'v0.22.8 incorrectly detects its own release as an update'
 $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
 Assert-True ($setupSource -match 'PROC_THREAD_ATTRIBUTE_PARENT_PROCESS' -and
   $setupSource -match 'PROCESS_CREATE_PROCESS' -and $setupSource -match 'EXTENDED_STARTUPINFO_PRESENT') `
@@ -303,6 +303,9 @@ try {
   } | Sort-Object)
   $payloadDiff = @(Compare-Object $expectedPayload $actualPayload)
   Assert-True ($payloadDiff.Count -eq 0) ('installed payload differs from whitelist: ' + ($payloadDiff | Out-String))
+  Assert-True ((Get-FileHash -LiteralPath (Join-Path $dest 'scripts\delta-booster.ps1') -Algorithm SHA256).Hash -eq
+    (Get-FileHash -LiteralPath (Join-Path $root 'scripts\delta-booster.ps1') -Algorithm SHA256).Hash) `
+    'installed engine payload differs from the locally tested RequestFile fix'
   $uninstallText = [IO.File]::ReadAllText((Join-Path $dest 'uninstall.ps1'))
   Assert-True ($uninstallText -notmatch '是否保留优化备份') 'ordinary uninstall still offers protected-backup deletion'
   Assert-True ($uninstallText -notmatch 'Remove-TreeNoFollow\s+\$protectedBackup') 'ordinary uninstall can still recursively delete protected backups'

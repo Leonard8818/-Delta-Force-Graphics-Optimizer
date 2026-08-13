@@ -641,9 +641,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
+- 修复未选择显卡伪装型号时，管理员引擎错误提示 GpuSpoofModel 参数验证失败的问题。
 - 修复管理员引擎启动时错误提示「-RequestFile 不能与其他动作或业务参数同时使用」的问题。
 - 修复执行优化时错误提示「优化请求包含还原参数」的问题。
-- 修复打开还原设置时错误提示「还原目录查询不能与复原项目或指定备份同时使用」的问题。
 '@
 $manifestObj = [ordered]@{
   # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让

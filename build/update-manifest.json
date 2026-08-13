@@ -1,9 +1,9 @@
 {
-    "version":  "0.22.7",
+    "version":  "0.22.8",
     "minimumSupportedVersion":  "0.22.3",
-    "notes":  "- 修复管理员引擎启动时错误提示「-RequestFile 不能与其他动作或业务参数同时使用」的问题。\n- 修复执行优化时错误提示「优化请求包含还原参数」的问题。\n- 修复打开还原设置时错误提示「还原目录查询不能与复原项目或指定备份同时使用」的问题。",
+    "notes":  "- 修复未选择显卡伪装型号时，管理员引擎错误提示 GpuSpoofModel 参数验证失败的问题。\n- 修复管理员引擎启动时错误提示「-RequestFile 不能与其他动作或业务参数同时使用」的问题。\n- 修复执行优化时错误提示「优化请求包含还原参数」的问题。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "32f7783b831f91f52d064f7f097bed69d181b37eddf41cfe71b5be1928c72e1c",
+    "sha256":  "e839e26f60c9acfa3008834fca581ed9dc575bb428696b4e1272ccd6c0369701",
     "size":  888832
 }

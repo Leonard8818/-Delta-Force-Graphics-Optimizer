@@ -4233,7 +4233,10 @@ if ($RequestFile) {
   $Items = [string[]]@($engineRequest.ItemIds)
   $GamePath = $engineRequest.GamePath
   $Risky = [bool]$engineRequest.AllowRisky
-  $GpuSpoofModel = $engineRequest.GpuSpoofModel
+  # GpuSpoofModel 是带 ValidateSet 的脚本参数。Windows PowerShell 5.1 会在把
+  # $null/空串重新赋给该变量时再次执行验证并抛出 ValidateSetFailure；请求未指定
+  # 型号时保持参数原有的 $null，只在确有已校验型号时回填。
+  if ($engineRequest.GpuSpoofModel) { $GpuSpoofModel = $engineRequest.GpuSpoofModel }
   $BackupFile = $engineRequest.BackupFile
   $RestoreItems = [string[]]@($engineRequest.RestoreItemIds)
 }

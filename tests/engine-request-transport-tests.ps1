@@ -18,6 +18,9 @@ function Write-RequestFixture([string]$Path, $Document) {
 $tokens = $null; $errors = $null
 $guiAst = [Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$tokens, [ref]$errors)
 Assert-True ($errors.Count -eq 0) 'GUI PowerShell AST parse failed'
+$tokens = $null; $errors = $null
+$engineAst = [Management.Automation.Language.Parser]::ParseFile($enginePath, [ref]$tokens, [ref]$errors)
+Assert-True ($errors.Count -eq 0) 'engine PowerShell AST parse failed'
 $invokeFunctions = @($guiAst.FindAll({
   param($node)
   $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-ElevatedEngineAction'
@@ -31,6 +34,80 @@ foreach ($needle in "'-File'","'-RequestFile'",'Diagnostics.ProcessStartInfo','R
 }
 Assert-True ($invokeText.Contains('本次系统设置可能已部分执行') -and $invokeText.Contains('请不要重复点击')) `
   'missing-result path does not warn against an unsafe duplicate Apply'
+
+# RequestFile 没有显卡伪装型号时，不能把 JSON null/空串重新赋给带 ValidateSet 的
+# 顶层参数变量；Windows PowerShell 5.1 会在赋值时再次验证并抛出 ValidateSetFailure。
+$gpuRehydrateAssignments = @($engineAst.FindAll({
+  param($node)
+  $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$GpuSpoofModel' -and
+    $node.Right.Extent.Text -eq '$engineRequest.GpuSpoofModel'
+}, $true))
+Assert-True ($gpuRehydrateAssignments.Count -eq 1) 'GpuSpoofModel request rehydration assignment missing or duplicated'
+$gpuRehydrateGuard = $gpuRehydrateAssignments[0].Parent.Parent
+Assert-True ($gpuRehydrateGuard -is [Management.Automation.Language.IfStatementAst] -and
+  $gpuRehydrateGuard.Extent.Text -match '^if\s*\(\$engineRequest\.GpuSpoofModel\)') `
+  'GpuSpoofModel request rehydration is not guarded against null/empty optional values'
+$gpuRehydrateScript = [scriptblock]::Create(@"
+param(
+  [ValidateSet('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti',
+               'NVIDIA GeForce RTX 2050', 'NVIDIA GeForce RTX 2060', 'AMD Radeon RX560')]
+  [string]`$GpuSpoofModel,
+  `$engineRequest
+)
+$($gpuRehydrateGuard.Extent.Text)
+`$GpuSpoofModel
+"@)
+$nullGpu = & $gpuRehydrateScript -engineRequest ([pscustomobject]@{ GpuSpoofModel=$null })
+$emptyGpu = & $gpuRehydrateScript -engineRequest ([pscustomobject]@{ GpuSpoofModel='' })
+$validGpu = & $gpuRehydrateScript -engineRequest ([pscustomobject]@{ GpuSpoofModel='NVIDIA GeForce GTX 1050 Ti' })
+Assert-True (-not $nullGpu -and -not $emptyGpu -and
+  $validGpu -eq 'NVIDIA GeForce GTX 1050 Ti') `
+  'GpuSpoofModel optional request rehydration still triggers validation or drops a valid model'
+
+# 再执行完整的生产 RequestFile 入口块，而不只测试单条赋值。这样后续调整入口变量
+# 回填顺序时，Restore 目录查询的 null 型号和 Apply 的有效型号都会走真实参数约束。
+$requestFileBlocks = @($engineAst.EndBlock.Statements | Where-Object {
+  $_ -is [Management.Automation.Language.IfStatementAst] -and
+  $_.Clauses.Count -eq 1 -and $_.Clauses[0].Item1.Extent.Text -eq '$RequestFile'
+})
+Assert-True ($requestFileBlocks.Count -eq 1) 'top-level RequestFile dispatch block missing or duplicated'
+$requestFileHarness = [scriptblock]::Create(@"
+[CmdletBinding()]
+$($engineAst.ParamBlock.Extent.Text)
+function Import-EngineActionRequest([string]`$Path) { `$global:DfbEngineRequestFixture }
+$($requestFileBlocks[0].Extent.Text)
+[pscustomobject]@{
+  Apply=[bool]`$Apply; Restore=[bool]`$Restore; ListRestoreItems=[bool]`$ListRestoreItems
+  GpuSpoofModel=`$GpuSpoofModel; ItemIds=[string[]]@(`$Items)
+}
+"@)
+try {
+  $global:DfbEngineRequestFixture = [pscustomobject]@{
+    ResultFile='C:\fixture-result.json';ResultId=[guid]::NewGuid().ToString('D')
+    UserSid='S-1-5-21-1-2-3-1001';UserLocalAppData='C:\Users\Fixture\AppData\Local'
+    UserStateRoot='C:\ProgramData\DeltaForceBooster\users\S-1-5-21-1-2-3-1001'
+    Action='Restore';ListRestoreItems=$true;ItemIds=[string[]]@();GamePath=$null
+    AllowRisky=$false;GpuSpoofModel=$null;BackupFile=$null;RestoreItemIds=[string[]]@()
+  }
+  $restoreHydrated = & $requestFileHarness -RequestFile 'C:\fixture-request.json'
+  Assert-True ($restoreHydrated.ListRestoreItems -and -not $restoreHydrated.Restore -and
+    -not $restoreHydrated.Apply -and -not $restoreHydrated.GpuSpoofModel) `
+    'full Restore request rehydration failed with an omitted GpuSpoofModel'
+
+  $global:DfbEngineRequestFixture.Action = 'Apply'
+  $global:DfbEngineRequestFixture.ListRestoreItems = $false
+  $global:DfbEngineRequestFixture.ItemIds = [string[]]@('game-mode')
+  $global:DfbEngineRequestFixture.GpuSpoofModel = 'NVIDIA GeForce GTX 1050 Ti'
+  $applyHydrated = & $requestFileHarness -RequestFile 'C:\fixture-request.json'
+  Assert-True ($applyHydrated.Apply -and -not $applyHydrated.Restore -and
+    $applyHydrated.GpuSpoofModel -eq 'NVIDIA GeForce GTX 1050 Ti' -and
+    @($applyHydrated.ItemIds).Count -eq 1) `
+    'full Apply request rehydration changed a valid GpuSpoofModel'
+} finally {
+  Remove-Variable DfbEngineRequestFixture -Scope Global -ErrorAction SilentlyContinue
+  $script:EngineResultFile = $null
+}
 
 # 必须通过真实 Windows PowerShell 5.1 -File 参数绑定路径回归。点源测试不会复现脚本级
 # 未绑定 [string[]] 参数在 @($Items).Count 中变成 1 的行为，正是这次实机故障漏测的原因。
