@@ -27,17 +27,23 @@ public sealed class DfbRangeRetryServer : IDisposable {
   private readonly int stallMilliseconds;
   private readonly int successfulRequest;
   private readonly int maximumRequests;
+  private readonly int busyRequests;
   private readonly List<string> ranges = new List<string>();
   private volatile bool stopping;
   private int requestCount;
 
   public DfbRangeRetryServer(byte[] payload, int slowChunkBytes, int stallMilliseconds,
-      int successfulRequest, int maximumRequests) {
+      int successfulRequest, int maximumRequests)
+      : this(payload, slowChunkBytes, stallMilliseconds, successfulRequest, maximumRequests, 0) { }
+
+  public DfbRangeRetryServer(byte[] payload, int slowChunkBytes, int stallMilliseconds,
+      int successfulRequest, int maximumRequests, int busyRequests) {
     this.payload = payload;
     this.slowChunkBytes = slowChunkBytes;
     this.stallMilliseconds = stallMilliseconds;
     this.successfulRequest = successfulRequest;
     this.maximumRequests = maximumRequests;
+    this.busyRequests = busyRequests;
     listener = new TcpListener(IPAddress.Loopback, 0);
     listener.Start();
     Port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -89,6 +95,13 @@ public sealed class DfbRangeRetryServer : IDisposable {
             ReadHeaders(stream, out range);
             lock (ranges) { ranges.Add(range); }
             int current = Interlocked.Increment(ref requestCount);
+            if (current <= busyRequests) {
+              byte[] busy = Encoding.ASCII.GetBytes(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+              stream.Write(busy, 0, busy.Length);
+              stream.Flush();
+              continue;
+            }
             long start = ParseStart(range);
             if (start < 0 || start >= payload.LongLength) {
               byte[] invalid = Encoding.ASCII.GetBytes("HTTP/1.1 416 Range Not Satisfiable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -168,6 +181,32 @@ function Protect-BoosterStaging {
 }
 
 try {
+  # 下载入口临时返回 429 时自动遵从 Retry-After 重试，不向用户暴露 GetResponse 内部异常。
+  $busyPayload = New-TestPayload 98317
+  $busySha = Get-TestSha256 $busyPayload
+  $busyServer = [DfbRangeRetryServer]::new($busyPayload, 8192, 0, 2, 2, 1)
+  try {
+    $busyState = @{ Received = 0L; Total = [long]$busyPayload.Length; Phase = ''; Error = ''; File = ''; Cancel = $false; Done = $false }
+    Invoke-BoosterSetupDownload -SetupUrl $busyServer.Url -Sha256 $busySha -Size $busyPayload.Length -State $busyState `
+      -TimeoutMs 1000 -MaxAttempts 3 -RetryDelayMs 50
+    Assert-True ($busyState.Phase -eq 'done' -and $busyState.Done) 'HTTP 429 did not recover to a completed download'
+    Assert-True ([int]$busyState.RetryCount -eq 1 -and $busyServer.RequestCount -eq 2) 'HTTP 429 retry count is wrong'
+    Assert-True ($busyState.Error -notmatch '(?i)GetResponse|Too Many Requests|429') 'HTTP 429 exposed a raw WebException'
+    Assert-True ((Test-Path -LiteralPath $busyState.File -PathType Leaf) -and (Get-FileHash -LiteralPath $busyState.File).Hash -eq $busySha) `
+      'HTTP 429 retry failed final byte/hash verification'
+  } finally { $busyServer.Dispose() }
+
+  $busyFailedServer = [DfbRangeRetryServer]::new($busyPayload, 8192, 0, 0, 2, 2)
+  try {
+    $busyFailedState = @{ Received = 0L; Total = [long]$busyPayload.Length; Phase = ''; Error = ''; File = ''; Cancel = $false; Done = $false }
+    Invoke-BoosterSetupDownload -SetupUrl $busyFailedServer.Url -Sha256 $busySha -Size $busyPayload.Length -State $busyFailedState `
+      -TimeoutMs 1000 -MaxAttempts 2 -RetryDelayMs 50
+    Assert-True ($busyFailedState.Phase -eq 'failed' -and $busyFailedState.Done) 'persistent HTTP 429 did not enter failed state'
+    Assert-True ($busyFailedState.Error -like '*下载服务器持续繁忙*已自动尝试 2 次*' -and
+      $busyFailedState.Error -notmatch '(?i)GetResponse|Too Many Requests|使用.*参数调用') `
+      'persistent HTTP 429 did not produce a user-friendly error'
+  } finally { $busyFailedServer.Dispose() }
+
   # 第一次响应只发送一段后停顿，触发与用户现场相同的 Read 超时；第二次必须带 Range 续传。
   $payload = New-TestPayload 196731
   $sha = Get-TestSha256 $payload

@@ -499,11 +499,41 @@ function New-BoosterRetryableDownloadException {
   $e
 }
 
+function Get-BoosterHttpStatusCode([Exception]$Exception) {
+  $cursor = $Exception
+  while ($cursor) {
+    if ($cursor -is [Net.WebException] -and $cursor.Response -is [Net.HttpWebResponse]) {
+      try { return [int]$cursor.Response.StatusCode } catch { return 0 }
+    }
+    $cursor = $cursor.InnerException
+  }
+  0
+}
+
+function Get-BoosterHttpRetryDelayMs {
+  param([Exception]$Exception, [int]$DefaultMs)
+  $cursor = $Exception
+  while ($cursor) {
+    if ($cursor -is [Net.WebException] -and $cursor.Response -is [Net.HttpWebResponse]) {
+      $raw = "$($cursor.Response.Headers['Retry-After'])".Trim()
+      $seconds = 0
+      if ($raw -and [int]::TryParse($raw, [ref]$seconds)) {
+        return [Math]::Max(250, [Math]::Min(10000, $seconds * 1000))
+      }
+      break
+    }
+    $cursor = $cursor.InnerException
+  }
+  [Math]::Max(0, $DefaultMs)
+}
+
 function Test-BoosterRetryableDownloadException([Exception]$Exception) {
   $cursor = $Exception
   while ($cursor) {
     if ($cursor.Data -and $cursor.Data.Contains('DeltaForceBooster.RetryableDownload')) { return $true }
     if ($cursor -is [Net.WebException]) {
+      $httpStatus = Get-BoosterHttpStatusCode $cursor
+      if ($httpStatus -in @(408, 425, 429, 500, 502, 503, 504)) { return $true }
       return $cursor.Status -in @(
         [Net.WebExceptionStatus]::ConnectFailure,
         [Net.WebExceptionStatus]::ConnectionClosed,
@@ -778,6 +808,7 @@ function Invoke-BoosterSetupDownload {
       $attempt++
       $requestedOffset = [long]$State.Received
       $resp = $null; $inStream = $null; $retryError = $null
+      $retryable = $false; $retryHttpStatus = 0; $retryDelay = $RetryDelayMs
       try {
         if ($outStream.Length -ne $requestedOffset) { throw '本地下载进度与临时文件长度不一致' }
         $outStream.Position = $requestedOffset
@@ -834,6 +865,19 @@ function Invoke-BoosterSetupDownload {
         }
       } catch {
         $retryError = $_.Exception
+        $retryable = Test-BoosterRetryableDownloadException $retryError
+        $retryHttpStatus = Get-BoosterHttpStatusCode $retryError
+        $retryDelay = Get-BoosterHttpRetryDelayMs -Exception $retryError -DefaultMs $RetryDelayMs
+        # ProtocolError carries a response object even though GetResponse threw.  Close
+        # it after capturing status/Retry-After or repeated 429 responses leak sockets.
+        $errorCursor = $retryError
+        while ($errorCursor) {
+          if ($errorCursor -is [Net.WebException] -and $errorCursor.Response) {
+            try { $errorCursor.Response.Close() } catch {}
+            break
+          }
+          $errorCursor = $errorCursor.InnerException
+        }
       } finally {
         try { if ($inStream) { $inStream.Close() } } catch {}
         try { if ($resp) { $resp.Close() } } catch {}
@@ -841,14 +885,21 @@ function Invoke-BoosterSetupDownload {
 
       if ($State.Done) { break }
       if ($retryError) {
-        if (-not (Test-BoosterRetryableDownloadException $retryError)) { throw $retryError }
+        if (-not $retryable) { throw $retryError }
         if ($State.Cancel) { & $finish 'cancelled' '已取消下载'; break }
         if ($attempt -ge $MaxAttempts) {
+          if ($retryHttpStatus -eq 429 -or $retryHttpStatus -eq 503) {
+            throw "下载服务器持续繁忙（已自动尝试 $MaxAttempts 次）。请稍后重试，或改为打开下载页。"
+          }
           throw "网络连接在下载过程中连续中断或超时（已自动尝试 $MaxAttempts 次）。请检查网络后重试，或改为打开下载页。"
         }
         $State.RetryCount = $attempt
-        $State.Status = "网络短暂中断，正在断点续传（重试 $attempt/$($MaxAttempts - 1)）…"
-        if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs $RetryDelayMs)) {
+        if ($retryHttpStatus -eq 429 -or $retryHttpStatus -eq 503) {
+          $State.Status = "下载服务器繁忙，正在自动重试（$attempt/$($MaxAttempts - 1)）…"
+        } else {
+          $State.Status = "网络短暂中断，正在断点续传（重试 $attempt/$($MaxAttempts - 1)）…"
+        }
+        if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs $retryDelay)) {
           & $finish 'cancelled' '已取消下载'
           break
         }
