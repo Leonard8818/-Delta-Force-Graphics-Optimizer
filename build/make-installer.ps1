@@ -687,7 +687,8 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 新增服务器排队下载：可查看前方人数与下载槽位，轮到后自动开始，不再让大量下载互相挤占。
+- 同时下载人数调整为 3，减少高峰期多人并发对单个下载速度的挤占。
+- 排队时只显示前方人数，并可随时取消；取消后会立即释放排队名额。
 - 下载读取超时或连接中断时，会按已接收字节自动断点续传；多次失败后显示明确的网络提示。
 '@
 $manifestObj = [ordered]@{

@@ -28,10 +28,14 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.5'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.5'") -and
-    $raw.Contains('Text="[ v0.23.0.5 ]"')) `
-  'the unified v0.23.0.5 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.6'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.6'") -and
+    $raw.Contains('Text="[ v0.23.0.6 ]"')) `
+  'the unified v0.23.0.6 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:UpdUi.CancelDlTxt.Text = '取消排队'") -and
+    $raw.Contains("'正在取消排队…'") -and
+    -not $raw.Contains('"前方 {0} 位 · {1}/{2} 槽位"')) `
+  'queued update UI does not expose cancellation or still displays the slot ratio'
 Assert-True ($raw.Contains('以下内容请进入BIOS按照教程手动操作。') -and
   -not $raw.Contains('以下问题本工具改不了，但按教程手动处理并不难：')) `
   'health-check BIOS guidance still uses the old wording'

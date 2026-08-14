@@ -11,7 +11,7 @@ function New-QueuePayload {
   param([string]$Ticket, [string]$State, [int]$Position, [int]$Ahead, [string]$DownloadUrl = '')
   [pscustomobject]@{
     ok = $true; ticket = $Ticket; state = $State; position = $Position; ahead = $Ahead
-    active = 6; capacity = 6; retryAfter = 2; downloadUrl = $DownloadUrl
+    active = 3; capacity = 3; retryAfter = 2; downloadUrl = $DownloadUrl
   }
 }
 
@@ -19,6 +19,7 @@ function Get-BoosterDownloadQueueEndpoints([string]$SetupUrl) {
   [pscustomobject]@{
     Join = 'https://df.ltz88.cn/report/download-queue/join'
     Status = 'https://df.ltz88.cn/report/download-queue/status'
+    Cancel = 'https://df.ltz88.cn/report/download-queue/cancel'
   }
 }
 
@@ -27,8 +28,8 @@ $script:QueueRequests = @()
 $script:QueueWaits = @()
 $script:CancelQueueOnWait = $false
 function Invoke-BoosterQueueJsonRequest {
-  param([string]$Url, [string]$Method = 'GET', [int]$TimeoutMs = 5000)
-  $script:QueueRequests += [pscustomobject]@{ Url = $Url; Method = $Method; TimeoutMs = $TimeoutMs }
+  param([string]$Url, [string]$Method = 'GET', [int]$TimeoutMs = 5000, [string]$Body = '{}')
+  $script:QueueRequests += [pscustomobject]@{ Url = $Url; Method = $Method; TimeoutMs = $TimeoutMs; Body = $Body }
   if ($script:QueueResponses.Count -eq 0) { throw 'mock queue response exhausted' }
   $script:QueueResponses.Dequeue()
 }
@@ -63,7 +64,7 @@ Assert-True ($script:QueueRequests.Count -eq 3 -and $script:QueueRequests[0].Met
   'queue join/status request sequence is wrong'
 Assert-True ($script:QueueWaits.Count -eq 2 -and $script:QueueWaits[0] -eq 2000) `
   'queue did not honor the server polling interval'
-Assert-True ($state.QueueAhead -eq 0 -and $state.QueueActive -eq 6 -and $state.QueueCapacity -eq 6) `
+Assert-True ($state.QueueAhead -eq 0 -and $state.QueueActive -eq 3 -and $state.QueueCapacity -eq 3) `
   'queue slot fields were not copied into shared GUI state'
 
 # An expired status ticket must transparently rejoin instead of exposing HTTP 404.
@@ -80,12 +81,20 @@ Assert-True ($resolved2 -eq $freshUrl -and $script:QueueRequests[2].Method -eq '
   'expired queue ticket was not rejoined'
 
 # Cancelling during the poll delay must stop without consuming another response.
-$script:QueueResponses.Clear(); $script:CancelQueueOnWait = $true
+$script:QueueResponses.Clear(); $script:QueueRequests = @(); $script:QueueWaits = @(); $script:CancelQueueOnWait = $true
 $script:QueueResponses.Enqueue([pscustomobject]@{ StatusCode = 200; Payload = New-QueuePayload $fresh queued 1 0 })
+$script:QueueResponses.Enqueue([pscustomobject]@{ StatusCode = 200; Payload = [pscustomobject]@{ ok = $true; cancelled = $true } })
 $cancelState = @{ Phase = ''; Status = ''; Cancel = $false }
 $cancelled = Wait-BoosterDownloadQueue -SetupUrl 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe' -State $cancelState
 Assert-True ($null -eq $cancelled -and $cancelState.Cancel -and $script:QueueResponses.Count -eq 0) `
   'queue cancellation did not stop during the polling delay'
+Assert-True ($script:QueueRequests.Count -eq 2 -and
+  $script:QueueRequests[1].Url -eq 'https://df.ltz88.cn/report/download-queue/cancel' -and
+  $script:QueueRequests[1].Method -eq 'POST' -and
+  ($script:QueueRequests[1].Body | ConvertFrom-Json).ticket -eq $fresh) `
+  'queue cancellation did not immediately release the server ticket'
+Assert-True ($cancelState.Status -notmatch '槽位|\d+/\d+') `
+  'queue status still exposes the server slot ratio'
 $script:CancelQueueOnWait = $false
 
 # A signed response may not switch to another path even on the allowlisted host.
@@ -98,4 +107,4 @@ try {
 } catch { $blocked = $_.Exception.Message }
 Assert-True ([bool]$blocked) 'queue accepted a signed URL for a different path'
 
-'PASS updater queue: FIFO polling, ticket renewal, GUI state and signed-path validation'
+'PASS updater queue: FIFO polling, ticket renewal, immediate cancellation and signed-path validation'

@@ -1,9 +1,10 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.5
+  DeltaForceBooster 图形界面 — v0.23.0.6
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.6：下载并发调整为 3；排队仅显示前方人数，并可取消排队后立即释放服务器票据。
   v0.23.0.5：安装包下载增加服务器排队位置与自动开始提示；网络读取超时或连接中断时按已接收字节
          自动续传，失败提示不再暴露底层 Read 调用异常。
   v0.23.0.4：修复部分环境中安装器把所有 NTFS 磁盘误判为不可用的问题；内置 LibreHardwareMonitor
@@ -488,8 +489,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.5'
-$script:DisplayVersion = '0.23.0.5'
+$script:GuiVersion = '0.23.0.6'
+$script:DisplayVersion = '0.23.0.6'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -856,7 +857,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.5 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.6 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1442,7 +1443,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.5 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.6 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -8377,14 +8378,16 @@ function Show-UpdateDialog($UpdInfo) {
     if ($script:UpdDlg.IsVisible -and $st.Phase -in @('queued','downloading')) {
       if ($st.Phase -eq 'queued') {
         $script:UpdUi.DlPhaseText.Text = $(if ($st.Cancel) { '正在取消排队…' } elseif ("$($st.Status)") { "$($st.Status)" } else { '正在进入服务器下载队列…' })
-        $script:UpdUi.DlSizeText.Text = $(if ([int]$st.QueueCapacity -gt 0) {
-          "前方 {0} 位 · {1}/{2} 槽位" -f ([int]$st.QueueAhead), ([int]$st.QueueActive), ([int]$st.QueueCapacity)
+        $script:UpdUi.DlSizeText.Text = $(if ([int]$st.QueuePosition -gt 0) {
+          "前方 {0} 位" -f ([int]$st.QueueAhead)
         } else { '正在获取排队位置' })
+        if (-not $st.Cancel) { $script:UpdUi.CancelDlTxt.Text = '取消排队' }
         $script:UpdUi.DlFill.Width = 0
       } else {
         $recv = [long]$st.Received; $totalB = [long]$st.Total
         $pct = $(if ($totalB -gt 0) { [Math]::Min(100, [Math]::Floor($recv * 100.0 / $totalB)) } else { 0 })
         $script:UpdUi.DlPhaseText.Text = $(if ($st.Cancel) { '正在取消下载…' } elseif ("$($st.Status)") { "$($st.Status)" } else { '正在下载更新…' })
+        if (-not $st.Cancel) { $script:UpdUi.CancelDlTxt.Text = '取消下载' }
         $script:UpdUi.DlSizeText.Text = "{0:N1} MB / {1:N1} MB · {2}%" -f ($recv / 1MB), ($totalB / 1MB), $pct
         $trackW = $script:UpdUi.DlTrack.ActualWidth - 2
         if ($trackW -gt 0) { $script:UpdUi.DlFill.Width = $trackW * $pct / 100 }
@@ -8459,7 +8462,7 @@ function Show-UpdateDialog($UpdInfo) {
     $script:DlState = [hashtable]::Synchronized(@{
       Received = 0L; Total = [long]$script:UpdDlgInfo.Size; Phase = 'queued'
       Status = '正在进入服务器下载队列…'; RetryCount = 0
-      QueuePosition = 0; QueueAhead = 0; QueueActive = 0; QueueCapacity = 0
+      QueuePosition = 0; QueueAhead = 0; QueueActive = 0; QueueCapacity = 0; QueueTicket = ''
       Error = ''; File = ''; Cancel = $false; Done = $false
     })
     foreach ($n in 'SkipChk','UpdBtn','GoBtn','LaterBtn') { $script:UpdUi[$n].Visibility = 'Collapsed' }
@@ -8470,7 +8473,7 @@ function Show-UpdateDialog($UpdInfo) {
     $script:UpdUi.DlFill.Width = 0
     $script:UpdUi.CancelDlBtn.Visibility = 'Visible'
     $script:UpdUi.CancelDlBtn.IsEnabled = $true
-    $script:UpdUi.CancelDlTxt.Text = '取消下载'
+    $script:UpdUi.CancelDlTxt.Text = '取消排队'
     Write-Log "开始下载更新包：$($script:UpdDlgInfo.SetupUrl)"
     # 下载放后台 runspace：白名单安检、SHA256/大小校验都在 Invoke-BoosterSetupDownload 里强制执行
     $ps = [PowerShell]::Create()
@@ -8489,10 +8492,11 @@ function Show-UpdateDialog($UpdInfo) {
   })
   $script:UpdUi.CancelDlBtn.Add_Click({
     if ($script:DlState -and -not $script:DlState.Done) {
+      $wasQueued = ($script:DlState.Phase -eq 'queued')
       $script:DlState.Cancel = $true
       $script:UpdUi.CancelDlBtn.IsEnabled = $false
       $script:UpdUi.CancelDlTxt.Text = '正在取消…'
-      $script:UpdUi.DlPhaseText.Text = '正在取消下载…'
+      $script:UpdUi.DlPhaseText.Text = $(if ($wasQueued) { '正在取消排队…' } else { '正在取消下载…' })
     }
   })
   $script:UpdUi.GoBtn.Add_Click({
