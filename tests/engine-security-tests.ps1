@@ -276,6 +276,8 @@ try {
   $didChange = [pscustomobject]@{ Ok=$true; Skipped=$false; Msg='已写入' }
   [void](Set-ApplyResultChangeState $didChange $true)
   Assert-True ($didChange.Changed -and -not $didChange.Skipped) '真实变更项必须标记 Changed=true'
+  Assert-True ($null -ne (Get-Command Get-ToolSchemeGuid -ErrorAction SilentlyContinue)) `
+    '诊断脚本依赖的工具专属电源方案只读入口缺失'
 
   $originalGetTaskXml = ${function:Get-TaskXml}
   try {
@@ -286,6 +288,25 @@ try {
     Assert-True (-not (Test-BoosterLockTask $script:LockTask)) '用户路径中的同名 powercfg.exe 不得被认为本工具计划任务'
     $script:TaskCommandForTest = $script:PowerCfgExe
     Assert-True (Test-BoosterLockTask $script:LockTask) '仅 System32 powercfg.exe + 严格 GUID 参数的任务可被认领'
+
+    $cleanupTaskName = "$script:PowerCleanupTaskPrefix-$('a' * 32)"
+    $cleanupScheme = '11111111-1111-4111-8111-111111111111'
+    $cleanupSetting = '4d2b0152-7d5c-498b-88e2-34345392a2c5'
+    $cleanupRegPath = "HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$cleanupScheme\$script:SubProc\$cleanupSetting"
+    $script:CleanupTaskCommandForTest = $script:RegExe
+    $script:CleanupTaskArgsForTest = "delete `"$cleanupRegPath`" /v ACSettingIndex /f"
+    $script:CleanupTaskUserForTest = 'S-1-5-18'
+    function Get-TaskXml([string]$TaskName) {
+      [xml]("<Task><Principals><Principal><UserId>$script:CleanupTaskUserForTest</UserId></Principal></Principals>" +
+        "<Actions><Exec><Command>$script:CleanupTaskCommandForTest</Command><Arguments>$script:CleanupTaskArgsForTest</Arguments></Exec></Actions></Task>")
+    }
+    Assert-True (Test-PowerOverrideCleanupTask $cleanupTaskName $cleanupRegPath) `
+      'SYSTEM 电源还原任务必须只认 System32 reg.exe、SYSTEM 主体和精确 ACSettingIndex 删除参数'
+    $script:CleanupTaskCommandForTest = Join-Path $temp 'reg.exe'
+    Assert-True (-not (Test-PowerOverrideCleanupTask $cleanupTaskName $cleanupRegPath)) '用户路径 reg.exe 不得被 SYSTEM 清理任务认领'
+    $script:CleanupTaskCommandForTest = $script:RegExe
+    $unknownRegPath = "HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$cleanupScheme\$script:SubProc\aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    Assert-True (-not (Test-PowerOverrideCleanupTask $cleanupTaskName $unknownRegPath)) 'SYSTEM 清理任务不得接受产品白名单外的电源项'
   } finally { Set-Item -Path Function:\Get-TaskXml -Value $originalGetTaskXml }
   $wrongExe = Join-Path $temp 'not-the-game.exe'
   [IO.File]::WriteAllText($wrongExe,'fixture')
@@ -352,6 +373,11 @@ try {
   $backupFail = [pscustomobject]@{ BackupError='disk'; Results=@() }
   Assert-True ((Get-ApplyExitCode $partial) -eq 2 -and (Get-ApplyExitCode $backupFail) -eq 3) 'Apply 失败必须返回约定的 2/3'
   Assert-True ((Get-RestoreExitCode ([pscustomobject]@{Failed=@('x')})) -eq 4) 'Restore 不完整必须返回 4'
+  Assert-True ($engineText.Contains("`$definition.Principal.UserId = 'SYSTEM'") -and
+    $engineText.Contains('$action.Path = $script:RegExe') -and
+    $engineText.Contains('Test-PowerOverrideCleanupTask $taskName $registryPath') -and
+    $engineText.Contains('$taskRoot.DeleteTask($taskName, 0)')) `
+    'SYSTEM 电源清理必须固定 SYSTEM 主体/System32 reg.exe，并在运行前校验、运行后删除任务'
 
   $cacheRoot = Join-Path $temp 'cache'
   $outside = Join-Path $temp 'outside'

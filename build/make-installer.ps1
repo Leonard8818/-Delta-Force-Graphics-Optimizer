@@ -687,16 +687,18 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 同时下载人数调整为 3，减少高峰期多人并发对单个下载速度的挤占。
-- 排队时只显示前方人数，并可随时取消；取消后会立即释放排队名额。
-- 下载读取超时或连接中断时，会按已接收字节自动断点续传；多次失败后显示明确的网络提示。
+- 完善「全部还原」，可自动处理历史版本遗留的电源设置；受系统限制时会安全切换到 Windows「平衡」，避免反复还原失败。
+- 优化电源方案隔离，后续只调整工具专属方案，不影响用户或电脑品牌自带方案。
+- 网吧 / 公共电脑与个人电脑的启动选择更加直观。
+- 下载排队增加预计等待时间。
+- 本版本包含关键还原修复，旧版本需完成更新后继续使用。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。
   version  = "$ver"
   displayVersion = "$displayVer"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.22.3'
+  minimumSupportedVersion = '0.23.0.7'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

@@ -134,10 +134,10 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
 
 ```json
 {
-  "version": "0.23.0.0",
-  "displayVersion": "0.23.0.0",
-  "minimumSupportedVersion": "0.22.3",
-  "notes": "- 新增实时硬件状态与显示器信息；修正 CPU 监控口径并记住窗口高度。",
+  "version": "0.23.0.7",
+  "displayVersion": "0.23.0.7",
+  "minimumSupportedVersion": "0.23.0.7",
+  "notes": "- 本版本包含关键还原修复，旧版本需完成更新后继续使用。",
   "url": "https://df.ltz88.cn/",
   "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
   "sha256": "（安装包的 SHA256，小写十六进制，构建脚本自动填）",

@@ -72,6 +72,25 @@ try {
     $path
   }
 
+  function New-TestV3PowerSettingBackup([string]$SchemeGuid, [string]$Setting,
+                                        [string]$Label = 'fixture power setting') {
+    $doc = New-BackupDocument ([DateTime]::UtcNow)
+    $doc.State = 'complete'
+    $opId = [guid]::NewGuid().ToString('D')
+    $doc.Items = @([pscustomobject][ordered]@{
+      ItemId='power-tuning';RestoreGroupId='power-tuning';DisplayName='电源计划隐藏项深度调优'
+      DefinitionHash=('c' * 64);RebootRequired=$true;OpIds=@($opId)
+    })
+    $doc.Ops = @([pscustomobject][ordered]@{
+      Id=$opId;Status='applied';ApplyId=$doc.ApplyId;ItemId='power-tuning';RestoreGroupId='power-tuning'
+      OpIndex=0;Kind='pcfg';Sub=$script:SubProc;Setting=$Setting;Label=$Label
+      Existed=$false;OldValue=$null;SchemeGuid=$SchemeGuid
+    })
+    $path = Join-Path $script:BackupDir ("backup-$($doc.BackupId).json")
+    Write-BackupDocumentAtomic $path $doc
+    $path
+  }
+
   Initialize-ProtectedStore
   # power/sched 等项目没有 Ops。PowerShell 5.1 的 @($null) 仍会迭代一次，定义哈希必须
   # 显式跳过 null；否则实际执行 power-ultimate 会在备份阶段报空值方法异常。
@@ -82,12 +101,142 @@ try {
   Assert-True ($powerRecord.ItemId -eq 'power-ultimate' -and $powerRecord.DefinitionHash -match '^[0-9a-f]{64}$') `
     '没有 Ops 的电源项目必须能够生成 schema v3 备份项目记录'
 
+  Assert-True ((Test-ManagedPowerSetting $script:SubProc '4d2b0152-7d5c-498b-88e2-34345392a2c5') -and
+    -not (Test-ManagedPowerSetting $script:SubProc 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')) `
+    'SYSTEM 电源还原目标必须限制在产品实际管理的隐藏项白名单'
+
+  $originalGetPowerSchemesForOwnership = ${function:Get-PowerSchemes}
+  $originalInvokeSchemeActivateForOwnership = ${function:Invoke-SchemeActivate}
+  try {
+    $script:OwnershipActiveGuid = '11111111-2222-4333-8444-555555555555'
+    $script:OwnershipToolGuid = '66666666-7777-4888-8999-aaaaaaaaaaaa'
+    $script:OwnershipActivateCalls = New-Object System.Collections.Generic.List[string]
+    function Get-PowerSchemes {
+      @(
+        [pscustomobject]@{Guid=$script:OwnershipActiveGuid;Name='Ultimate Performance';Active=($script:OwnershipActiveGuid -eq $script:OwnershipCurrentGuid)},
+        [pscustomobject]@{Guid=$script:OwnershipToolGuid;Name=$script:ToolSchemeName;Active=($script:OwnershipToolGuid -eq $script:OwnershipCurrentGuid)}
+      )
+    }
+    function Invoke-SchemeActivate([string]$SchemeGuid) {
+      [void]$script:OwnershipActivateCalls.Add($SchemeGuid)
+      $script:OwnershipCurrentGuid = $SchemeGuid
+      $true
+    }
+    $script:OwnershipCurrentGuid = $script:OwnershipActiveGuid
+    $foreignState = Get-ItemState @{Kind='power'}
+    $isolated = Enable-UltimateScheme
+    $toolState = Get-ItemState @{Kind='power'}
+    Assert-True (-not $foreignState.Optimized -and $isolated.Guid -eq $script:OwnershipToolGuid -and
+      (@($script:OwnershipActivateCalls.ToArray()) -join ',') -eq $script:OwnershipToolGuid -and $toolState.Optimized) `
+      '用户/OEM Ultimate 方案必须被视为待隔离，执行时只可复用工具专属方案'
+  } finally {
+    Set-Item -LiteralPath Function:\Get-PowerSchemes -Value $originalGetPowerSchemesForOwnership
+    Set-Item -LiteralPath Function:\Invoke-SchemeActivate -Value $originalInvokeSchemeActivateForOwnership
+  }
+
+  $originalGetOptItemsForIsolation = ${function:Get-OptItems}
+  $originalFindGamePathForIsolation = ${function:Find-GamePath}
+  $originalGetActiveSchemeForIsolation = ${function:Get-ActiveScheme}
+  try {
+    function Find-GamePath { $null }
+    function Get-ActiveScheme { [pscustomobject]@{Guid='11111111-2222-4333-8444-555555555555';Name='Ultimate Performance';Active=$true} }
+    function Get-OptItems([string]$GamePath,[string]$GpuSpoofModel) {
+      @(@{Id='power-tuning';Tier='safe';Name='电源计划隐藏项深度调优';Admin=$true;Default=$true;Kind='multi';Reboot=$true
+          Ops=@(@{Kind='pcfg';Sub=$script:SubProc;Setting='4d2b0152-7d5c-498b-88e2-34345392a2c5';Value=5000;Label='fixture'})})
+    }
+    $backupCountBeforeIsolationReject = @(Get-ChildItem -LiteralPath $script:BackupDir -Filter 'backup-*.json' -ErrorAction SilentlyContinue).Count
+    $isolatedApplyRejected = $false
+    try { [void](Invoke-Apply @('power-tuning') $null $false $null $null) }
+    catch { $isolatedApplyRejected = $_.Exception.Message -like '*需要同时执行*工具专属方案*' }
+    $backupCountAfterIsolationReject = @(Get-ChildItem -LiteralPath $script:BackupDir -Filter 'backup-*.json' -ErrorAction SilentlyContinue).Count
+    Assert-True ($isolatedApplyRejected -and $backupCountAfterIsolationReject -eq $backupCountBeforeIsolationReject) `
+      '手动只选 power-tuning 时必须在备份和系统写入前拒绝污染非工具电源方案'
+  } finally {
+    Set-Item -LiteralPath Function:\Get-OptItems -Value $originalGetOptItemsForIsolation
+    Set-Item -LiteralPath Function:\Find-GamePath -Value $originalFindGamePathForIsolation
+    Set-Item -LiteralPath Function:\Get-ActiveScheme -Value $originalGetActiveSchemeForIsolation
+  }
+
   $restoreOrder = @(Get-RestoreExecutionOps @(
     [pscustomobject]@{Kind='reg';Name='late-reg'}, [pscustomobject]@{Kind='pcfg';Name='power-setting'},
     [pscustomobject]@{Kind='power';Name='active-plan'}, [pscustomobject]@{Kind='sched';Name='plan-lock'}
   ))
   Assert-True ((@($restoreOrder | ForEach-Object Kind) -join ',') -eq 'sched,power,reg,pcfg') `
     '全部还原必须先删除电源锁定任务并回切活动方案，再处理电源隐藏项'
+
+  # 历史版本会把继承值写进用户现有 Ultimate 方案。管理员删除受 ACL 拒绝时必须自动
+  # 提升到一次性 SYSTEM 清理；若 SYSTEM 也被策略拦截，则自动切平衡并消费备份。
+  $originalRemovePowerOverride = ${function:Remove-PowerSettingAcOverride}
+  $originalRemovePowerOverrideSystem = ${function:Remove-PowerSettingAcOverrideAsSystem}
+  $originalGetPowerExplicit = ${function:Get-PowerSettingAcExplicit}
+  $originalGetActiveSchemeForLegacy = ${function:Get-ActiveScheme}
+  $originalGetPowerSchemesForLegacy = ${function:Get-PowerSchemes}
+  $originalInvokeSchemeActivateForLegacy = ${function:Invoke-SchemeActivate}
+  try {
+    $script:LegacyPowerState = @{}
+    $script:LegacyPowerSystemCalls = 0
+    $script:LegacyPowerSystemFails = $false
+    $script:LegacyPowerActiveGuid = ''
+    function Get-LegacyPowerKey([string]$SchemeGuid,[string]$Sub,[string]$Setting) { "$SchemeGuid|$Sub|$Setting".ToLowerInvariant() }
+    function Get-PowerSettingAcExplicit([string]$SchemeGuid,[string]$Sub,[string]$Setting) {
+      $key = Get-LegacyPowerKey $SchemeGuid $Sub $Setting
+      if ($script:LegacyPowerState.ContainsKey($key)) { return $script:LegacyPowerState[$key] }
+      $null
+    }
+    function Remove-PowerSettingAcOverride([string]$SchemeGuid,[string]$Sub,[string]$Setting) { throw 'fixture administrator ACL denied' }
+    function Remove-PowerSettingAcOverrideAsSystem([string]$SchemeGuid,[string]$Sub,[string]$Setting) {
+      $script:LegacyPowerSystemCalls++
+      if ($script:LegacyPowerSystemFails) { throw 'fixture SYSTEM task blocked' }
+      [void]$script:LegacyPowerState.Remove((Get-LegacyPowerKey $SchemeGuid $Sub $Setting))
+    }
+    function Get-ActiveScheme {
+      if (-not $script:LegacyPowerActiveGuid) { return $null }
+      [pscustomobject]@{Guid=$script:LegacyPowerActiveGuid;Name=$(if($script:LegacyPowerActiveGuid -eq $script:BalancedGuid){'平衡'}else{'Ultimate Performance'});Active=$true}
+    }
+    function Get-PowerSchemes {
+      @(
+        [pscustomobject]@{Guid=$script:LegacyPowerCustomGuid;Name='Ultimate Performance';Active=($script:LegacyPowerActiveGuid -eq $script:LegacyPowerCustomGuid)},
+        [pscustomobject]@{Guid=$script:BalancedGuid;Name='平衡';Active=($script:LegacyPowerActiveGuid -eq $script:BalancedGuid)}
+      )
+    }
+    function Invoke-SchemeActivate([string]$SchemeGuid) {
+      if ($SchemeGuid -notin @($script:LegacyPowerCustomGuid,$script:BalancedGuid)) { return $false }
+      $script:LegacyPowerActiveGuid = $SchemeGuid
+      $true
+    }
+
+    $setting = '4d2b0152-7d5c-498b-88e2-34345392a2c5'
+    $script:LegacyPowerCustomGuid = '12345678-1234-4234-8234-1234567890ab'
+    $script:LegacyPowerActiveGuid = $script:LegacyPowerCustomGuid
+    $script:LegacyPowerState[(Get-LegacyPowerKey $script:LegacyPowerCustomGuid $script:SubProc $setting)] = 5000
+    $systemRepairPath = New-TestV3PowerSettingBackup $script:LegacyPowerCustomGuid $setting
+    $systemRepair = Invoke-Restore $systemRepairPath
+    $systemRepairRetry = Invoke-Restore $systemRepairPath
+    Assert-True ($systemRepair.Failed.Count -eq 0 -and $systemRepair.RestoredOps -eq 1 -and
+      $systemRepair.Skipped.Count -eq 0 -and $script:LegacyPowerSystemCalls -eq 1 -and
+      $systemRepair.RebootItemIds -contains 'power-tuning' -and
+      $systemRepair.RebootItems -contains '电源计划隐藏项深度调优' -and
+      (Test-Path -LiteralPath $systemRepair.Receipt) -and $systemRepairRetry.RestoredOps -eq 0) `
+      '管理员 ACL 拒绝时必须经 SYSTEM 精确清理、返回重启项目并保持重复还原幂等'
+
+    $script:LegacyPowerCustomGuid = 'abcdefab-cdef-4abc-8def-abcdefabcdef'
+    $script:LegacyPowerActiveGuid = $script:LegacyPowerCustomGuid
+    $script:LegacyPowerState[(Get-LegacyPowerKey $script:LegacyPowerCustomGuid $script:SubProc $setting)] = 5000
+    $script:LegacyPowerSystemFails = $true
+    $fallbackRepairPath = New-TestV3PowerSettingBackup $script:LegacyPowerCustomGuid $setting
+    $fallbackRepair = Invoke-Restore $fallbackRepairPath
+    Assert-True ($fallbackRepair.Failed.Count -eq 0 -and $fallbackRepair.RestoredOps -eq 0 -and
+      $fallbackRepair.Skipped.Count -eq 1 -and $fallbackRepair.Skipped[0] -like '*Windows「平衡」*' -and
+      $script:LegacyPowerActiveGuid -eq $script:BalancedGuid -and (Test-Path -LiteralPath $fallbackRepair.Receipt)) `
+      'SYSTEM 精确清理受策略拦截时必须自动切平衡并结束还原循环'
+  } finally {
+    Set-Item -LiteralPath Function:\Remove-PowerSettingAcOverride -Value $originalRemovePowerOverride
+    Set-Item -LiteralPath Function:\Remove-PowerSettingAcOverrideAsSystem -Value $originalRemovePowerOverrideSystem
+    Set-Item -LiteralPath Function:\Get-PowerSettingAcExplicit -Value $originalGetPowerExplicit
+    Set-Item -LiteralPath Function:\Get-ActiveScheme -Value $originalGetActiveSchemeForLegacy
+    Set-Item -LiteralPath Function:\Get-PowerSchemes -Value $originalGetPowerSchemesForLegacy
+    Set-Item -LiteralPath Function:\Invoke-SchemeActivate -Value $originalInvokeSchemeActivateForLegacy
+  }
 
   $originalGetPowerSchemes = ${function:Get-PowerSchemes}
   $originalInvokeSchemeActivate = ${function:Invoke-SchemeActivate}

@@ -133,6 +133,8 @@ $script:EngineMutexName = 'Global\DeltaForceBooster.Engine'
 $script:PowerCfgExe = Join-Path $script:System32 'powercfg.exe'
 $script:BcdEditExe = Join-Path $script:System32 'bcdedit.exe'
 $script:SchTasksExe = Join-Path $script:System32 'schtasks.exe'
+$script:RegExe = Join-Path $script:System32 'reg.exe'
+$script:PowerCleanupTaskPrefix = 'DeltaForceBooster-RestorePowerOverride'
 
 # ---------- 基础工具 ----------
 
@@ -605,10 +607,16 @@ $script:UltimateGuid = 'e9a42b02-d5df-448d-aa00-03f14749eb61'
 # 工具自建方案的专属名：用户可能自建过任意名字的方案（实测有人的方案就叫「4060」），
 # 新建的方案必须一眼能认出来自本工具，避免与用户自己维护的方案混淆
 $script:ToolSchemeName = '三角洲优化 · 卓越性能'
-# 电源计划是系统全局对象；直接从受保护的系统配置按专属名称定位，不再从
-# 目标用户可写的 LocalAppData 读写 GUID，避免提权进程与用户目录产生 TOCTOU。
+
+function Test-ToolPowerScheme($Scheme) {
+  [bool]($Scheme -and "$($Scheme.Guid)" -ine $script:UltimateGuid -and
+         "$($Scheme.Name)" -ceq $script:ToolSchemeName)
+}
+
+# 诊断脚本与旧扩展仍使用这个只读入口；来源始终是受保护的系统电源方案列表，
+# 不再依赖用户目录里的历史 GUID 记录。
 function Get-ToolSchemeGuid {
-  @(Get-PowerSchemes | Where-Object { $_.Name -eq $script:ToolSchemeName } | Select-Object -First 1).Guid
+  @((Get-PowerSchemes) | Where-Object { Test-ToolPowerScheme $_ } | Select-Object -First 1).Guid
 }
 
 # 方案名在注册表里是资源引用串 "@...powrprof.dll,-19,Ultimate Performance"，
@@ -687,24 +695,33 @@ function Invoke-RestorePowerScheme([string]$OriginalGuid) {
   throw "$originalReason；$fallbackReason"
 }
 
+function Invoke-BalancedPowerFallback([string]$Reason) {
+  $schemes = @(Get-PowerSchemes)
+  $balanced = @($schemes | Where-Object { $_.Guid -ieq $script:BalancedGuid } | Select-Object -First 1)
+  $active = @($schemes | Where-Object Active | Select-Object -First 1)
+  if ($active.Count -gt 0 -and $active[0].Guid -ieq $script:BalancedGuid) {
+    return [pscustomobject]@{ Guid=$script:BalancedGuid; Exact=$false; Message="$Reason；当前已使用 Windows「平衡」安全方案" }
+  }
+  if ($balanced.Count -gt 0 -and (Invoke-SchemeActivate $script:BalancedGuid)) {
+    return [pscustomobject]@{ Guid=$script:BalancedGuid; Exact=$false; Message="$Reason；已自动切换到 Windows「平衡」安全方案" }
+  }
+  $out = "$script:LastActivateOut"
+  $why = $(if ($balanced.Count -eq 0) { 'Windows「平衡」方案不存在' }
+    elseif ($out) { "Windows「平衡」方案激活失败（powercfg 原话：$out）" }
+    else { 'Windows「平衡」方案激活后回读未生效' })
+  throw "$Reason；$why"
+}
+
 function Enable-UltimateScheme {
   # 实机结论（i5-12600KF / Win11 22631）：卓越性能 GUID e9a42b02 在多数非工作站版上只是
   # 注册表里可见的「模板」，直接 setactive 会失败，必须 duplicatescheme 实例化后才能激活。
-  # 因此候选按「工具自建实例 → 名字匹配的其他实例 → 模板本身」排序逐个试激活（每次都
-  # 回读校验），全部失败才实例化新方案——保证反复执行复用现成方案、不堆积
+  # 深度调优会在活动方案里写隐藏值，因此这里只复用本工具专属方案；用户/OEM 已有的
+  # Ultimate 方案必须保持原样，不能因为显示名相似就直接拿来修改。
   $schemes = @(Get-PowerSchemes)
   $cands = New-Object System.Collections.Generic.List[object]
-  $toolGuid = Get-ToolSchemeGuid
-  if ($toolGuid) {
-    $t = $schemes | Where-Object { $_.Guid -ieq $toolGuid } | Select-Object -First 1
-    if ($t) { [void]$cands.Add($t) }
-  }
   foreach ($s in $schemes) {
-    if ($s.Guid -ne $script:UltimateGuid -and $s.Name -match '卓越|Ultimate' -and
-        -not ($cands | Where-Object { $_.Guid -ieq $s.Guid })) { [void]$cands.Add($s) }
+    if (Test-ToolPowerScheme $s) { [void]$cands.Add($s) }
   }
-  $tpl = $schemes | Where-Object { $_.Guid -eq $script:UltimateGuid } | Select-Object -First 1
-  if ($tpl) { [void]$cands.Add($tpl) }
 
   # 同类方案堆了多个时提示用户可手动清理；绝不自动删除（可能正被用户使用）
   $note = $null
@@ -774,20 +791,33 @@ function Get-PowerSettingAcExplicit([string]$SchemeGuid, [string]$Sub, [string]$
   $null
 }
 
-# 还原「原本无显式值」的电源项：删除方案下的设置子键，回到继承默认态。
-# 写一个猜出来的数字会把继承关系永久改成显式覆盖，所以必须删键而不是写值。
+function Test-ManagedPowerSetting([string]$Sub, [string]$Setting) {
+  (($Sub -ieq $script:SubUsb -and $Setting -ieq 'd4e98f31-5ffe-4ce1-be31-1b38b384c009') -or
+   ($Sub -ieq $script:SubProc -and $Setting -iin @(
+     '4d2b0152-7d5c-498b-88e2-34345392a2c5',
+     '93b8b6dc-0698-4d1c-9ee4-0644e900c85d',
+     'bae08b81-2d5e-4688-ad6a-13243356654b')))
+}
+
+# 还原「原本无显式值」的电源项：只删除 ACSettingIndex，回到继承默认态。
+# 不能删整个 Setting 子键：同一键里可能有用户原有的 DCSettingIndex（电池模式）。
+# 写一个猜出来的数字也会把继承关系永久改成显式覆盖，所以必须删值而不是写值。
 function Remove-PowerSettingAcOverride([string]$SchemeGuid, [string]$Sub, [string]$Setting) {
   if (-not $SchemeGuid) {
     $act = Get-ActiveScheme
     if (-not $act) { throw '无法确定要还原的电源方案' }
     $SchemeGuid = $act.Guid
   }
-  $base, $parent = Split-RegPath "$script:PuRoot\$SchemeGuid\$Sub"
-  $k = $base.OpenSubKey($parent, $true)
-  if ($k) { try { $k.DeleteSubKeyTree($Setting, $false) } finally { $k.Close() } }
-  # 改的是活动方案时要重新 setactive 才即时生效；非活动方案执行这句无害
-  $ErrorActionPreference = 'SilentlyContinue'
-  & $script:PowerCfgExe /setactive SCHEME_CURRENT 2>&1 | Out-Null
+  $base, $path = Split-RegPath "$script:PuRoot\$SchemeGuid\$Sub\$Setting"
+  $k = $base.OpenSubKey($path, $true)
+  if ($k) { try { $k.DeleteValue('ACSettingIndex', $false) } finally { $k.Close() } }
+  if ($null -ne (Get-PowerSettingAcExplicit $SchemeGuid $Sub $Setting)) {
+    throw '删除电源项显式值后回读验证失败'
+  }
+  $active = Get-ActiveScheme
+  if ($active -and "$($active.Guid)" -ieq $SchemeGuid -and -not (Invoke-SchemeActivate $SchemeGuid)) {
+    throw "电源项已删除，但刷新活动方案失败（powercfg 原话：$script:LastActivateOut）"
+  }
 }
 
 # 解除隐藏，返回原 Attributes 值供还原用；已可见则返回 $null
@@ -882,6 +912,93 @@ function Get-TaskXml([string]$TaskName) {
   $out = & $script:SchTasksExe /Query /TN $TaskName /XML 2>&1
   if ($LASTEXITCODE -ne 0) { return $null }
   try { [xml](@($out) -join "`r`n") } catch { $null }
+}
+
+function Test-PowerOverrideCleanupTask([string]$TaskName, [string]$RegistryPath) {
+  if ($TaskName -notmatch ('^' + [regex]::Escape($script:PowerCleanupTaskPrefix) + '-[0-9a-f]{32}$')) { return $false }
+  $targetRx = '^HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes\\(' +
+    $script:GuidRx + ')\\(' + $script:GuidRx + ')\\(' + $script:GuidRx + ')$'
+  if ($RegistryPath -notmatch $targetRx -or -not (Test-ManagedPowerSetting $Matches[2] $Matches[3])) { return $false }
+  $xml = Get-TaskXml $TaskName
+  if (-not $xml) { return $false }
+  $cmd = $xml.SelectSingleNode("//*[local-name()='Exec']/*[local-name()='Command']")
+  $arg = $xml.SelectSingleNode("//*[local-name()='Exec']/*[local-name()='Arguments']")
+  $user = $xml.SelectSingleNode("//*[local-name()='Principal']/*[local-name()='UserId']")
+  if (-not $cmd -or -not $arg -or -not $user) { return $false }
+  try { $commandPath = [IO.Path]::GetFullPath("$($cmd.InnerText)".Trim().Trim('"')) } catch { return $false }
+  $expectedArgs = ('delete "{0}" /v ACSettingIndex /f' -f $RegistryPath)
+  [bool]($commandPath -ieq [IO.Path]::GetFullPath($script:RegExe) -and
+         "$($arg.InnerText)".Trim() -ieq $expectedArgs -and
+         "$($user.InnerText)".Trim() -iin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18'))
+}
+
+# PowerSchemes 的 ACL 在部分 Windows 版本上只授予 SYSTEM 写权限。管理员直删失败时，
+# 建立一次性、严格白名单化的 SYSTEM 任务，仅删除目标 Setting 下的 ACSettingIndex；
+# 不改 ACL、不接收任意命令，并在执行后无条件清理任务。
+function Remove-PowerSettingAcOverrideAsSystem([string]$SchemeGuid, [string]$Sub, [string]$Setting) {
+  $parsed = [guid]::Empty
+  if (-not (Test-Admin) -or -not [guid]::TryParseExact($SchemeGuid, 'D', [ref]$parsed) -or
+      -not (Test-ManagedPowerSetting $Sub $Setting)) {
+    throw 'SYSTEM 电源项清理目标未通过白名单校验'
+  }
+  if ($null -eq (Get-PowerSettingAcExplicit $SchemeGuid $Sub $Setting)) { return }
+
+  $taskName = '{0}-{1}' -f $script:PowerCleanupTaskPrefix, [guid]::NewGuid().ToString('N')
+  $registryPath = "HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$SchemeGuid\$Sub\$Setting"
+  $taskArgs = ('delete "{0}" /v ACSettingIndex /f' -f $registryPath)
+  $created = $false
+  $taskService = $null; $taskRoot = $null; $definition = $null; $action = $null
+  $registeredTask = $null; $runningTask = $null
+  try {
+    $taskService = New-Object -ComObject 'Schedule.Service'
+    $taskService.Connect()
+    $taskRoot = $taskService.GetFolder('\')
+    $definition = $taskService.NewTask(0)
+    $definition.RegistrationInfo.Description = 'DeltaForceBooster one-time power override restore'
+    $definition.RegistrationInfo.Author = 'DeltaForceBooster'
+    $definition.Principal.UserId = 'SYSTEM'
+    $definition.Principal.LogonType = 5       # TASK_LOGON_SERVICE_ACCOUNT
+    $definition.Principal.RunLevel = 1       # TASK_RUNLEVEL_HIGHEST
+    $definition.Settings.AllowDemandStart = $true
+    $definition.Settings.Enabled = $true
+    $definition.Settings.ExecutionTimeLimit = 'PT1M'
+    $definition.Settings.DisallowStartIfOnBatteries = $false
+    $definition.Settings.StopIfGoingOnBatteries = $false
+    $action = $definition.Actions.Create(0)  # TASK_ACTION_EXEC
+    $action.Path = $script:RegExe
+    $action.Arguments = $taskArgs
+    # TASK_CREATE=2；随机任务名已确保不覆盖任何现有任务。
+    $registeredTask = $taskRoot.RegisterTaskDefinition($taskName, $definition, 2, 'SYSTEM', $null, 5, $null)
+    $created = $true
+    if (-not (Test-PowerOverrideCleanupTask $taskName $registryPath)) {
+      throw 'SYSTEM 电源还原任务创建后安全校验失败'
+    }
+    $runningTask = $registeredTask.Run($null)
+
+    $cleared = $false
+    for ($i = 0; $i -lt 100; $i++) {
+      if ($null -eq (Get-PowerSettingAcExplicit $SchemeGuid $Sub $Setting)) { $cleared = $true; break }
+      Start-Sleep -Milliseconds 100
+    }
+    if (-not $cleared) { throw 'SYSTEM 电源还原任务执行后显式值仍然存在' }
+
+    $active = Get-ActiveScheme
+    if ($active -and "$($active.Guid)" -ieq $SchemeGuid -and -not (Invoke-SchemeActivate $SchemeGuid)) {
+      throw "显式值已清理，但刷新活动方案失败（powercfg 原话：$script:LastActivateOut）"
+    }
+  } finally {
+    if ($created -and $taskRoot) {
+      try { $taskRoot.DeleteTask($taskName, 0) } catch {
+        $ErrorActionPreference = 'SilentlyContinue'
+        & $script:SchTasksExe /Delete /TN $taskName /F 2>&1 | Out-Null
+      }
+    }
+    $taskStillExists = [bool]($created -and (Get-TaskXml $taskName))
+    foreach ($com in @($runningTask,$registeredTask,$action,$definition,$taskRoot,$taskService)) {
+      if ($com) { try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) } catch {} }
+    }
+    if ($taskStillExists) { throw 'SYSTEM 电源还原任务执行后清理失败' }
+  }
 }
 
 function Test-BoosterLockTask([string]$TaskName) {
@@ -2479,12 +2596,9 @@ function Get-OpState($Op, $ItemId) {
 function Get-ItemState($Item) {
   if ($Item.Kind -eq 'power') {
     $act = Get-ActiveScheme
-    # 判定不能只靠显示名：工具自建的方案挂的是专属名，按 GUID（原生卓越/工具自建）优先，
-    # 名字匹配只作兜底——否则改名后会「明明成功了却永远显示待优化」
-    $toolGuid = Get-ToolSchemeGuid
-    return @{ Optimized = [bool]($act -and ($act.Guid -eq $script:UltimateGuid -or
-                                            ($toolGuid -and $act.Guid -eq $toolGuid) -or
-                                            $act.Name -match '卓越|Ultimate'))
+    # 只有工具专属方案才算本项已就绪。用户/OEM 的 Ultimate 虽然性能档位相同，仍需先
+    # 隔离到工具方案，避免后续隐藏项深度调优污染用户原方案而难以精确还原。
+    return @{ Optimized = (Test-ToolPowerScheme $act)
               Current   = $(if ($act) { $act.Name } else { '未知' }) }
   }
   if ($Item.Kind -eq 'sched') {
@@ -2923,8 +3037,7 @@ function Assert-BackupOperation($Op, [int]$SchemaVersion, [string]$AllowedLocalA
       }
     }
     'pcfg' {
-      $valid = (($Op.Sub -ieq $script:SubUsb -and $Op.Setting -ieq 'd4e98f31-5ffe-4ce1-be31-1b38b384c009') -or
-                ($Op.Sub -ieq $script:SubProc -and $Op.Setting -iin @('4d2b0152-7d5c-498b-88e2-34345392a2c5','93b8b6dc-0698-4d1c-9ee4-0644e900c85d','bae08b81-2d5e-4688-ad6a-13243356654b')))
+      $valid = Test-ManagedPowerSetting "$($Op.Sub)" "$($Op.Setting)"
       $g = [guid]::Empty
       if (-not $valid -or -not [guid]::TryParse("$($Op.SchemeGuid)", [ref]$g)) { throw '备份电源项目标不在白名单' }
       $badOld = $(if ($Op.Existed -is [bool] -and $Op.Existed) { -not (Test-JsonInteger $Op.OldValue ([int32]::MinValue) ([uint32]::MaxValue)) } else { $null -ne $Op.OldValue })
@@ -3289,6 +3402,9 @@ function Invoke-ApplyOp($Op, $ItemId, [scriptblock]$PrepareBackup, [scriptblock]
       }
       $act = Get-ActiveScheme
       if (-not $act) { throw "无法确定当前活动电源方案：$($Op.Label)" }
+      if ($ItemId -eq 'power-tuning' -and -not (Test-ToolPowerScheme $act)) {
+        throw '活动电源方案不是本工具专属方案，已停止写入以保护用户原电源方案'
+      }
       # 只看方案下的显式值：读不到不是错误，就是「继承默认」（duplicatescheme 出来的
       # 方案不在 DefaultPowerSchemeValues 表里，连回落值都没有）。当前值只服务于备份，
       # 备份记 Existed=$false 即可，绝不能因为读不到就拒绝写入
@@ -3390,6 +3506,15 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
   $sel = @($items | Where-Object { $ItemIds -contains $_.Id })
   if ($sel.Count -eq 0) { throw "没有匹配的优化项，请用 -ListItems 查看可用 Id" }
 
+  # 隐藏电源项只能写入工具专属方案。内置方案顺序会先执行 power-ultimate；手动只选
+  # power-tuning 时则在任何备份或系统写入发生前明确中止，避免再次污染用户方案。
+  $activeBeforeApply = Get-ActiveScheme
+  if (@($sel | Where-Object Id -eq 'power-tuning').Count -gt 0 -and
+      @($sel | Where-Object Id -eq 'power-ultimate').Count -eq 0 -and
+      -not (Test-ToolPowerScheme $activeBeforeApply)) {
+    throw '电源隐藏项深度调优需要同时执行「电源计划切换到卓越性能」，以便使用可完整还原的工具专属方案'
+  }
+
   $riskySel = @($sel | Where-Object { $_.Tier -eq 'risky' })
   if ($riskySel.Count -gt 0 -and -not $AllowRisky) {
     throw "选中了高风险项，需要显式加 -Risky 确认：$(@($riskySel | ForEach-Object { $_.Name }) -join '、')"
@@ -3471,11 +3596,10 @@ function Invoke-Apply([string[]]$ItemIds, [string]$GamePath, [bool]$AllowRisky, 
     if ($Progress) { try { & $Progress ([pscustomobject]@{ Stage = 'start'; Index = $seq; Total = $total; Name = $it.Name; Result = $null }) } catch {} }
     try {
       if ($it.Kind -eq 'power') {
-        # 已是卓越性能类方案就不再切换也不备份（判定口径与 Get-ItemState 一致）：
-        # 否则重复执行会把「卓越性能」当原方案记进备份，还原时切不回真正的原方案
+        # 只复用工具专属方案。用户/OEM 的 Ultimate 也要先备份并切走，确保隐藏调优
+        # 全部落在工具方案里，还原时能原封不动切回用户原方案。
         $act = Get-ActiveScheme
-        $toolGuid = Get-ToolSchemeGuid
-        if ($act -and ($act.Guid -eq $script:UltimateGuid -or ($toolGuid -and $act.Guid -eq $toolGuid) -or $act.Name -match '卓越|Ultimate')) {
+        if (Test-ToolPowerScheme $act) {
           $results += [pscustomobject]@{ Id = $it.Id; Name = $it.Name; Ok = $true; Skipped = $false; Msg = "当前已是「$($act.Name)」，无需切换" }
         } else {
           if (-not $act) { throw '无法确定当前活动电源计划' }
@@ -4037,7 +4161,8 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
   $state = Get-ValidatedRestoreRecords $File $false
   if ($state.AlreadyConsumed) {
     return [pscustomobject]@{ Mode='all'; File=$File; Files=@($File); MergedCount=1; RestoredOps=0
-      Failed=@(); Skipped=@(); Notes=@($state.Notes); Receipt=$null }
+      Failed=@(); Skipped=@(); Notes=@($state.Notes); RestoredItemIds=@(); RebootItems=@();
+      RebootItemIds=@(); ApplyIds=@(); Receipt=$null }
   }
   $restoreNotes = @($state.Notes)
   $consumedSet = Get-ConsumedRestoreOpSet
@@ -4049,7 +4174,8 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
   if ($records.Count -eq 0) {
     if ($File) {
       return [pscustomobject]@{ Mode='all'; File=$File; Files=@($File); MergedCount=1; RestoredOps=0
-        Failed=@(); Skipped=@(); Notes=@('指定备份此前已完成还原，本次无需重复执行'); Receipt=$null }
+        Failed=@(); Skipped=@(); Notes=@('指定备份此前已完成还原，本次无需重复执行');
+        RestoredItemIds=@(); RebootItems=@(); RebootItemIds=@(); ApplyIds=@(); Receipt=$null }
     }
     throw "未找到尚未还原的备份$(if ($restoreNotes.Count -gt 0) { "（$($restoreNotes -join '；')）" })"
   }
@@ -4102,7 +4228,7 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
           }
         }
         'pcfg'    {
-          # Existed=$false：写入前方案里没有显式值（继承默认），删设置子键回到继承态。
+          # Existed=$false：写入前方案里没有显式值（继承默认），删 ACSettingIndex 回到继承态。
           # 旧版备份没有 Existed 字段（当年读不到值就不会写入），一律按显式值写回
           $hasExisted = [bool]$op.PSObject.Properties['Existed']
           if ($hasExisted -and -not $op.Existed) {
@@ -4110,26 +4236,33 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
               Remove-PowerSettingAcOverride "$($op.SchemeGuid)" $op.Sub $op.Setting
               $restored++
             } catch {
-              # 实机（i5-12600KF）踩实：PowerSchemes 键的 ACL 只给 SYSTEM 写权限，管理员组
-              # 只有 ReadKey，直删子键必被「不允许所请求的注册表访问权」拒掉。powercfg 写入
-              # 能成是因为它经电源服务（SYSTEM）代写。删不掉就退而求其次——
-              # 用 powercfg 把该项写回方案默认值：生效值与继承态完全一致，只是形式上从
-              # 「继承」变成了「显式等于默认」，对用户零影响
+              # PowerSchemes 在部分机器上仅 SYSTEM 可写。管理员直删失败后先用一次性、
+              # 严格白名单化的 SYSTEM 任务精确删值；历史受影响用户由此可一键完整还原。
               $guid = $(if ($op.SchemeGuid) { "$($op.SchemeGuid)" } else { (Get-ActiveScheme).Guid })
-              $def = Get-RegValue "$script:PsRoot\$($op.Sub)\$($op.Setting)\DefaultPowerSchemeValues\$guid" 'ACSettingIndex'
-              if ($null -ne $def) {
-                Set-PowerSettingAc $op.Sub $op.Setting ([int]$def) $guid
+              $directFailure = $_.Exception.Message
+              try {
+                Remove-PowerSettingAcOverrideAsSystem $guid $op.Sub $op.Setting
                 $restored++
-              } else {
-                # power/sched 已提前还原，此处必须读取“实际”活动方案，而不是根据备份猜
-                # 最终方案。实机出现过原方案失效，旧逻辑仍按预期 GUID 判定无影响，导致
-                # 工具方案实际保持活动却被写成“复原完成”。
-                $activeAfterPowerRestore = Get-ActiveScheme
-                $activeGuid = $(if ($activeAfterPowerRestore) { "$($activeAfterPowerRestore.Guid)" } else { '' })
-                if ($activeGuid -and ($guid -ine $activeGuid)) {
-                  $skippedOps += "$(Get-RestoreOpLabel $op)：跳过（残留设置当前位于非活动方案，对正在使用的电源方案无影响；若以后手动切回该方案会重新用上这些值）"
+              } catch {
+                $systemFailure = $_.Exception.Message
+                # SYSTEM 任务也被策略拦截时，内置方案仍可写回等效默认值；自定义方案没有
+                # 默认表，则自动切到“平衡”让残留立即失效。两条安全回退都作为提示消费备份，
+                # 避免用户每点一次还原都重复失败。
+                $def = Get-RegValue "$script:PsRoot\$($op.Sub)\$($op.Setting)\DefaultPowerSchemeValues\$guid" 'ACSettingIndex'
+                if ($null -ne $def) {
+                  Set-PowerSettingAc $op.Sub $op.Setting ([int]$def) $guid
+                  $skippedOps += "$(Get-RestoreOpLabel $op)：SYSTEM 精确清理未执行，已写回该方案默认值（效果等同原状态）"
                 } else {
-                  throw "无法清除该方案里的残留显式值（此注册表键仅系统账户可写，且该方案查不到默认值），该值仍留在当前活动方案（$guid）中"
+                  $activeAfterPowerRestore = Get-ActiveScheme
+                  $activeGuid = $(if ($activeAfterPowerRestore) { "$($activeAfterPowerRestore.Guid)" } else { '' })
+                  if ($activeGuid -and ($guid -ine $activeGuid)) {
+                    $skippedOps += "$(Get-RestoreOpLabel $op)：SYSTEM 精确清理未执行，残留位于非活动方案，对当前无影响；若以后手动切回该方案会重新用上这些值"
+                  } elseif ($activeGuid) {
+                    $fallback = Invoke-BalancedPowerFallback "目标方案 $guid 的继承值清理受系统策略拦截"
+                    $skippedOps += "$(Get-RestoreOpLabel $op)：$($fallback.Message)；残留已留在非活动方案"
+                  } else {
+                    throw "电源隐藏项精确清理失败且当前活动方案读取失败（管理员清理：$directFailure；SYSTEM 清理：$systemFailure）"
+                  }
                 }
               }
             }
@@ -4208,6 +4341,7 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
   [pscustomobject]@{ Mode='all'; File = $files[0]; Files = $files; MergedCount = @($files).Count
                      RestoredOps = $restored; Failed = $failed; Skipped = $skippedOps; Notes = $restoreNotes
                      RestoredItemIds = $(if ($allSucceeded) { @($activeV3 | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique) } else { @() })
+                     RebootItems = $(if ($allSucceeded) { @($activeV3 | Where-Object { $_.Item -and $_.Item.RebootRequired } | ForEach-Object { "$($_.Item.DisplayName)" } | Where-Object { $_ } | Select-Object -Unique) } else { @() })
                      RebootItemIds = $(if ($allSucceeded) { @($activeV3 | Where-Object { $_.Item -and $_.Item.RebootRequired } | ForEach-Object { "$($_.Op.ItemId)" } | Select-Object -Unique) } else { @() })
                      ApplyIds = @($activeV3 | ForEach-Object { "$($_.Op.ApplyId)" } | Select-Object -Unique)
                      Receipt=$receiptPath }

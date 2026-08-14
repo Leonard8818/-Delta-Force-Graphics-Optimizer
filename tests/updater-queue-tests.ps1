@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\updater.ps1')
@@ -8,10 +8,12 @@ function Assert-True([bool]$Condition, [string]$Message) {
 }
 
 function New-QueuePayload {
-  param([string]$Ticket, [string]$State, [int]$Position, [int]$Ahead, [string]$DownloadUrl = '')
+  param([string]$Ticket, [string]$State, [int]$Position, [int]$Ahead,
+        [string]$DownloadUrl = '', [int]$EstimatedWaitSeconds = 45)
   [pscustomobject]@{
     ok = $true; ticket = $Ticket; state = $State; position = $Position; ahead = $Ahead
     active = 3; capacity = 3; retryAfter = 2; downloadUrl = $DownloadUrl
+    estimatedWaitSeconds = $EstimatedWaitSeconds
   }
 }
 
@@ -95,6 +97,8 @@ Assert-True ($script:QueueRequests.Count -eq 2 -and
   'queue cancellation did not immediately release the server ticket'
 Assert-True ($cancelState.Status -notmatch '槽位|\d+/\d+') `
   'queue status still exposes the server slot ratio'
+Assert-True ($cancelState.QueueEstimatedWaitSeconds -eq 45 -and $cancelState.Status -match '预计约 45 秒') `
+  'queue status did not expose the server estimated wait time'
 $script:CancelQueueOnWait = $false
 
 # A signed response may not switch to another path even on the allowlisted host.

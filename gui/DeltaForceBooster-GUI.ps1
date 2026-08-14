@@ -1,10 +1,13 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.6
+  DeltaForceBooster 图形界面 — v0.23.0.7
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
-  v0.23.0.6：下载并发调整为 3；排队仅显示前方人数，并可取消排队后立即释放服务器票据。
+  v0.23.0.7：全部还原可自动处理历史电源设置残留，并在受限时安全切换到 Windows「平衡」；
+         优化电源方案隔离与重启提示；启动场景选择更直观；下载排队增加预计等待时间；
+         本版本包含关键还原修复，旧版本需完成更新后继续使用。
+  v0.23.0.6：下载并发调整为 3；排队显示前方人数与预计时间，并可取消后立即释放票据。
   v0.23.0.5：安装包下载增加服务器排队位置与自动开始提示；网络读取超时或连接中断时按已接收字节
          自动续传，失败提示不再暴露底层 Read 调用异常。
   v0.23.0.4：修复部分环境中安装器把所有 NTFS 磁盘误判为不可用的问题；内置 LibreHardwareMonitor
@@ -320,14 +323,10 @@ if ($script:RepairOnlySession -and -not $needsUacRepair) {
     '管理员启动 · 兼容模式', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
 }
 if ($needsUacRepair) {
-    $repairPrompt = $(if ($isBuiltInAdministrator) {
-      "检测到当前账户是 Windows 内置 Administrator（RID 500），并且 UAC 或此账户的「管理员审批模式」未开启。`n`n点击「是」：以网吧兼容模式继续，本次不修改安全策略，也不要求重启；核心优化与还原可用，用户缓存清理、显卡软件检测和外链入口会停用。`n点击「否」：开启 UAC 与管理员审批模式，保存后退出；设置在下次重启后生效。`n点击「取消」：不修改并退出。"
-    } else {
-      "检测到 Windows 的「用户账户控制（UAC）」已被关闭。`n`n点击「是」：以网吧兼容模式继续，本次不修改 UAC，也不要求重启；核心优化与还原可用，用户缓存清理、显卡软件检测和外链入口会停用。`n点击「否」：恢复 UAC，保存后退出；设置在下次重启后生效。`n点击「取消」：不修改并退出。"
-    })
+    $repairPrompt = "请根据这台电脑的使用场景选择：`n`n【网吧 / 公共电脑】点击「是」`n无需重启，直接进入软件；优化与还原功能正常使用，少数辅助功能暂时关闭。`n`n【个人电脑】点击「否」`n软件会完成必要设置并退出；重启电脑后重新打开，即可使用全部功能。`n`n【暂不处理】点击「取消」`n不做任何更改，直接退出软件。"
     $choice = [Windows.MessageBox]::Show(
       $repairPrompt,
-      '三角洲行动 · 画面优化助手', [Windows.MessageBoxButton]::YesNoCancel, [Windows.MessageBoxImage]::Warning)
+      '请选择使用场景', [Windows.MessageBoxButton]::YesNoCancel, [Windows.MessageBoxImage]::Warning)
     if ($choice -eq [Windows.MessageBoxResult]::Yes) {
       $script:NetCafeCompatibilityMode = $true
     } elseif ($choice -eq [Windows.MessageBoxResult]::No) {
@@ -489,8 +488,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.6'
-$script:DisplayVersion = '0.23.0.6'
+$script:GuiVersion = '0.23.0.7'
+$script:DisplayVersion = '0.23.0.7'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -857,7 +856,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.6 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.7 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1443,7 +1442,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.6 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.7 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -7879,9 +7878,9 @@ function Invoke-InlineRestoreAction([ValidateSet('selected_items','all')][string
         Write-Log "$(if ($itemResult.Ok) { '[复原成功]' } else { '[复原失败]' }) $($itemResult.Name) — $($itemResult.Message)"
       }
     } else {
-      $ui.ProgText.Text = "$(if ($failN -gt 0) { '全部复原未完成' } else { '全部复原完成' })：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项跳过（无实际影响）" })"
+      $ui.ProgText.Text = "$(if ($failN -gt 0) { '全部复原未完成' } else { '全部复原完成' })：$($r.RestoredOps) 项已还原 / $failN 项失败$(if ($skipN -gt 0) { " / $skipN 项带提示" })"
       $ui.ProgCount.Text = "备份：$bakName"
-      Write-Log "已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
+      Write-Log "本次已还原 $($r.RestoredOps) 项改动（备份：$($r.File)）"
     }
     foreach ($f in $r.Failed) { Write-Log "[还原失败] $f" }
     foreach ($s in $r.Skipped) { Write-Log "[还原跳过] $s" }
@@ -7894,7 +7893,7 @@ function Invoke-InlineRestoreAction([ValidateSet('selected_items','all')][string
              $(if ($failN -gt 0) { "`n`n$failN 个项目未复原；发生冲突或执行失败的项目保持原状，明细见运行日志。" } else { "`n`n其他未选项目保持不变。" })
     } else {
       $sum = "已按$(if ($r.MergedCount -gt 1) { "合并的 $($r.MergedCount) 份备份" } else { "备份「$bakName」" })还原 $($r.RestoredOps) 项改动。" +
-             $(if ($skipN -gt 0) { "`n`n$skipN 项跳过：工具自建电源方案里的残留设置，该方案已停用，无实际影响。" }) +
+             $(if ($skipN -gt 0) { "`n`n另有 $skipN 项未按原状写回或使用了安全回退，具体原因见运行日志。" }) +
              $(if ($failN -gt 0) { "`n`n有 $failN 项还原失败，对应改动仍留在系统中（备份已保留，可排查后重试还原），明细见运行日志。" }
                elseif ($skipN -gt 0) { "`n`n其余全部还原成功，各项已回到优化前的状态。" }
                else { "`n`n全部还原成功，各项已回到优化前的状态。" })
@@ -8379,7 +8378,11 @@ function Show-UpdateDialog($UpdInfo) {
       if ($st.Phase -eq 'queued') {
         $script:UpdUi.DlPhaseText.Text = $(if ($st.Cancel) { '正在取消排队…' } elseif ("$($st.Status)") { "$($st.Status)" } else { '正在进入服务器下载队列…' })
         $script:UpdUi.DlSizeText.Text = $(if ([int]$st.QueuePosition -gt 0) {
-          "前方 {0} 位" -f ([int]$st.QueueAhead)
+          $seconds = [Math]::Max(0, [int]$st.QueueEstimatedWaitSeconds)
+          $estimate = $(if ($seconds -ge 60) {
+            "预计约 {0} 分钟" -f ([Math]::Ceiling($seconds / 60.0))
+          } elseif ($seconds -gt 0) { "预计约 {0} 秒" -f $seconds } else { '正在估算' })
+          "前方 {0} 位 · {1}" -f ([int]$st.QueueAhead), $estimate
         } else { '正在获取排队位置' })
         if (-not $st.Cancel) { $script:UpdUi.CancelDlTxt.Text = '取消排队' }
         $script:UpdUi.DlFill.Width = 0
@@ -8462,7 +8465,8 @@ function Show-UpdateDialog($UpdInfo) {
     $script:DlState = [hashtable]::Synchronized(@{
       Received = 0L; Total = [long]$script:UpdDlgInfo.Size; Phase = 'queued'
       Status = '正在进入服务器下载队列…'; RetryCount = 0
-      QueuePosition = 0; QueueAhead = 0; QueueActive = 0; QueueCapacity = 0; QueueTicket = ''
+      QueuePosition = 0; QueueAhead = 0; QueueActive = 0; QueueCapacity = 0
+      QueueEstimatedWaitSeconds = 0; QueueTicket = ''
       Error = ''; File = ''; Cancel = $false; Done = $false
     })
     foreach ($n in 'SkipChk','UpdBtn','GoBtn','LaterBtn') { $script:UpdUi[$n].Visibility = 'Collapsed' }

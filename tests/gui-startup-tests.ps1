@@ -28,14 +28,15 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.6'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.6'") -and
-    $raw.Contains('Text="[ v0.23.0.6 ]"')) `
-  'the unified v0.23.0.6 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.7'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.7'") -and
+    $raw.Contains('Text="[ v0.23.0.7 ]"')) `
+  'the unified v0.23.0.7 version is missing or inconsistent'
 Assert-True ($raw.Contains("`$script:UpdUi.CancelDlTxt.Text = '取消排队'") -and
     $raw.Contains("'正在取消排队…'") -and
+    $raw.Contains('QueueEstimatedWaitSeconds') -and $raw.Contains('预计约 {0} 分钟') -and
     -not $raw.Contains('"前方 {0} 位 · {1}/{2} 槽位"')) `
-  'queued update UI does not expose cancellation or still displays the slot ratio'
+  'queued update UI does not expose cancellation/estimated time or still displays the slot ratio'
 Assert-True ($raw.Contains('以下内容请进入BIOS按照教程手动操作。') -and
   -not $raw.Contains('以下问题本工具改不了，但按教程手动处理并不难：')) `
   'health-check BIOS guidance still uses the old wording'
@@ -315,6 +316,9 @@ Assert-True ($restoreActionFunction.Extent.Text.Contains("ValidateSet('selected_
   $raw.Contains("`$ui.InlineRestoreAllBtn.Add_Click({ Invoke-InlineRestoreAction 'all' })") -and
   $raw.Contains('检测到后续修改的项目不会被选择性覆盖。')) `
   'inline restore buttons are not connected to selected/full protected restore actions'
+Assert-True ($restoreActionFunction.Extent.Text.Contains('@($r.RebootItems).Count') -and
+  $restoreActionFunction.Extent.Text.Contains('Show-RebootDialog @($r.RebootItems)')) `
+  'restore completion no longer forwards the engine reboot item names to the confirmation dialog'
 Assert-True ($restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { '还原未完成' } else { '还原完成' }") -and
   $restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { 'RESTORE INCOMPLETE' } else { 'RESTORE DONE' }") -and
   $restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { '全部复原未完成' } else { '全部复原完成' }")) `
@@ -398,9 +402,12 @@ Assert-True $repairText.Contains('Enable-UacForNextRestart -EnableBuiltInAdminis
 Assert-True $repairText.Contains('管理员审批模式') 'RID-500 recovery does not explain Administrator Approval Mode'
 Assert-True $repairText.Contains('软件不会自动重启') 'UAC recovery does not state that restart timing remains with the user'
 Assert-True ($repairText.Contains('$script:NetCafeCompatibilityMode = $true') -and
-  $repairText.Contains('本次不修改 UAC，也不要求重启') -and
-  $repairText.Contains('用户缓存清理、显卡软件检测和外链入口会停用')) `
-  'repair-only session does not offer the explicit no-restart net-cafe compatibility mode'
+  $repairText.Contains('【网吧 / 公共电脑】点击「是」') -and
+  $repairText.Contains('【个人电脑】点击「否」') -and
+  $repairText.Contains('【暂不处理】点击「取消」') -and
+  $repairText.Contains('少数辅助功能暂时关闭') -and
+  $repairText.Contains("'请选择使用场景'")) `
+  'repair-only session does not present the simplified usage-scenario choice'
 Assert-True ($repairText -match '(?s)MessageBoxResult\]::No.*Enable-UacForNextRestart.*exit') `
   'policy-repair choice does not exit after persisting restart-required UAC settings'
 Assert-True ($repairText -match '(?s)else \{ exit \}\s*\}') `

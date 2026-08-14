@@ -26,10 +26,20 @@ Assert-True ($stagingAclFunction -match 'GetAccessControl' -and
   'secure update staging does not re-read and verify the file ACL after writing it'
 $releaseManifest = Get-Content -LiteralPath (Join-Path $root 'build\update-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentVersion = [regex]::Match($guiText, "(?m)^\`$script:GuiVersion\s*=\s*'([0-9.]+)'\s*$").Groups[1].Value
-Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.22\.3'" -and
+Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.23\.0\.7'" -and
   "$($releaseManifest.version)" -eq $currentVersion -and "$($releaseManifest.displayVersion)" -eq $currentVersion -and
-  "$($releaseManifest.minimumSupportedVersion)" -eq '0.22.3') `
+  "$($releaseManifest.minimumSupportedVersion)" -eq $currentVersion) `
   'release manifest version or mandatory-upgrade floor is stale'
+$expectedReleaseNotes = @'
+- 完善「全部还原」，可自动处理历史版本遗留的电源设置；受系统限制时会安全切换到 Windows「平衡」，避免反复还原失败。
+- 优化电源方案隔离，后续只调整工具专属方案，不影响用户或电脑品牌自带方案。
+- 网吧 / 公共电脑与个人电脑的启动选择更加直观。
+- 下载排队增加预计等待时间。
+- 本版本包含关键还原修复，旧版本需完成更新后继续使用。
+'@
+Assert-True ("$($releaseManifest.notes)" -eq $expectedReleaseNotes -and
+  $installerBuildSource.Contains("`$manifestNotes = @'")) `
+  'v0.23.0.7 release notes are missing or inconsistent'
 $disclaimerText = [IO.File]::ReadAllText((Join-Path $root 'DISCLAIMER.md'))
 Assert-True ($disclaimerText -notmatch '自动寻找最佳配置|自动调优|experiments') `
   'usage notice still exposes automatic best-configuration Beta information'
@@ -39,7 +49,7 @@ $updaterPolicyDir = Join-Path $testBase 'updater-policy'
 [void][IO.Directory]::CreateDirectory($updaterPolicyDir)
 $policyManifestPath = Join-Path $updaterPolicyDir 'manifest.json'
 $policyManifest = [ordered]@{
-  version = $currentVersion; displayVersion = $currentVersion; minimumSupportedVersion = '0.22.3'; notes = '- test'
+  version = $currentVersion; displayVersion = $currentVersion; minimumSupportedVersion = $currentVersion; notes = '- test'
   url = 'https://df.ltz88.cn/'; setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'
   sha256 = ('0' * 64); size = 1
 }
@@ -47,12 +57,10 @@ $policyManifest = [ordered]@{
 $script:BoosterUserConfigDir = Join-Path $updaterPolicyDir 'config'
 . (Join-Path $root 'scripts\updater.ps1')
 Set-BoosterSkipVersion $currentVersion | Out-Null
-$mandatoryUpdate = Test-BoosterUpdate -CurrentVersion '0.22.2' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri
+$mandatoryUpdate = Test-BoosterUpdate -CurrentVersion '0.23.0.6' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri
 Assert-True ($mandatoryUpdate -and $mandatoryUpdate.Mandatory -and $mandatoryUpdate.CanInline -and
-  "$($mandatoryUpdate.MinimumSupportedVersion)" -eq '0.22.3' -and "$($mandatoryUpdate.DisplayVersion)" -eq $currentVersion) `
-  'v0.22.2 can skip or defer the mandatory current update'
-$optionalUpdate = Test-BoosterUpdate -CurrentVersion '0.22.3' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri -IncludeSkipped
-Assert-True ($optionalUpdate -and -not $optionalUpdate.Mandatory) 'v0.22.3 does not see the current release as an optional update'
+  "$($mandatoryUpdate.MinimumSupportedVersion)" -eq $currentVersion -and "$($mandatoryUpdate.DisplayVersion)" -eq $currentVersion) `
+  'the immediately previous release can skip or defer the mandatory current update'
 Assert-True ($null -eq (Test-BoosterUpdate -CurrentVersion $currentVersion -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri)) `
   'current release incorrectly detects itself as an update'
 $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))

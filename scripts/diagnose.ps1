@@ -40,7 +40,7 @@ $activeGuid = Get-RegValue $root 'ActivePowerScheme'
 $pcOut = & $script:PowerCfgExe /getactivescheme 2>&1
 "活动方案（powercfg 原话）: $("$pcOut".Trim())"
 "卓越性能模板(e9a42b02…)注册表键: $(if (Test-Path "$root\e9a42b02-d5df-448d-aa00-03f14749eb61") { '存在' } else { '不存在 —— 需要 duplicatescheme 创建' })"
-"工具自建方案 GUID 记录($script:ConfigDir\power-scheme.json): $(if (Get-Command Get-ToolSchemeGuid -EA SilentlyContinue) { $g0 = Get-ToolSchemeGuid; if ($g0) { $g0 } else { '（无记录）' } } else { '（引擎版本过旧，无此功能）' })"
+"工具专属电源方案 GUID: $(if (Get-Command Get-ToolSchemeGuid -EA SilentlyContinue) { $g0 = Get-ToolSchemeGuid; if ($g0) { $g0 } else { '（未创建）' } } else { '（引擎版本过旧，无此功能）' })"
 Write-Output "--- 全部方案（原始 FriendlyName / 解析后显示名）---"
 $base, $sub = Split-RegPath $root
 $k = $base.OpenSubKey($sub)

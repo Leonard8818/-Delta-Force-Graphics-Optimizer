@@ -1,7 +1,7 @@
 ﻿<#
   DeltaForceBooster 更新检查模块 — v0.8
   独立于优化引擎：负责「取清单 → 比版本 → 报告结果」+「带校验的内置下载」。
-  v0.8：排队时只显示前方人数；用户取消后立即通知服务器释放票据，下一位无需等待超时回收。
+  v0.8：排队时显示前方人数与服务器预计等待时间；用户取消后立即通知服务器释放票据。
   v0.7：官网安装包下载先进入服务器队列；获得名额后使用短时签名地址下载，并继续支持
         Range 断点续传。排队位置和重试状态都会回报给界面。
   v0.6：下载读取超时或连接中断时自动按已接收字节断点续传；有限重试耗尽后返回
@@ -626,6 +626,7 @@ function Wait-BoosterDownloadQueue {
   $State.Status = '正在进入服务器下载队列…'
   $State.QueuePosition = 0; $State.QueueAhead = 0
   $State.QueueActive = 0; $State.QueueCapacity = 0
+  $State.QueueEstimatedWaitSeconds = 0
   $State.QueueTicket = ''
 
   $releaseTicket = $true
@@ -676,6 +677,9 @@ function Wait-BoosterDownloadQueue {
       $State.QueueAhead = [Math]::Max(0, [int]$payload.ahead)
       $State.QueueActive = [Math]::Max(0, [int]$payload.active)
       $State.QueueCapacity = [Math]::Max(1, [int]$payload.capacity)
+      try {
+        $State.QueueEstimatedWaitSeconds = [Math]::Max(0, [Math]::Min(86400, [int]$payload.estimatedWaitSeconds))
+      } catch { $State.QueueEstimatedWaitSeconds = 0 }
       if ("$($payload.state)" -eq 'ready') {
         $downloadUrl = "$($payload.downloadUrl)"
         $verdict = Test-BoosterSetupUrl $downloadUrl
@@ -691,7 +695,12 @@ function Wait-BoosterDownloadQueue {
       }
       if ("$($payload.state)" -ne 'queued') { throw '排队服务器返回了未知状态' }
 
-      $State.Status = "服务器排队中：前方 $($State.QueueAhead) 位…"
+      $estimateText = $(if ([int]$State.QueueEstimatedWaitSeconds -ge 60) {
+        "预计约 $([Math]::Ceiling([int]$State.QueueEstimatedWaitSeconds / 60.0)) 分钟"
+      } elseif ([int]$State.QueueEstimatedWaitSeconds -gt 0) {
+        "预计约 $([int]$State.QueueEstimatedWaitSeconds) 秒"
+      } else { '正在估算等待时间' })
+      $State.Status = "服务器排队中：前方 $($State.QueueAhead) 位，$estimateText…"
       $retrySeconds = 2
       try { $retrySeconds = [Math]::Max(1, [Math]::Min(10, [int]$payload.retryAfter)) } catch {}
       if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs ($retrySeconds * 1000))) { return $null }
@@ -710,7 +719,8 @@ function Wait-BoosterDownloadQueue {
 # 同步函数，由界面层丢进后台 runspace 跑，进度经 Synchronized 哈希表回报——
 # PS 5.1 + WPF 下跨线程事件回调很脆，轮询共享状态最稳。
 # $State 键：Received/Total(字节)、Phase(queued|downloading|done|failed|cancelled)、
-#            Status/QueuePosition/QueueAhead/QueueActive/QueueCapacity/QueueTicket/RetryCount、
+#            Status/QueuePosition/QueueAhead/QueueActive/QueueCapacity/QueueEstimatedWaitSeconds/
+#            QueueTicket/RetryCount、
 #            Error、File(校验通过后的成品路径)、
 #            Cancel(界面置 $true 请求中止)、Done
 function Invoke-BoosterSetupDownload {
@@ -734,6 +744,7 @@ function Invoke-BoosterSetupDownload {
     $State.Status = '正在下载更新…'; $State.RetryCount = 0
     $State.QueuePosition = 0; $State.QueueAhead = 0
     $State.QueueActive = 0; $State.QueueCapacity = 0
+    $State.QueueEstimatedWaitSeconds = 0
     $State.QueueTicket = ''
     $State.Error = ''; $State.File = ''; $State.Done = $false
     $State.ExpectedSha256 = "$Sha256".ToUpperInvariant(); $State.ExpectedSize = $Size
