@@ -599,6 +599,7 @@ function Remove-RegValue([string]$Path, [string]$Name) {
 
 $script:GuidRx = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 
+$script:BalancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
 $script:UltimateGuid = 'e9a42b02-d5df-448d-aa00-03f14749eb61'
 
 # 工具自建方案的专属名：用户可能自建过任意名字的方案（实测有人的方案就叫「4060」），
@@ -650,6 +651,40 @@ function Invoke-SchemeActivate([string]$SchemeGuid) {
   if ($LASTEXITCODE -ne 0) { return $false }
   $now = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme'
   ("$now" -ieq $SchemeGuid)
+}
+
+# 原方案可能被 Armoury Crate、整机控制中心或用户在优化后删除。此时反复写回其他设置
+# 也不可能让那个 GUID 重新出现；继续把工具的卓越性能方案留在活动状态反而会让还原
+# 看似完成、实际仍带着激进电源参数。精确回切失败时优先退到 Windows 内置“平衡”，
+# 并把“非精确还原”作为结构化提示返回；平衡方案也不可用时仍按失败关闭。
+function Invoke-RestorePowerScheme([string]$OriginalGuid) {
+  $schemes = @(Get-PowerSchemes)
+  $originalExists = @($schemes | Where-Object { $_.Guid -ieq $OriginalGuid }).Count -gt 0
+  if (Invoke-SchemeActivate $OriginalGuid) {
+    return [pscustomobject]@{ Guid=$OriginalGuid; Exact=$true; Message=$null }
+  }
+
+  $originalOut = "$script:LastActivateOut"
+  $originalReason = $(if (-not $originalExists) {
+    "原电源方案 $OriginalGuid 已不存在"
+  } elseif ($originalOut) {
+    "原电源方案激活失败（powercfg 原话：$originalOut）"
+  } else { '原电源方案激活后回读未生效' })
+
+  $balanced = @($schemes | Where-Object { $_.Guid -ieq $script:BalancedGuid } | Select-Object -First 1)
+  if ($OriginalGuid -ine $script:BalancedGuid -and $balanced.Count -gt 0 -and
+      (Invoke-SchemeActivate $script:BalancedGuid)) {
+    return [pscustomobject]@{
+      Guid=$script:BalancedGuid; Exact=$false
+      Message="$originalReason；已切换到 Windows「平衡」作为安全回退，未精确恢复原方案"
+    }
+  }
+
+  $fallbackOut = "$script:LastActivateOut"
+  $fallbackReason = $(if ($balanced.Count -eq 0) { 'Windows「平衡」方案也不存在' }
+    elseif ($fallbackOut) { "Windows「平衡」方案激活失败（powercfg 原话：$fallbackOut）" }
+    else { 'Windows「平衡」方案激活后回读未生效' })
+  throw "$originalReason；$fallbackReason"
 }
 
 function Enable-UltimateScheme {
@@ -3619,6 +3654,17 @@ function Get-RestoreOpKey($op) {
   }
 }
 
+# 计划任务会每分钟把活动方案切回优化方案，因此先删锁定任务；随后先恢复/回退活动
+# 电源方案，后续 pcfg 才能根据“实际正在生效的方案”判断残留是否真的无影响。
+function Get-RestoreExecutionOps($Ops) {
+  $ordered = New-Object System.Collections.Generic.List[object]
+  foreach ($kind in @('sched','power')) {
+    foreach ($op in @($Ops | Where-Object { "$($_.Kind)" -eq $kind })) { [void]$ordered.Add($op) }
+  }
+  foreach ($op in @($Ops | Where-Object { "$($_.Kind)" -notin @('sched','power') })) { [void]$ordered.Add($op) }
+  @($ordered.ToArray())
+}
+
 function Get-RestoreReceiptCanonicalPayload($Receipt) {
   # PowerShell 7 会把 ConvertFrom-Json 读到的 ISO-8601 时间转成 DateTime；
   # 与备份文档使用相同的 UTC round-trip 表示，保证 5.1/7 复验一致。
@@ -4034,13 +4080,7 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
     $k = Get-RestoreOpKey $flat[$i]
     if (-not $k -or $lastIdx[$k] -eq $i) { $ops += $flat[$i] }
   }
-  # 先算出「还原全部完成后最终生效的方案」：pcfg 残留有没有实际影响只取决于它，而不是
-  # 方案是否为工具自建。还原是逆序执行的——pcfg 项执行时活动方案还没切回去（卓越性能
-  # 仍是活动方案），所以绝不能在循环里用「当前是否活动」判断。合并去重后 power 项至多
-  # 一条且取自最早备份，其 Old 就是优化前的真原方案；没有 power 项则维持当前活动方案
-  $finalSchemeGuid = $null
-  foreach ($o in $ops) { if ($o.Kind -eq 'power' -and $o.Old) { $finalSchemeGuid = "$($o.Old)"; break } }
-  if (-not $finalSchemeGuid) { $a = Get-ActiveScheme; if ($a) { $finalSchemeGuid = $a.Guid } }
+  $ops = @(Get-RestoreExecutionOps $ops)
   $restored = 0; $failed = @(); $skippedOps = @(); $seq = 0; $total = $ops.Count
   foreach ($op in $ops) {
     $seq++
@@ -4051,13 +4091,10 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
       if (@('pcfg', 'mmagent', 'hib', 'bcd') -contains $op.Kind -and -not (Test-Admin)) { throw '需要管理员权限' }
       switch ($op.Kind) {
         'power'   {
-          # 复用 Apply 方向的 Invoke-SchemeActivate：powercfg /setactive 失败只写 stderr
-          # 不抛终止错误（实机踩过被静默当成成功），必须回读确认，失败如实计入 Failed
           if ($op.Old) {
-            if (-not (Invoke-SchemeActivate "$($op.Old)")) {
-              throw "切回原电源方案失败$(if ($script:LastActivateOut) { "（powercfg 原话：$script:LastActivateOut）" } else { '' })"
-            }
-            $restored++
+            $powerRestore = Invoke-RestorePowerScheme "$($op.Old)"
+            if ($powerRestore.Exact) { $restored++ }
+            else { $skippedOps += "电源计划：$($powerRestore.Message)" }
           }
           # 工具自建的方案保留不删：用户可能已经在用它，静默删除是破坏性动作
           if ($op.ToolCreated) {
@@ -4084,16 +4121,15 @@ function Invoke-Restore([string]$File, [scriptblock]$Progress) {
                 Set-PowerSettingAc $op.Sub $op.Setting ([int]$def) $guid
                 $restored++
               } else {
-                # 默认表里只有三个内置方案 GUID，duplicatescheme 出来的方案（含工具自建、
-                # 也含用户/别的工具复制出来的卓越性能）都读不到默认值。残留显式值有没有
-                # 实际影响只看它是否留在最终生效方案里——实机踩过「按名字匹配激活的卓越
-                # 方案」被原先的工具自建判定漏掉、误报还原失败；最终方案判定天然覆盖工具
-                # 自建方案。真留在生效方案里才如实报错，且必须给人话（OpenSubKey 的原始
-                # 异常「不允许所请求的注册表访问权」用户完全无法定位）
-                if ($finalSchemeGuid -and ($guid -ine $finalSchemeGuid)) {
-                  $skippedOps += "$(Get-RestoreOpLabel $op)：跳过（残留设置在还原后不生效的方案里，对当前无影响；若以后手动切回该方案会重新用上这些值，不需要可在控制面板→电源选项里删除该方案）"
+                # power/sched 已提前还原，此处必须读取“实际”活动方案，而不是根据备份猜
+                # 最终方案。实机出现过原方案失效，旧逻辑仍按预期 GUID 判定无影响，导致
+                # 工具方案实际保持活动却被写成“复原完成”。
+                $activeAfterPowerRestore = Get-ActiveScheme
+                $activeGuid = $(if ($activeAfterPowerRestore) { "$($activeAfterPowerRestore.Guid)" } else { '' })
+                if ($activeGuid -and ($guid -ine $activeGuid)) {
+                  $skippedOps += "$(Get-RestoreOpLabel $op)：跳过（残留设置当前位于非活动方案，对正在使用的电源方案无影响；若以后手动切回该方案会重新用上这些值）"
                 } else {
-                  throw "无法清除该方案里的残留显式值（此注册表键仅系统账户可写，且该方案查不到默认值），该值仍留在还原后生效的方案（$guid）中"
+                  throw "无法清除该方案里的残留显式值（此注册表键仅系统账户可写，且该方案查不到默认值），该值仍留在当前活动方案（$guid）中"
                 }
               }
             }

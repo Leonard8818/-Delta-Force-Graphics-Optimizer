@@ -81,6 +81,58 @@ try {
   }
   Assert-True ($powerRecord.ItemId -eq 'power-ultimate' -and $powerRecord.DefinitionHash -match '^[0-9a-f]{64}$') `
     '没有 Ops 的电源项目必须能够生成 schema v3 备份项目记录'
+
+  $restoreOrder = @(Get-RestoreExecutionOps @(
+    [pscustomobject]@{Kind='reg';Name='late-reg'}, [pscustomobject]@{Kind='pcfg';Name='power-setting'},
+    [pscustomobject]@{Kind='power';Name='active-plan'}, [pscustomobject]@{Kind='sched';Name='plan-lock'}
+  ))
+  Assert-True ((@($restoreOrder | ForEach-Object Kind) -join ',') -eq 'sched,power,reg,pcfg') `
+    '全部还原必须先删除电源锁定任务并回切活动方案，再处理电源隐藏项'
+
+  $originalGetPowerSchemes = ${function:Get-PowerSchemes}
+  $originalInvokeSchemeActivate = ${function:Invoke-SchemeActivate}
+  try {
+    $script:RestorePowerActivateCalls = New-Object System.Collections.Generic.List[string]
+    $missingOriginalGuid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    function Get-PowerSchemes {
+      @([pscustomobject]@{Guid=$script:BalancedGuid;Name='平衡';Active=$false})
+    }
+    function Invoke-SchemeActivate([string]$SchemeGuid) {
+      [void]$script:RestorePowerActivateCalls.Add($SchemeGuid)
+      $script:LastActivateOut = $(if ($SchemeGuid -ieq $script:BalancedGuid) { '' } else { 'The power scheme does not exist.' })
+      $SchemeGuid -ieq $script:BalancedGuid
+    }
+    $powerFallback = Invoke-RestorePowerScheme $missingOriginalGuid
+    Assert-True (-not $powerFallback.Exact -and $powerFallback.Guid -ieq $script:BalancedGuid -and
+      $powerFallback.Message -like '*已不存在*安全回退*' -and
+      (@($script:RestorePowerActivateCalls.ToArray()) -join ',') -eq "$missingOriginalGuid,$script:BalancedGuid") `
+      '原电源方案消失时必须明确回退到 Windows 平衡方案，不能继续把工具方案留在活动状态'
+
+    $fallbackDoc = New-BackupDocument ([DateTime]::UtcNow)
+    $fallbackDoc.State = 'complete'
+    $fallbackOpId = [guid]::NewGuid().ToString('D')
+    $fallbackDoc.Items = @([pscustomobject][ordered]@{
+      ItemId='power-ultimate';RestoreGroupId='power-ultimate';DisplayName='电源计划切换到「卓越性能」'
+      DefinitionHash=('b' * 64);RebootRequired=$true;OpIds=@($fallbackOpId)
+    })
+    $fallbackDoc.Ops = @([pscustomobject][ordered]@{
+      Id=$fallbackOpId;Status='applied';ApplyId=$fallbackDoc.ApplyId;ItemId='power-ultimate';RestoreGroupId='power-ultimate'
+      OpIndex=0;Kind='power';Old=$missingOriginalGuid;ToolCreated=$true;NewGuid='bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+    })
+    $fallbackPath = Join-Path $script:BackupDir ("backup-$($fallbackDoc.BackupId).json")
+    Write-BackupDocumentAtomic $fallbackPath $fallbackDoc
+    $script:RestorePowerActivateCalls.Clear()
+    $fallbackRestore = Invoke-Restore $fallbackPath
+    $fallbackRetry = Invoke-Restore $fallbackPath
+    Assert-True ($fallbackRestore.Failed.Count -eq 0 -and $fallbackRestore.RestoredOps -eq 0 -and
+      $fallbackRestore.Skipped.Count -eq 1 -and $fallbackRestore.Skipped[0] -like '*Windows「平衡」*安全回退*' -and
+      (Test-Path -LiteralPath $fallbackRestore.Receipt) -and $fallbackRetry.RestoredOps -eq 0 -and
+      "$($fallbackRetry.Notes)" -like '*此前已完成还原*') `
+      '电源原方案消失后的全量还原必须落消费凭证并幂等结束，不能每次点击都重复复原'
+  } finally {
+    Set-Item -LiteralPath Function:\Get-PowerSchemes -Value $originalGetPowerSchemes
+    Set-Item -LiteralPath Function:\Invoke-SchemeActivate -Value $originalInvokeSchemeActivate
+  }
   $selectiveIds = @(Get-SelectiveRestoreItemIds)
   Assert-True ($selectiveIds.Count -eq 9 -and
     @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref','gpu-name-spoof' |

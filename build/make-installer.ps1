@@ -644,9 +644,8 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修正实时 FPS 统计口径：优先按实际显示帧率和主游戏交换链计算，避免多交换链、丢弃帧或旧采样造成读数偏差。
-- CPU 温度缺少可信传感器来源时显示明确状态与原因，不再把不可靠的主板温区当作 CPU 温度。
-- 显卡型号伪装现可在「还原设置」中单独选择并恢复真实型号。
+- 修复原电源方案被删除或失效时还原会反复失败的问题；现在会回退到 Windows「平衡」，并记录未精确恢复原方案的提示。
+- 全量还原存在失败时明确显示「还原未完成」；成功回退会写入还原凭证，重复点击不会再次执行。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。

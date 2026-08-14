@@ -28,10 +28,10 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.2'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.2'") -and
-    $raw.Contains('Text="[ v0.23.0.2 ]"')) `
-  'the unified v0.23.0.2 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.3'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.3'") -and
+    $raw.Contains('Text="[ v0.23.0.3 ]"')) `
+  'the unified v0.23.0.3 version is missing or inconsistent'
 Assert-True ($raw.Contains('以下内容请进入BIOS按照教程手动操作。') -and
   -not $raw.Contains('以下问题本工具改不了，但按教程手动处理并不难：')) `
   'health-check BIOS guidance still uses the old wording'
@@ -311,6 +311,10 @@ Assert-True ($restoreActionFunction.Extent.Text.Contains("ValidateSet('selected_
   $raw.Contains("`$ui.InlineRestoreAllBtn.Add_Click({ Invoke-InlineRestoreAction 'all' })") -and
   $raw.Contains('检测到后续修改的项目不会被选择性覆盖。')) `
   'inline restore buttons are not connected to selected/full protected restore actions'
+Assert-True ($restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { '还原未完成' } else { '还原完成' }") -and
+  $restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { 'RESTORE INCOMPLETE' } else { 'RESTORE DONE' }") -and
+  $restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { '全部复原未完成' } else { '全部复原完成' }")) `
+  'full restore still presents a partial failure as completed'
 $mainXamlMatch = [regex]::Match($raw, '(?s)\$xaml\s*=\s*@''\r?\n(.*?)\r?\n''@\r?\n\r?\n\$window\s*=')
 Assert-True $mainXamlMatch.Success 'main window XAML block is missing'
 Add-Type -AssemblyName PresentationFramework
