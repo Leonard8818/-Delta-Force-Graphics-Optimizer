@@ -687,18 +687,18 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 完善「全部还原」，可自动处理历史版本遗留的电源设置；受系统限制时会安全切换到 Windows「平衡」，避免反复还原失败。
-- 优化电源方案隔离，后续只调整工具专属方案，不影响用户或电脑品牌自带方案。
-- 网吧 / 公共电脑与个人电脑的启动选择更加直观。
-- 下载排队增加预计等待时间。
-- 本版本包含关键还原修复，旧版本需完成更新后继续使用。
+- 电源计划切换、隐藏项深度调优和锁定电源计划新增统一风险确认；无论单选、多选或随「主推全套」执行，都会在写入前提示。
+- 更新后每位用户首次启动会显示一次重要提醒；如优化后出现卡顿、异常掉帧、黑屏或无法进入游戏，可在「还原设置」中恢复电源项目并重启。
+- 修复部分网吧、公共电脑或内置 Administrator 环境在内置更新完成后无法自动启动、随后回滚的问题。
+- 修复官网下载排队完成后，部分浏览器没有自动开始下载的问题。
+- 本版本为强制更新，旧版本需完成更新后继续使用。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。
   version  = "$ver"
   displayVersion = "$displayVer"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
-  minimumSupportedVersion = '0.23.0.7'
+  minimumSupportedVersion = '0.23.0.8'
   notes    = $manifestNotes
   url      = 'https://df.ltz88.cn/'
   setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'

@@ -1,9 +1,12 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.7
+  DeltaForceBooster 图形界面 — v0.23.0.8
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.8：电源计划优化新增统一风险确认，更新后首次启动会按用户提醒异常时的恢复方法；
+         修复部分网吧、公共电脑或内置 Administrator 环境内置更新后启动验证失败的问题；
+         本版本为强制更新。
   v0.23.0.7：全部还原可自动处理历史电源设置残留，并在受限时安全切换到 Windows「平衡」；
          优化电源方案隔离与重启提示；启动场景选择更直观；下载排队增加预计等待时间；
          本版本包含关键还原修复，旧版本需完成更新后继续使用。
@@ -488,8 +491,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.7'
-$script:DisplayVersion = '0.23.0.7'
+$script:GuiVersion = '0.23.0.8'
+$script:DisplayVersion = '0.23.0.8'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -856,7 +859,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.7 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.8 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1442,7 +1445,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.7 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.8 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -3325,7 +3328,7 @@ function Update-StreamerPage {
 
 # 声明内容有实质修改时把这个数字 +1：配置里记的版本与此不符即重新弹一次，
 # 老用户不会因为条款改了还停留在旧版本的「已同意」上
-$script:DisclaimerVersion = '7'
+$script:DisclaimerVersion = '8'
 $script:DisclaimerFile = Join-Path $script:RootDir 'DISCLAIMER.md'
 
 # 同意状态与 updater 的配置同目录：profiles\ 下的 *.json 会被引擎当预设方案扫出来
@@ -3365,6 +3368,7 @@ function Get-DisclaimerText {
     '- 个人开发的免费工具，**与腾讯公司及《三角洲行动》官方无任何关系**。'
     '- 会修改注册表、电源计划、系统服务等系统级设置；可还原的设置改动会先写入受保护备份，可点「还原设置」回退；纯检测项和明确标注不可还原的操作不生成备份，还原也不保证 100% 成功。'
     '- 优化效果因机器而异，不做任何承诺；部分项有明确副作用，勾选前请读每项说明。'
+    '- 极少数设备应用电源计划优化后可能出现卡顿、黑屏、驱动异常、游戏无法进入、温度功耗升高或睡眠/外设异常；执行前会再次确认，异常时请还原相关项目并重启。'
     '- 没有代码签名证书，SmartScreen 与杀毒软件可能报警，这是必然结果。'
     '- 同意后会发送匿名使用统计：随机安装标识、版本、Windows / CPU / 真实 GPU / 内存 / 设备与显示类型、驱动和电源/存储/系统功能状态、固定白名单软件是否正在运行、显卡控制软件检测和本工具备份还原状态，以及游戏中最多 120 秒的帧率、帧时间、延迟、帧生成、CPU / GPU / 内存 / 功耗汇总与采样覆盖率。性能汇总会附带当前由工具管理的公开优化项目 ID、匿名方案类别和归属完整度；自存方案只记为 custom，不发送方案名称或内容，也不发送用户名、机器名、SID、游戏路径、任意进程名、注册表路径/键值/原值或逐帧数据。统计来自客户端自动采样，会做令牌、重放、严格字段和异常值过滤，但不是独立实验室测量。'
     '- 服务端定时清理：诊断报告保留 30 天、性能会话保留 90 天、匿名安装标识与按日使用明细保留 180 天。'
@@ -7645,7 +7649,8 @@ function Invoke-ElevatedEngineAction {
 # 全站确认（执行/还原/删除）和长文本指引统一走这里。正文放 ScrollViewer：
 # 执行清单可达 30 行、显卡指引更长，超高时内部滚动而不是把对话框撑出屏幕
 function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message,
-                            [string]$OkText = '确定', [switch]$InfoOnly, [string]$Banner) {
+                            [string]$OkText = '确定', [switch]$InfoOnly, [string]$Banner,
+                            [switch]$DefaultCancel) {
   $cxaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -7725,6 +7730,12 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
   $script:CfmDlg.FindName('OkTxt').Text = $OkText
   # 信息模式（如显卡指引）没有「取消」的语义，只留一个确认按钮
   if ($InfoOnly) { $script:CfmDlg.FindName('CancelBtn').Visibility = 'Collapsed' }
+  elseif ($DefaultCancel) {
+    # 风险确认默认停在「取消」；误按回车不会直接执行系统级改动。
+    $script:CfmDlg.FindName('OkBtn').IsDefault = $false
+    $script:CfmDlg.FindName('CancelBtn').IsDefault = $true
+    $script:CfmDlg.FindName('CancelBtn').Focus() | Out-Null
+  }
   # 可选醒目横幅：显卡指引用它标出检测到的显卡型号
   if ($Banner) {
     $script:CfmDlg.FindName('BannerTxt').Text = $Banner
@@ -8589,6 +8600,12 @@ $script:NotificationLastFetchOk = $false
 $script:NotificationCheckBusy = $false
 $script:NotificationShowAfterFetch = $false
 
+# v0.23.0.8 的一次性重要提醒。状态跟随受保护的用户配置目录，因此同一台电脑
+# 不同 Windows 用户会各自弹出一次；关闭对话框而未点击「我知道了」时不写入确认状态。
+$script:PowerRecoveryNoticeId = 'v0.23.0.8-power-plan-recovery'
+$script:PowerRecoveryNoticeStatePath = Join-Path $script:UserConfigDir 'version-notice-v0.23.0.8.json'
+$script:PowerRecoveryNoticePromptedThisRun = $false
+
 function ConvertTo-NotificationList($Value) {
   $result = [Collections.Generic.List[object]]::new()
   $seen = @{}
@@ -8891,6 +8908,53 @@ function Start-NotificationCheck([switch]$ShowHistory) {
   }
 }
 
+function Test-PowerRecoveryNoticeAcknowledged {
+  try {
+    if (-not (Test-Path -LiteralPath $script:PowerRecoveryNoticeStatePath -PathType Leaf)) { return $false }
+    $state = Get-Content -LiteralPath $script:PowerRecoveryNoticeStatePath -Raw -Encoding UTF8 |
+             ConvertFrom-Json -ErrorAction Stop
+    return ([int]$state.SchemaVersion -eq 1 -and "$($state.NoticeId)" -eq $script:PowerRecoveryNoticeId)
+  } catch { return $false }
+}
+
+function Set-PowerRecoveryNoticeAcknowledged {
+  $state = [ordered]@{
+    SchemaVersion = 1
+    NoticeId = $script:PowerRecoveryNoticeId
+    AcknowledgedAt = (Get-Date).ToString('s')
+  }
+  if (Get-Command Write-DfbTelemetryConfigAtomic -ErrorAction SilentlyContinue) {
+    Write-DfbTelemetryConfigAtomic $script:PowerRecoveryNoticeStatePath $state
+  } else {
+    [IO.File]::WriteAllText($script:PowerRecoveryNoticeStatePath, ($state | ConvertTo-Json),
+      (New-Object Text.UTF8Encoding($true)))
+  }
+}
+
+function Show-PowerRecoveryVersionNotice {
+  if ($script:PowerRecoveryNoticePromptedThisRun -or (Test-PowerRecoveryNoticeAcknowledged)) { return }
+  $script:PowerRecoveryNoticePromptedThisRun = $true
+  $message = @(
+    '如果你在执行优化后出现游戏或电脑卡顿、异常掉帧、黑屏、闪屏、无法进入游戏或游戏异常退出，请先恢复电源相关选项。'
+    '使用过「主推全套」也不必全部还原，可以只恢复下面的电源项。'
+    ''
+    '操作方法：'
+    '1. 进入「优化」页，点击「还原设置」。'
+    '2. 勾选你执行过的电源项：'
+    '   · 电源计划切换到「卓越性能」'
+    '   · 电源计划隐藏项深度调优'
+    '   · 锁定电源计划'
+    '3. 点击「复原所选项目」，完成后重启电脑。'
+    ''
+    '只执行过其中一项就只恢复对应项；也可同时多选恢复。'
+  ) -join "`n"
+  if (Show-ConfirmDialog '重要提醒' 'POWER RECOVERY NOTICE' $message '我知道了' -InfoOnly `
+      -Banner '优化后出现异常：先恢复电源选项并重启电脑') {
+    try { Set-PowerRecoveryNoticeAcknowledged }
+    catch { Write-Log "重要提醒确认状态保存失败，下次启动将再次提醒：$($_.Exception.Message)" }
+  }
+}
+
 # 更新检查间隔（分钟）：做成常量便于调整；验证定时机制时可临时改小
 $script:UpdateCheckIntervalMinutes = 30
 
@@ -9006,6 +9070,7 @@ $script:HardwareInfo = $null
 Initialize-NotificationState
 
 $window.Add_ContentRendered({
+  Show-PowerRecoveryVersionNotice
   Initialize-LiveMetricsDashboard
   Refresh-PerformanceComparison -Force
   Start-NotificationCheck
@@ -9374,6 +9439,26 @@ $ui.ApplyBtn.Add_Click({
         Write-Log "已取消 $($riskyIds.Count) 个高风险项，本次不执行它们。"
         $riskyIds = @()
         if ($ids.Count -eq 0) { Write-Log '取消高风险项后没有剩余可执行项。'; return }
+      }
+    }
+    $powerRiskIds = @('power-ultimate','power-tuning','powerplan-lock')
+    $selectedPowerIds = @($ids | Where-Object { $powerRiskIds -contains $_ })
+    if ($selectedPowerIds.Count -gt 0) {
+      $selectedPowerNames = @($optAll | Where-Object { $selectedPowerIds -contains $_.Id } |
+                              ForEach-Object { "· $($_.Name)" })
+      $powerMessage = "你选择了以下电源相关优化：`n`n" +
+                      ($selectedPowerNames -join "`n") +
+                      "`n`n绝大多数电脑可以正常使用，但由于不同设备的电源管理存在差异，极少数用户修改后可能出现：`n`n" +
+                      "· 游戏或系统卡顿、异常掉帧`n" +
+                      "· 黑屏、闪屏或显卡驱动异常`n" +
+                      "· 游戏无法启动、无法进入或启动后崩溃`n" +
+                      "· 温度、功耗或风扇噪声升高`n" +
+                      "· 睡眠、唤醒、USB、键鼠等外设异常`n`n" +
+                      "执行前请保存工作并关闭游戏。可还原的设置会自动备份；如出现异常，请进入「还原设置」恢复本次电源相关项目，并重启电脑。`n`n" +
+                      "是否了解以上风险并继续执行？"
+      if (-not (Show-ConfirmDialog '电源计划优化风险确认' 'POWER PLAN RISK' $powerMessage '我已了解，继续执行' -DefaultCancel)) {
+        Write-Log "已取消电源计划风险确认，本次 $($ids.Count) 项优化均未执行。"
+        return
       }
     }
     $names = @($optAll | Where-Object { $ids -contains $_.Id } | ForEach-Object { $_.Name })

@@ -26,25 +26,30 @@ Assert-True ($stagingAclFunction -match 'GetAccessControl' -and
   'secure update staging does not re-read and verify the file ACL after writing it'
 $releaseManifest = Get-Content -LiteralPath (Join-Path $root 'build\update-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentVersion = [regex]::Match($guiText, "(?m)^\`$script:GuiVersion\s*=\s*'([0-9.]+)'\s*$").Groups[1].Value
-Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.23\.0\.7'" -and
+Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.23\.0\.8'" -and
   "$($releaseManifest.version)" -eq $currentVersion -and "$($releaseManifest.displayVersion)" -eq $currentVersion -and
   "$($releaseManifest.minimumSupportedVersion)" -eq $currentVersion) `
   'release manifest version or mandatory-upgrade floor is stale'
 $expectedReleaseNotes = @'
-- 完善「全部还原」，可自动处理历史版本遗留的电源设置；受系统限制时会安全切换到 Windows「平衡」，避免反复还原失败。
-- 优化电源方案隔离，后续只调整工具专属方案，不影响用户或电脑品牌自带方案。
-- 网吧 / 公共电脑与个人电脑的启动选择更加直观。
-- 下载排队增加预计等待时间。
-- 本版本包含关键还原修复，旧版本需完成更新后继续使用。
+- 电源计划切换、隐藏项深度调优和锁定电源计划新增统一风险确认；无论单选、多选或随「主推全套」执行，都会在写入前提示。
+- 更新后每位用户首次启动会显示一次重要提醒；如优化后出现卡顿、异常掉帧、黑屏或无法进入游戏，可在「还原设置」中恢复电源项目并重启。
+- 修复部分网吧、公共电脑或内置 Administrator 环境在内置更新完成后无法自动启动、随后回滚的问题。
+- 修复官网下载排队完成后，部分浏览器没有自动开始下载的问题。
+- 本版本为强制更新，旧版本需完成更新后继续使用。
 '@
-Assert-True ("$($releaseManifest.notes)" -eq $expectedReleaseNotes -and
+Assert-True (("$($releaseManifest.notes)" -replace "`r`n", "`n") -eq ($expectedReleaseNotes -replace "`r`n", "`n") -and
   $installerBuildSource.Contains("`$manifestNotes = @'")) `
-  'v0.23.0.7 release notes are missing or inconsistent'
+  'v0.23.0.8 release notes are missing or inconsistent'
 $disclaimerText = [IO.File]::ReadAllText((Join-Path $root 'DISCLAIMER.md'))
 Assert-True ($disclaimerText -notmatch '自动寻找最佳配置|自动调优|experiments') `
   'usage notice still exposes automatic best-configuration Beta information'
-Assert-True ($guiText -match "\`$script:DisclaimerVersion\s*=\s*'7'") `
+Assert-True ($guiText -match "\`$script:DisclaimerVersion\s*=\s*'8'") `
   'usage notice changed without advancing the acceptance version'
+Assert-True ($disclaimerText.Contains('### 电源计划优化的兼容性风险') -and
+  $disclaimerText.Contains('游戏无法启动或进入') -and
+  $disclaimerText.Contains('通过二次确认并继续执行') -and
+  $disclaimerText.Contains('恢复本次电源相关项目并重启电脑')) `
+  'power-plan compatibility risks are missing from the accepted usage notice'
 $updaterPolicyDir = Join-Path $testBase 'updater-policy'
 [void][IO.Directory]::CreateDirectory($updaterPolicyDir)
 $policyManifestPath = Join-Path $updaterPolicyDir 'manifest.json'
@@ -99,8 +104,8 @@ Assert-True ($setupSource -match 'CREATE_SUSPENDED' -and
   'run-after executes the child before exact path/session/SID/integrity verification'
 Assert-True ($setupSource -match 'QueryFullProcessImageNameW' -and
   $setupSource -match '新版启动器用户与安装前用户不一致' -and
-  $setupSource -match '新版启动器不是 medium token') `
-  'run-after no longer verifies the exact created image and medium desktop identity'
+  $setupSource -match '新版启动器没有继承当前桌面的受支持令牌') `
+  'run-after no longer verifies the exact created image and desktop token identity'
 Assert-True ($setupSource -notmatch 'static\s+extern\s+bool\s+CreateProcessWithTokenW|static\s+extern\s+bool\s+CreateProcessAsUserW|TokenLinkedToken\s*=') `
   'run-after still relies on token APIs that fail on RID-500 with errors 5/1314'
 Assert-True ($setupSource -match 'CreateEnvironmentBlock') 'run-after does not build the original desktop user environment'
@@ -286,6 +291,7 @@ try {
   }
   $checkSecure = $installerType.GetMethod('CheckSecureInstallLocation', [Reflection.BindingFlags]'Static,Public')
   $checkDesktopOrigin = $installerType.GetMethod('CheckDesktopShellOrigin', [Reflection.BindingFlags]'Static,Public')
+  $supportedDesktopIntegrity = $installerType.GetMethod('IsSupportedDesktopShellIntegrity', [Reflection.BindingFlags]'Static,NonPublic')
   $volumeReplaceRights = $installerType.GetMethod('HasVolumeRootReplacementRights', [Reflection.BindingFlags]'Static,NonPublic')
   $invokeSecure = {
     param([string]$Path)
@@ -301,10 +307,14 @@ try {
   foreach ($dangerousMask in 0x40,0x40000,0x80000,0x10000000) {
     Assert-True (& $invokeVolumeReplaceRights $dangerousMask) ("dangerous volume-root mask was accepted: 0x{0:x}" -f $dangerousMask)
   }
+  Assert-True ([bool]$supportedDesktopIntegrity.Invoke($null, [object[]]@(0x2000))) 'normal medium desktop shell was rejected'
+  Assert-True ([bool]$supportedDesktopIntegrity.Invoke($null, [object[]]@(0x3000))) 'RID-500/UAC-disabled high desktop shell was rejected'
+  Assert-True (-not [bool]$supportedDesktopIntegrity.Invoke($null, [object[]]@(0x1000))) 'low-integrity shell was accepted'
+  Assert-True (-not [bool]$supportedDesktopIntegrity.Invoke($null, [object[]]@(0x4000))) 'system-integrity shell was accepted'
   $currentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $env:DFB_TEST_SHELL_SID = $currentUserSid
   $originArgs = New-Object 'object[]' 1; $originArgs[0] = $currentUserSid
-  Assert-True ($null -eq $checkDesktopOrigin.Invoke($null, $originArgs)) 'matching original/medium-shell SID was rejected'
+  Assert-True ($null -eq $checkDesktopOrigin.Invoke($null, $originArgs)) 'matching original/desktop-shell SID was rejected'
   $originArgs[0] = 'S-1-5-21-1-2-3-1001'
   Assert-True ([string]$checkDesktopOrigin.Invoke($null, $originArgs) -like '*不一致*') 'OTS shell/user SID mismatch was accepted'
   $originArgs[0] = 'not-a-sid'
@@ -337,8 +347,9 @@ try {
   Assert-True ($setupSource -match 'Directory\.CreateDirectory\(anchor, acl\)' -and
     $setupSource -match 'pre-create race') 'custom anchor is no longer created with atomic ACL plus post-create race validation'
   Assert-True ($setupSource -match '/originsid=' -and $setupSource -match 'GetShellWindow' -and
-    $setupSource -match 'TokenIntegrityLevel' -and $setupSource -match 'SECURITY_MANDATORY_MEDIUM_RID') `
-    'setup no longer binds automatic launch to the original user and current medium desktop shell'
+    $setupSource -match 'TokenIntegrityLevel' -and $setupSource -match 'IsSupportedDesktopShellIntegrity' -and
+    $setupSource -match 'childIntegrityRid != expectedIntegrityRid') `
+    'setup no longer binds automatic launch to the original user and exact supported desktop token'
 
   $case = Join-Path $testBase 'transaction'
   $pf = Join-Path $case 'PF'

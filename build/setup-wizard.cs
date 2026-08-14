@@ -953,7 +953,14 @@ static class Installer {
         } catch (Exception) { return null; }
     }
 
-    static bool TryGetMediumDesktopShellSid(out string sid, out string reason) {
+    static bool IsSupportedDesktopShellIntegrity(int integrityRid) {
+        // 正常 UAC 桌面是 medium；内置 Administrator、关闭 UAC 或管理员审批模式的
+        // 网吧/公共电脑桌面会是 high。启动器已把 high 令牌限制为 repair-only 兼容会话，
+        // 因此两者都属于可验证的交互桌面；low/system 等其他完整性级别继续拒绝。
+        return integrityRid == 0x2000 || integrityRid == 0x3000;
+    }
+
+    static bool TryGetSupportedDesktopShellSid(out string sid, out string reason) {
         sid = null; reason = null;
         string testSid = NormalizeSid(TestDesktopShellSid());
         if (testSid != null) { sid = testSid; return true; }
@@ -982,7 +989,6 @@ static class Installer {
             if (NormalizeSid(sid) == null) { reason = "当前桌面的 Windows shell SID 无效"; return false; }
 
             const int TokenIntegrityLevel = 25;
-            const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
             int size;
             GetTokenInformation(tokenHandle, TokenIntegrityLevel, IntPtr.Zero, 0, out size);
             if (size <= IntPtr.Size) { reason = "无法读取当前桌面的 Windows shell 完整性级别"; return false; }
@@ -1000,8 +1006,9 @@ static class Installer {
             byte count = Marshal.ReadByte(countPointer);
             if (count == 0) { reason = "Windows shell 完整性 SID 为空"; return false; }
             IntPtr ridPointer = GetSidSubAuthority(integritySid, (uint)(count - 1));
-            if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID) {
-                reason = "当前桌面的 Windows shell 不是 medium token"; return false;
+            int integrityRid = ridPointer == IntPtr.Zero ? 0 : Marshal.ReadInt32(ridPointer);
+            if (!IsSupportedDesktopShellIntegrity(integrityRid)) {
+                reason = "当前桌面的 Windows shell 完整性级别不受支持"; return false;
             }
             return true;
         } catch (Exception ex) { reason = "当前桌面用户身份复验失败：" + ex.Message; return false; }
@@ -1016,9 +1023,9 @@ static class Installer {
         string origin = NormalizeSid(originSid);
         if (origin == null) return "安装前的原用户身份缺失或格式无效";
         string shellSid, reason;
-        if (!TryGetMediumDesktopShellSid(out shellSid, out reason)) return reason;
+        if (!TryGetSupportedDesktopShellSid(out shellSid, out reason)) return reason;
         if (!string.Equals(origin, shellSid, StringComparison.OrdinalIgnoreCase))
-            return "当前桌面普通用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）";
+            return "当前桌面用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）";
         return null;
     }
 
@@ -1031,7 +1038,8 @@ static class Installer {
         return sum;
     }
 
-    static void VerifySuspendedDesktopChild(IntPtr processHandle, int processId, string exe, string originSid) {
+    static void VerifySuspendedDesktopChild(IntPtr processHandle, int processId, string exe, string originSid,
+                                            int expectedIntegrityRid) {
         IntPtr tokenHandle = IntPtr.Zero, integrity = IntPtr.Zero;
         try {
             var imagePath = new StringBuilder(32768);
@@ -1058,7 +1066,6 @@ static class Installer {
                 throw new UnauthorizedAccessException("新版启动器用户与安装前用户不一致");
 
             const int TokenIntegrityLevel = 25;
-            const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
             int integritySize;
             GetTokenInformation(tokenHandle, TokenIntegrityLevel, IntPtr.Zero, 0, out integritySize);
             if (integritySize <= IntPtr.Size)
@@ -1070,8 +1077,9 @@ static class Installer {
             IntPtr countPointer = integritySid == IntPtr.Zero ? IntPtr.Zero : GetSidSubAuthorityCount(integritySid);
             byte count = countPointer == IntPtr.Zero ? (byte)0 : Marshal.ReadByte(countPointer);
             IntPtr ridPointer = count == 0 ? IntPtr.Zero : GetSidSubAuthority(integritySid, (uint)(count - 1));
-            if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID)
-                throw new UnauthorizedAccessException("新版启动器不是 medium token");
+            int childIntegrityRid = ridPointer == IntPtr.Zero ? 0 : Marshal.ReadInt32(ridPointer);
+            if (!IsSupportedDesktopShellIntegrity(childIntegrityRid) || childIntegrityRid != expectedIntegrityRid)
+                throw new UnauthorizedAccessException("新版启动器没有继承当前桌面的受支持令牌");
         } finally {
             if (integrity != IntPtr.Zero) Marshal.FreeHGlobal(integrity);
             if (tokenHandle != IntPtr.Zero) CloseHandle(tokenHandle);
@@ -1080,9 +1088,9 @@ static class Installer {
 
     // CreateProcessWithTokenW / CreateProcessAsUserW 需要调用者具备额外 token 权限；本机
     // RID-500 管理员实测分别返回 5/1314，导致每次更新在“新版已落盘”后启动失败。Windows
-    // 支持把已复验的 Explorer 设为逻辑父进程，子进程会继承 Explorer 的 medium token，
+    // 支持把已复验的 Explorer 设为逻辑父进程，子进程会继承 Explorer 的交互令牌，
     // 且 CreateProcessW 会直接返回可用于后续 WPF 健康检查的 PID。先以挂起态创建，再复验
-    // 精确映像路径、会话、SID 和完整性级别，全部通过后才允许新版执行。
+    // 精确映像路径、会话、SID 和与 Explorer 完全相同的受支持完整性级别，全部通过后才允许新版执行。
     static int StartWithDesktopShellParent(string exe, string originSid) {
         IntPtr shellProcess = IntPtr.Zero, shellToken = IntPtr.Zero, environment = IntPtr.Zero;
         IntPtr shellIntegrity = IntPtr.Zero, attributeList = IntPtr.Zero;
@@ -1112,10 +1120,9 @@ static class Installer {
                 shellSid = shellIdentity.User == null ? null : shellIdentity.User.Value;
             }
             if (!string.Equals(NormalizeSid(originSid), NormalizeSid(shellSid), StringComparison.OrdinalIgnoreCase))
-                throw new UnauthorizedAccessException("当前桌面普通用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）");
+                throw new UnauthorizedAccessException("当前桌面用户与安装前用户不一致（可能使用了另一管理员账户批准 UAC）");
 
             const int TokenIntegrityLevel = 25;
-            const int SECURITY_MANDATORY_MEDIUM_RID = 0x2000;
             int integritySize;
             GetTokenInformation(shellToken, TokenIntegrityLevel, IntPtr.Zero, 0, out integritySize);
             if (integritySize <= IntPtr.Size)
@@ -1127,8 +1134,9 @@ static class Installer {
             IntPtr countPointer = integritySid == IntPtr.Zero ? IntPtr.Zero : GetSidSubAuthorityCount(integritySid);
             byte count = countPointer == IntPtr.Zero ? (byte)0 : Marshal.ReadByte(countPointer);
             IntPtr ridPointer = count == 0 ? IntPtr.Zero : GetSidSubAuthority(integritySid, (uint)(count - 1));
-            if (ridPointer == IntPtr.Zero || Marshal.ReadInt32(ridPointer) != SECURITY_MANDATORY_MEDIUM_RID)
-                throw new UnauthorizedAccessException("当前桌面的 Windows shell 不是 medium token");
+            int shellIntegrityRid = ridPointer == IntPtr.Zero ? 0 : Marshal.ReadInt32(ridPointer);
+            if (!IsSupportedDesktopShellIntegrity(shellIntegrityRid))
+                throw new UnauthorizedAccessException("当前桌面的 Windows shell 完整性级别不受支持");
             if (!CreateEnvironmentBlock(out environment, shellToken, false))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建普通用户启动环境");
 
@@ -1159,7 +1167,8 @@ static class Installer {
                     environment, Environment.SystemDirectory, ref startupInfo, out processInformation))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法由当前桌面 Explorer 启动新版");
 
-            VerifySuspendedDesktopChild(processInformation.hProcess, processInformation.dwProcessId, exe, originSid);
+            VerifySuspendedDesktopChild(processInformation.hProcess, processInformation.dwProcessId, exe, originSid,
+                                        shellIntegrityRid);
             if (ResumeThread(processInformation.hThread) == UInt32.MaxValue)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法恢复新版启动器线程");
             resumed = true;
@@ -1199,7 +1208,7 @@ static class Installer {
             return "测试模式跳过启动: " + exe;
         if (IsElevated()) {
             processId = StartWithDesktopShellParent(exe, originSid);
-            return "已由当前桌面普通用户启动";
+            return "已由当前桌面用户启动";
         }
         using (Process process = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dest, UseShellExecute = true })) {
             if (process == null) throw new InvalidOperationException("启动器进程未创建");

@@ -28,10 +28,10 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.7'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.7'") -and
-    $raw.Contains('Text="[ v0.23.0.7 ]"')) `
-  'the unified v0.23.0.7 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.8'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.8'") -and
+    $raw.Contains('Text="[ v0.23.0.8 ]"')) `
+  'the unified v0.23.0.8 version is missing or inconsistent'
 Assert-True ($raw.Contains("`$script:UpdUi.CancelDlTxt.Text = '取消排队'") -and
     $raw.Contains("'正在取消排队…'") -and
     $raw.Contains('QueueEstimatedWaitSeconds') -and $raw.Contains('预计约 {0} 分钟') -and
@@ -99,6 +99,63 @@ Assert-True ($raw.Contains('@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Childre
 Assert-True ($raw.Contains("Show-ConfirmDialog '未选择优化项' 'NO ITEMS SELECTED'") -and
   $raw.Contains('请先勾选至少一个优化项目，再点击「执行优化」。')) `
   'execute optimization does not show a visible prompt when no item is selected'
+Assert-True ($raw.Contains("`$powerRiskIds = @('power-ultimate','power-tuning','powerplan-lock')") -and
+  $raw.Contains("Show-ConfirmDialog '电源计划优化风险确认' 'POWER PLAN RISK'") -and
+  $raw.Contains('极少数用户修改后可能出现') -and
+  $raw.Contains('游戏无法启动、无法进入或启动后崩溃') -and
+  $raw.Contains("'我已了解，继续执行' -DefaultCancel") -and
+  $raw.Contains('本次 $($ids.Count) 项优化均未执行')) `
+  'power-plan items do not have a consolidated fail-closed compatibility confirmation'
+Assert-True ($raw.Contains('[switch]$DefaultCancel') -and
+  $raw.Contains("`$script:CfmDlg.FindName('OkBtn').IsDefault = `$false") -and
+  $raw.Contains("`$script:CfmDlg.FindName('CancelBtn').IsDefault = `$true")) `
+  'risk confirmation cannot make cancel the default action'
+Assert-True ($raw.Contains("`$script:PowerRecoveryNoticeId = 'v0.23.0.8-power-plan-recovery'") -and
+  $raw.Contains("Join-Path `$script:UserConfigDir 'version-notice-v0.23.0.8.json'") -and
+  $raw.Contains('function Test-PowerRecoveryNoticeAcknowledged') -and
+  $raw.Contains('function Set-PowerRecoveryNoticeAcknowledged') -and
+  $raw.Contains('function Show-PowerRecoveryVersionNotice')) `
+  'v0.23.0.8 does not persist the per-user one-time power recovery notice'
+Assert-True ($raw.Contains("Show-ConfirmDialog '重要提醒' 'POWER RECOVERY NOTICE'") -and
+  $raw.Contains('优化后出现异常：先恢复电源选项并重启电脑') -and
+  $raw.Contains('使用过「主推全套」也不必全部还原') -and
+  $raw.Contains('复原所选项目') -and
+  $raw.Contains('只执行过其中一项就只恢复对应项') -and
+  $raw -match '(?s)\$window\.Add_ContentRendered\(\{\s*Show-PowerRecoveryVersionNotice\s*Initialize-LiveMetricsDashboard') `
+  'the per-user power recovery notice is not forced once when the updated UI first renders'
+foreach ($functionName in 'Test-PowerRecoveryNoticeAcknowledged','Set-PowerRecoveryNoticeAcknowledged','Show-PowerRecoveryVersionNotice') {
+  $node = $ast.FindAll({
+    param($candidate)
+    $candidate -is [Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq $functionName
+  }, $true) | Select-Object -First 1
+  Assert-True ($null -ne $node) "missing function under test: $functionName"
+  . ([scriptblock]::Create($node.Extent.Text))
+}
+$noticeTestDir = Join-Path ([IO.Path]::GetTempPath()) ('dfb-power-notice-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $noticeTestDir -Force | Out-Null
+try {
+  $script:PowerRecoveryNoticeId = 'v0.23.0.8-power-plan-recovery'
+  $script:PowerRecoveryNoticeStatePath = Join-Path $noticeTestDir 'notice.json'
+  $script:PowerRecoveryNoticePromptedThisRun = $false
+  $script:PowerRecoveryNoticePromptCount = 0
+  function Show-ConfirmDialog {
+    param([string]$ChipText, [string]$EnText, [string]$Message, [string]$OkText,
+          [switch]$InfoOnly, [string]$Banner)
+    $script:PowerRecoveryNoticePromptCount++
+    return $true
+  }
+  function Write-Log { param([string]$Message) }
+  Assert-True (-not (Test-PowerRecoveryNoticeAcknowledged)) 'a missing notice marker was treated as acknowledged'
+  Show-PowerRecoveryVersionNotice
+  Show-PowerRecoveryVersionNotice
+  Assert-True ($script:PowerRecoveryNoticePromptCount -eq 1) 'the power recovery notice repeated in one session'
+  Assert-True (Test-PowerRecoveryNoticeAcknowledged) 'acknowledging the power recovery notice did not persist its marker'
+  $script:PowerRecoveryNoticePromptedThisRun = $false
+  Show-PowerRecoveryVersionNotice
+  Assert-True ($script:PowerRecoveryNoticePromptCount -eq 1) 'the power recovery notice repeated after a simulated restart'
+} finally {
+  Remove-Item -LiteralPath $noticeTestDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 Assert-True ($raw.Contains("`$lines.Add('== 用户反馈选择 ==')") -and
   $raw.Contains('New-DiagnosticReport -Feedback $feedback') -and
   $raw.Contains("if ((`$issueChoices.Count + `$benefitChoices.Count) -eq 0)")) `
