@@ -56,6 +56,33 @@ Assert-True ($optionalUpdate -and -not $optionalUpdate.Mandatory) 'v0.22.3 does 
 Assert-True ($null -eq (Test-BoosterUpdate -CurrentVersion $currentVersion -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri)) `
   'current release incorrectly detects itself as an update'
 $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
+Assert-True ($installerBuildSource -match "(?s)'PawnIO_setup\.exe'\s*=\s*'1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032'" -and
+  $installerBuildSource -match 'Get-AuthenticodeSignature' -and
+  $installerBuildSource.Contains('CN=namazso\.eu')) `
+  'build no longer pins and verifies the signed PawnIO 2.2.0 installer'
+Assert-True ($setupSource -match 'EnsurePawnIoInstalled\(stage, onProgress\)' -and
+  $setupSource -match 'Arguments = "-install -silent"' -and
+  $setupSource -match 'PawnIoInstallerSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032"' -and
+  $setupSource -match '测试模式已跳过 PawnIO 驱动安装') `
+  'installer no longer installs the verified PawnIO driver or isolates driver installation from test builds'
+Assert-True ($setupSource -match 'SetNamedSecurityInfoW' -and
+  $setupSource -match 'LABEL_SECURITY_INFORMATION' -and
+  $setupSource -match 'S:\(ML;OICI;NW;;;HI\)' -and
+  $setupSource -match '/setintegritylevel \(CI\)\(OI\)H') `
+  'installer high-integrity labeling is missing the native API path or documented icacls fallback'
+$stageProtection = [regex]::Match($setupSource, '(?s)static void CreateProtectedTransactionStage\s*\(.*?\n    \}').Value
+Assert-True ($stageProtection -match 'TryApplyHighIntegrityLabel' -and
+  $stageProtection -match 'EnsureExactAdminSystemEntry\(stage, true\)' -and
+  $stageProtection -match 'High MIC.*附加纵深防护') `
+  'staging label failure still blocks every drive instead of falling back to the verified Admin/SYSTEM DACL'
+Assert-True ($setupSource -match 'DFB_TEST_FORCE_INTEGRITY_LABEL_FAILURE') `
+  'test build cannot exercise the staging-label fallback path'
+Assert-True ($setupSource -match '若所有磁盘都出现同一错误，无需继续换盘') `
+  'installer still misleads users into retrying every drive for a machine-wide security-label failure'
+$anchorLabeling = [regex]::Match($setupSource, '(?s)static void SetHighIntegrityAnchor\s*\(.*?\n    \}').Value
+Assert-True ($anchorLabeling -match 'throw new IOException' -and
+  $anchorLabeling -notmatch 'EnsureExactAdminSystemEntry') `
+  'permanent custom-drive anchor must still fail closed when its High MIC label cannot be established'
 Assert-True ($setupSource -match 'PROC_THREAD_ATTRIBUTE_PARENT_PROCESS' -and
   $setupSource -match 'PROCESS_CREATE_PROCESS' -and $setupSource -match 'EXTENDED_STARTUPINFO_PRESENT') `
   'elevated run-after does not create through the verified desktop Explorer parent'
@@ -208,6 +235,20 @@ try {
   # 其他盘布局必须恰好是 <volume>\<anchor>\app，任意中间层都 fail closed。
   $setupAssembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($setup))
   $installerType = $setupAssembly.GetType('DfbSetup.Installer', $true)
+  $tryApplyIntegrity = $installerType.GetMethod('TryApplyHighIntegrityLabel', [Reflection.BindingFlags]'Static,NonPublic')
+  $savedIntegrityFailure = $env:DFB_TEST_FORCE_INTEGRITY_LABEL_FAILURE
+  try {
+    $env:DFB_TEST_FORCE_INTEGRITY_LABEL_FAILURE = '1'
+    $integrityArgs = [object[]]::new(2)
+    $integrityArgs[0] = [string](Join-Path $testBase '.dfb-stage-integrity-fixture')
+    $integrityArgs[1] = [string]::Empty
+    Assert-True (-not [bool]$tryApplyIntegrity.Invoke($null, $integrityArgs) -and
+      [string]$integrityArgs[1] -like '*测试注入*') `
+      'test build did not exercise the machine-wide High MIC failure signal'
+  } finally {
+    if ($null -eq $savedIntegrityFailure) { Remove-Item Env:DFB_TEST_FORCE_INTEGRITY_LABEL_FAILURE -ErrorAction SilentlyContinue }
+    else { $env:DFB_TEST_FORCE_INTEGRITY_LABEL_FAILURE = $savedIntegrityFailure }
+  }
   # 健康检查必须识别进程树里的任意可交互 WPF 顶层窗口，而不是只相信
   # Process.MainWindowHandle（PowerShell 可能先暴露隐藏控制台/辅助窗口）。
   Add-Type -AssemblyName PresentationFramework
@@ -304,8 +345,11 @@ try {
   $expectedPayload = @(
     'DISCLAIMER.md','LICENSE','NOTICE.md','README.md','SKILL.md','install.identity',
     'data\streamer-settings.json','EngineHost.exe','UninstallHost.exe','gui\app.ico','gui\DeltaForceBooster-GUI.ps1',
-    'scripts\delta-booster.ps1','scripts\diagnose.ps1','scripts\telemetry-client.ps1','scripts\tuning-experiment.ps1','scripts\updater.ps1','scripts\user-context-worker.ps1',
-    'tools\DeltaForce-Recommended.nip','tools\PresentMon-LICENSE.txt','tools\PresentMon.exe',
+    'scripts\delta-booster.ps1','scripts\diagnose.ps1','scripts\hardware-sensors.ps1','scripts\telemetry-client.ps1','scripts\tuning-experiment.ps1','scripts\updater.ps1','scripts\user-context-worker.ps1',
+    'tools\BlackSharp.Core.dll','tools\DeltaForce-Recommended.nip','tools\DiskInfoToolkit.dll','tools\HidSharp.dll',
+    'tools\LibreHardwareMonitor-LICENSE.txt','tools\LibreHardwareMonitor-THIRD-PARTY-NOTICES.txt','tools\LibreHardwareMonitorLib.dll',
+    'tools\PawnIO-LICENSE.txt','tools\PawnIO_setup.exe','tools\PresentMon-LICENSE.txt','tools\PresentMon.exe','tools\RAMSPDToolkit-NDD.dll',
+    'tools\System.Buffers.dll','tools\System.Memory.dll','tools\System.Numerics.Vectors.dll','tools\System.Runtime.CompilerServices.Unsafe.dll',
     '启动优化工具.bat','启动优化工具.exe','卸载.bat','卸载.exe','uninstall.ps1'
   ) | Sort-Object
   $destPrefix = [IO.Path]::GetFullPath($dest).TrimEnd('\') + '\'

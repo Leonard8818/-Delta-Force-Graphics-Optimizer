@@ -1,6 +1,6 @@
 ﻿<#
   DeltaForceBooster 安装包构建脚本 — v0.9
-  只用系统自带组件（Compress-Archive + .NET Framework csc），零第三方依赖，只产出一个东西：
+  构建只用系统自带组件（Compress-Archive + .NET Framework csc），只产出一个东西：
     build\DeltaForceBooster-Setup-vX.Y.exe —— 图形安装向导（WPF，三角洲官网视觉）：
       欢迎/自选安装位置/进度/完成四页，payload.zip 以 /resource: 内嵌，真正单文件
 
@@ -54,13 +54,49 @@ $ver4 = ($seg[0..3]) -join '.'
 # ---------- 1. 收集要分发的文件 ----------
 # tools 是第三方二进制风险最高的目录：只要出现白名单外文件或子目录，就让构建失败，
 # 并且在生成任何新产物前就停止。
-$allowedTools = @('PresentMon.exe', 'PresentMon-LICENSE.txt', 'DeltaForce-Recommended.nip')
+$allowedTools = @(
+  'PresentMon.exe', 'PresentMon-LICENSE.txt', 'DeltaForce-Recommended.nip',
+  'LibreHardwareMonitorLib.dll', 'HidSharp.dll', 'DiskInfoToolkit.dll', 'RAMSPDToolkit-NDD.dll',
+  'BlackSharp.Core.dll', 'System.Memory.dll', 'System.Runtime.CompilerServices.Unsafe.dll',
+  'System.Buffers.dll', 'System.Numerics.Vectors.dll', 'PawnIO_setup.exe',
+  'LibreHardwareMonitor-LICENSE.txt', 'LibreHardwareMonitor-THIRD-PARTY-NOTICES.txt', 'PawnIO-LICENSE.txt'
+)
 $extraTools = @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Force | Where-Object {
   $allowedTools -notcontains $_.Name
 })
 if ($extraTools.Count -gt 0) {
   throw "tools 目录含发布白名单外项目，构建已停止：$($extraTools.Name -join ', ')"
 }
+
+# 传感器 DLL 与内核驱动安装器会进入高权限进程：固定到已验证的官方 v0.9.6 / v2.2.0
+# 文件，并额外复验 PawnIO Authenticode，避免本地 tools 被替换后由构建流程重新背书。
+$hardwareToolHashes = [ordered]@{
+  'LibreHardwareMonitorLib.dll' = '6EBC194316536BA61AF5BE24508AD9FCBB2ECC685E716C12E787C79530F66BF0'
+  'HidSharp.dll' = 'D86690EFDE30EA9179F669320F39148853793B743A98B531AFEAF30598E22F54'
+  'DiskInfoToolkit.dll' = '1ACBF51B3C10C51C986CF43021680D34A2E38D9A5BA652BCFA9A1B5F7FC09800'
+  'RAMSPDToolkit-NDD.dll' = 'B6882354C7C8EC186617E421507743DBFAE09C5C1FC24CEF76A1D0C0C26651DE'
+  'BlackSharp.Core.dll' = 'CAFB93AFCC8D8A367E21F619673D05C06887D8964867FED1371F02DED1CD3E23'
+  'System.Memory.dll' = 'D5E8E4866F9CFA66F7765660F84B210198893E55335487AFE5EBDA342C0E913D'
+  'System.Runtime.CompilerServices.Unsafe.dll' = '08CBD7278B66F1E68425A82D4B97181A4130D93E3DD91831407ABA7212CCDACF'
+  'System.Buffers.dll' = '2D78D770C9CB997199154AE8C018B9F1D1EFBC86729F7264DDE6DBAD2A12CAC3'
+  'System.Numerics.Vectors.dll' = '20C2FA81B8C70D651099D762954F285FD4F942E63B2D7217C145DAB8D4B2F4C9'
+  'PawnIO_setup.exe' = '1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032'
+}
+foreach ($name in $hardwareToolHashes.Keys) {
+  $path = Join-Path $root "tools\$name"
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "硬件传感器组件缺失：tools\$name" }
+  $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
+  if ($actual -cne $hardwareToolHashes[$name]) { throw "硬件传感器组件哈希不符：tools\$name" }
+}
+$pawnIoPath = Join-Path $root 'tools\PawnIO_setup.exe'
+$pawnIoSignature = Get-AuthenticodeSignature -LiteralPath $pawnIoPath
+if ($pawnIoSignature.Status -ne 'Valid' -or "$($pawnIoSignature.SignerCertificate.Subject)" -notmatch 'CN=namazso\.eu(?:,|$)') {
+  throw "PawnIO 安装器签名无效或发布者不符：$($pawnIoSignature.Status) / $($pawnIoSignature.SignerCertificate.Subject)"
+}
+$lhmVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $root 'tools\LibreHardwareMonitorLib.dll')).FileVersion
+if ($lhmVersion -ne '0.9.6.0') { throw "LibreHardwareMonitor 版本不符：$lhmVersion" }
+$pawnIoVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($pawnIoPath).FileVersion
+if ($pawnIoVersion -ne '2.2.0.0') { throw "PawnIO 安装器版本不符：$pawnIoVersion" }
 
 # 中间产物放 ASCII 路径的临时目录：仓库路径含「桌面」，非中文代码页（本机 ACP=1252）下
 # 命令行工具处理中文路径容易翻车，成品最后再移回 build\。白名单检查通过后才创建，
@@ -99,8 +135,15 @@ $payloadFiles = @(
   'DISCLAIMER.md', 'LICENSE', 'NOTICE.md',
   'scripts\delta-booster.ps1', 'scripts\diagnose.ps1', 'scripts\updater.ps1',
   'scripts\telemetry-client.ps1', 'scripts\tuning-experiment.ps1', 'scripts\user-context-worker.ps1',
+  'scripts\hardware-sensors.ps1',
   'gui\DeltaForceBooster-GUI.ps1', 'gui\app.ico',
   'tools\PresentMon.exe', 'tools\PresentMon-LICENSE.txt', 'tools\DeltaForce-Recommended.nip',
+  'tools\LibreHardwareMonitorLib.dll', 'tools\HidSharp.dll', 'tools\DiskInfoToolkit.dll',
+  'tools\RAMSPDToolkit-NDD.dll', 'tools\BlackSharp.Core.dll', 'tools\System.Memory.dll',
+  'tools\System.Runtime.CompilerServices.Unsafe.dll', 'tools\System.Buffers.dll',
+  'tools\System.Numerics.Vectors.dll', 'tools\PawnIO_setup.exe',
+  'tools\LibreHardwareMonitor-LICENSE.txt', 'tools\LibreHardwareMonitor-THIRD-PARTY-NOTICES.txt',
+  'tools\PawnIO-LICENSE.txt',
   'data\streamer-settings.json'
 )
 
@@ -644,8 +687,8 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复原电源方案被删除或失效时还原会反复失败的问题；现在会回退到 Windows「平衡」，并记录未精确恢复原方案的提示。
-- 全量还原存在失败时明确显示「还原未完成」；成功回退会写入还原凭证，重复点击不会再次执行。
+- 修复部分 Windows 或安全软件环境中安装器把所有 NTFS 磁盘误判为不可用的问题；临时 staging 标签失败时会复验封闭 ACL 后继续安装。
+- 内置 LibreHardwareMonitor 与签名 PawnIO 驱动，直接读取可信 CPU/GPU 温度，不再要求用户另开硬件监控软件。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。

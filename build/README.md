@@ -21,7 +21,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 
 **只发安装版**：绿色免安装 zip 已于 v0.15 停产（服务器上的下载入口也已移除）。
 payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`NOTICE.md`、
-`DISCLAIMER.md`（免责声明门控要读它）；`SECURITY.md`/`CONTRIBUTING.md` 只留在仓库。
+`DISCLAIMER.md`（免责声明门控要读它），以及 PresentMon、LibreHardwareMonitor、PawnIO 的
+许可证/第三方声明；`SECURITY.md`/`CONTRIBUTING.md` 只留在仓库。
 
 设计要点：
 

@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.3
+  DeltaForceBooster 图形界面 — v0.23.0.4
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.4：修复部分环境中安装器把所有 NTFS 磁盘误判为不可用的问题；内置 LibreHardwareMonitor
+         与签名 PawnIO 驱动，直接读取可信 CPU/GPU 温度。
   v0.23.0.3：修复原电源方案被删除或失效时还原会反复失败的问题；现在会回退到 Windows「平衡」并记录提示；
          全量还原存在失败时明确显示「还原未完成」，成功回退会写入还原凭证，重复点击不再重复执行。
   v0.23.0.2：修正实时 FPS 的显示帧率与主交换链统计口径；CPU 温度缺少可信传感器源时说明原因；
@@ -484,8 +486,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.3'
-$script:DisplayVersion = '0.23.0.3'
+$script:GuiVersion = '0.23.0.4'
+$script:DisplayVersion = '0.23.0.4'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -852,7 +854,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.3 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.4 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1438,7 +1440,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.3 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.4 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2511,12 +2513,28 @@ public static class DfbLiveSystemMetrics {
 }
 
 $script:LiveMetricsWorker = {
-  param($State,[string]$PresentMon,[string]$NvidiaSmi,[string]$GpuVendor,[string]$GpuPciLocation)
+  param($State,[string]$PresentMon,[string]$NvidiaSmi,[string]$GpuVendor,[string]$GpuPciLocation,
+    [string]$HardwareSensorScript,[string]$HardwareSensorLibraryDir)
   $ErrorActionPreference = 'SilentlyContinue'
 
   function Get-OptionalSensorTemperatures {
-    $cpu = $null; $gpu = $null; $cpuSource = ''; $gpuSource = ''; $providerSeen = $false
+    $cpu = $null; $gpu = $null; $cpuSource = ''; $gpuSource = ''; $providerSeen = $false; $bundledReadError = ''
+    if ($sensorComputer) {
+      $providerSeen = $true
+      try {
+        $bundled = Get-DfbHardwareTemperatures $sensorComputer
+        if ($null -ne $bundled.Cpu) {
+          $cpu = $bundled.Cpu
+          $cpuSource = "内置硬件传感器（LibreHardwareMonitor / PawnIO · $($bundled.CpuSensor)）"
+        }
+        if ($null -ne $bundled.Gpu) {
+          $gpu = $bundled.Gpu
+          $gpuSource = "内置硬件传感器（LibreHardwareMonitor / PawnIO · $($bundled.GpuSensor)）"
+        }
+      } catch { $bundledReadError = $_.Exception.Message }
+    }
     foreach ($namespace in 'root\LibreHardwareMonitor','root\OpenHardwareMonitor') {
+      if ($null -ne $cpu -and $null -ne $gpu) { break }
       try {
         $sensors = @(Get-CimInstance -Namespace $namespace -ClassName Sensor -ErrorAction Stop |
           Where-Object { "$($_.SensorType)" -eq 'Temperature' -and $null -ne $_.Value })
@@ -2535,12 +2553,21 @@ $script:LiveMetricsWorker = {
         if ($null -ne $cpu -and $null -ne $gpu) { break }
       } catch {}
     }
-    $cpuStatus = $(if ($null -ne $cpu) { '' } elseif ($providerSeen) {
-      '已连接硬件监控源，但它没有上报可信的 CPU 封装温度'
+    $cpuStatus = $(if ($null -ne $cpu) { '' } elseif ($bundledReadError) {
+      "内置硬件传感器读取失败：$bundledReadError"
+    } elseif ($sensorInitializationError) {
+      "内置硬件传感器初始化失败：$sensorInitializationError"
+    } elseif ($providerSeen) {
+      '内置硬件传感器已启动，但没有上报可信的 CPU 封装温度；请确认 PawnIO 驱动正常并重启软件'
     } else {
-      'Windows 没有统一的可信 CPU 封装温度接口；当前也未检测到 LibreHardwareMonitor/OpenHardwareMonitor WMI 传感器源'
+      '未检测到可用的硬件温度源'
     })
-    [pscustomobject]@{Cpu=$cpu;Gpu=$gpu;CpuSource=$cpuSource;GpuSource=$gpuSource;CpuStatus=$cpuStatus}
+    $gpuStatus = $(if ($null -ne $gpu) { '' } elseif ($bundledReadError) {
+      "内置硬件传感器读取失败：$bundledReadError"
+    } elseif ($sensorInitializationError) {
+      "内置硬件传感器初始化失败：$sensorInitializationError"
+    } else { '硬件传感器与显卡驱动均未上报可信的 GPU 温度' })
+    [pscustomobject]@{Cpu=$cpu;Gpu=$gpu;CpuSource=$cpuSource;GpuSource=$gpuSource;CpuStatus=$cpuStatus;GpuStatus=$gpuStatus}
   }
 
   function Get-WindowsGpuUsage {
@@ -2584,9 +2611,16 @@ $script:LiveMetricsWorker = {
     $null
   }
 
-  $sampler = $null; $cpuSampler = $null; $gamePid = 0
+  $sampler = $null; $cpuSampler = $null; $sensorComputer = $null; $sensorInitializationError = ''; $gamePid = 0
   $nextHardware = [DateTime]::MinValue; $nextProcess = [DateTime]::MinValue
   try {
+    try {
+      if (-not $HardwareSensorScript -or -not (Test-Path -LiteralPath $HardwareSensorScript -PathType Leaf)) {
+        throw 'hardware-sensors.ps1 缺失'
+      }
+      . $HardwareSensorScript
+      $sensorComputer = Open-DfbHardwareMonitor $HardwareSensorLibraryDir
+    } catch { $sensorInitializationError = $_.Exception.Message }
     $sampler = New-Object DfbLivePresentMonSampler
     $cpuSampler = New-Object DfbProcessorUtilitySampler
     while (-not [bool]$State.Stop) {
@@ -2598,19 +2632,19 @@ $script:LiveMetricsWorker = {
         $memoryUsage = [DfbLiveSystemMetrics]::ReadMemoryUsage()
         $optional = Get-OptionalSensorTemperatures
         $cpuTemp = $optional.Cpu; $cpuSource = $optional.CpuSource
-        $gpuUsage = $null; $gpuTemp = $optional.Gpu; $gpuSource = $optional.GpuSource
+        $gpuUsage = $null; $gpuTemp = $optional.Gpu; $gpuSource = $optional.GpuSource; $gpuStatus = $optional.GpuStatus
         if ($GpuVendor -eq 'NVIDIA') {
           $nvidia = Get-NvidiaSnapshot
           if ($nvidia) {
             $gpuUsage = $nvidia.Usage
-            if ($null -ne $nvidia.Temperature) { $gpuTemp = $nvidia.Temperature; $gpuSource = 'NVIDIA 驱动' }
+            if ($null -ne $nvidia.Temperature) { $gpuTemp = $nvidia.Temperature; $gpuSource = 'NVIDIA 驱动'; $gpuStatus = '' }
           }
         }
         if ($null -eq $gpuUsage) { $gpuUsage = Get-WindowsGpuUsage }
         $State.CpuUsage = $(if ([double]::IsNaN($cpuUsage)) { $null } else { [math]::Round($cpuUsage,1) })
         $State.MemoryUsage = $(if ([double]::IsNaN($memoryUsage)) { $null } else { [math]::Round($memoryUsage,1) })
         $State.CpuTemperature = $cpuTemp; $State.CpuTemperatureSource = $cpuSource; $State.CpuTemperatureStatus = $optional.CpuStatus
-        $State.GpuUsage = $gpuUsage; $State.GpuTemperature = $gpuTemp; $State.GpuTemperatureSource = $gpuSource
+        $State.GpuUsage = $gpuUsage; $State.GpuTemperature = $gpuTemp; $State.GpuTemperatureSource = $gpuSource; $State.GpuTemperatureStatus = $gpuStatus
         $State.SampledAt = $now
       }
 
@@ -2649,6 +2683,7 @@ $script:LiveMetricsWorker = {
   } finally {
     if ($sampler) { $sampler.Dispose() }
     if ($cpuSampler) { $cpuSampler.Dispose() }
+    if ($sensorComputer -and (Get-Command Close-DfbHardwareMonitor -ErrorAction SilentlyContinue)) { Close-DfbHardwareMonitor $sensorComputer }
   }
 }
 
@@ -2659,7 +2694,7 @@ function Update-LiveMetricsDashboard {
   Set-LiveMetricGauge 'cpu' $state.CpuUsage '处理器效用' $script:C.Green
   Set-HardwareTemperature 'cpu' $state.CpuTemperature "$($state.CpuTemperatureSource)" "$($state.CpuTemperatureStatus)"
   Set-LiveMetricGauge 'gpu' $state.GpuUsage '实时占用' $script:C.Green
-  Set-HardwareTemperature 'gpu' $state.GpuTemperature "$($state.GpuTemperatureSource)"
+  Set-HardwareTemperature 'gpu' $state.GpuTemperature "$($state.GpuTemperatureSource)" "$($state.GpuTemperatureStatus)"
   Set-LiveMetricGauge 'memory' $state.MemoryUsage '实时占用' $script:C.Gold
 }
 
@@ -2672,13 +2707,15 @@ function Start-LiveMetricsMonitor($Hw) {
   }
   $script:LiveMetricsState = [hashtable]::Synchronized(@{
     Stop=$false;Fps=$null;FpsStatus='游戏未运行';GameRunning=$false;CpuUsage=$null;CpuTemperature=$null
-    CpuTemperatureSource='';CpuTemperatureStatus='正在检测可信 CPU 温度源';GpuUsage=$null;GpuTemperature=$null;GpuTemperatureSource='';MemoryUsage=$null
+    CpuTemperatureSource='';CpuTemperatureStatus='正在启动内置硬件传感器';GpuUsage=$null;GpuTemperature=$null;GpuTemperatureSource='';GpuTemperatureStatus='正在启动内置硬件传感器';MemoryUsage=$null
   })
   $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
+  $hardwareSensorScript = Join-Path $script:RootDir 'scripts\hardware-sensors.ps1'
+  $hardwareSensorLibraryDir = Join-Path $script:RootDir 'tools'
   $nvidiaSmi = $(if (Get-Command Get-NvidiaSmiPath -ErrorAction SilentlyContinue) { Get-NvidiaSmiPath } else { $null })
   $script:LiveMetricsPowerShell = [PowerShell]::Create()
   [void]$script:LiveMetricsPowerShell.AddScript($script:LiveMetricsWorker)
-  foreach ($argument in @($script:LiveMetricsState,$presentMon,$nvidiaSmi,"$($Hw.MainGpuVendor)","$($Hw.MainGpuPciLocation)")) {
+  foreach ($argument in @($script:LiveMetricsState,$presentMon,$nvidiaSmi,"$($Hw.MainGpuVendor)","$($Hw.MainGpuPciLocation)",$hardwareSensorScript,$hardwareSensorLibraryDir)) {
     [void]$script:LiveMetricsPowerShell.AddArgument($argument)
   }
   $script:LiveMetricsAsync = $script:LiveMetricsPowerShell.BeginInvoke()

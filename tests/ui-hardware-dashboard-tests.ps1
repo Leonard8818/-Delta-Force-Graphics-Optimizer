@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $guiPath = Join-Path $root 'gui\DeltaForceBooster-GUI.ps1'
 $enginePath = Join-Path $root 'scripts\delta-booster.ps1'
+$sensorPath = Join-Path $root 'scripts\hardware-sensors.ps1'
 
 function Assert-True([bool]$Condition,[string]$Message) {
   if (-not $Condition) { throw "ASSERT FAILED: $Message" }
@@ -19,6 +20,9 @@ Assert-True ($errors.Count -eq 0) ('engine AST parse failed: ' + (($errors | For
 
 $raw = Get-Content -LiteralPath $guiPath -Raw -Encoding UTF8
 $engineRaw = Get-Content -LiteralPath $enginePath -Raw -Encoding UTF8
+$sensorTokens = $null; $sensorErrors = $null
+[void][Management.Automation.Language.Parser]::ParseFile($sensorPath,[ref]$sensorTokens,[ref]$sensorErrors)
+Assert-True ($sensorErrors.Count -eq 0) ('hardware sensor AST parse failed: ' + (($sensorErrors | ForEach-Object Message) -join '; '))
 Assert-True ($raw -match '(?s)<Grid>\s*<Grid\.ColumnDefinitions>\s*<ColumnDefinition Width="Auto"/>\s*<ColumnDefinition Width="\*"/>\s*<ColumnDefinition Width="Auto"/>\s*</Grid\.ColumnDefinitions>.*?x:Name="GameText" Grid\.Column="1".*?x:Name="BrowseBtn" Grid\.Column="2"') `
   'game path row does not keep the relocate button pinned to the right edge'
 foreach ($needle in @(
@@ -31,6 +35,7 @@ foreach ($needle in @(
   "Set-HardwareTemperature 'cpu'","Set-HardwareTemperature 'gpu'","-TemperatureKey 'cpu'","-TemperatureKey 'gpu'",
   "`$v.TextWrapping = 'Wrap'","`$v.TextTrimming = 'None'","`$v.ToolTip = `$Value",
   'DfbLivePresentMonSampler','DfbProcessorUtilitySampler','DfbLiveSystemMetrics','Get-TemperatureColor','Start-LiveMetricsMonitor',
+  'scripts\hardware-sensors.ps1','LibreHardwareMonitor / PawnIO','GpuTemperatureStatus',
   "`$State.FpsStatus = '等待有效帧'",
   '@"\Processor Information(_Total)\% Processor Utility"','处理器效用',
   'windowHeight=[math]::Round($WindowHeight,0)','Set-SavedAppWindowHeight','Save-AppUiPreferences $script:CurrentTheme',
@@ -53,6 +58,10 @@ Assert-True (-not $raw.Contains('#FFB5840D') -and -not $raw.Contains('#FFFFF5D9'
 Assert-True ($raw.IndexOf('x:Name="HwGrid" Columns="4"') -lt $raw.IndexOf('x:Name="MetricsGrid"')) `
   'CPU/GPU hardware row is not above the FPS and occupancy row'
 Assert-True (-not $raw.Contains('MSAcpi_ThermalZoneTemperature')) 'motherboard ACPI thermal zone was still presented as CPU package temperature'
+foreach ($name in @('LibreHardwareMonitorLib.dll','HidSharp.dll','DiskInfoToolkit.dll','RAMSPDToolkit-NDD.dll',
+  'BlackSharp.Core.dll','System.Memory.dll','System.Runtime.CompilerServices.Unsafe.dll','System.Buffers.dll','System.Numerics.Vectors.dll')) {
+  Assert-True (Test-Path -LiteralPath (Join-Path $root "tools\$name") -PathType Leaf) "bundled hardware sensor dependency is missing: $name"
+}
 foreach ($needle in 'WmiMonitorID','PrimaryDisplayName','DisplayName','DisplayNames') {
   Assert-True $engineRaw.Contains($needle) "engine missing display identity field: $needle"
 }
@@ -207,6 +216,26 @@ Assert-True ($displayFunction.Count -eq 1) 'Get-DisplayTopologyInfo not found'
   Assert-True ($display.PrimaryDisplayName -eq 'SANC') 'monitor friendly name was not decoded'
   Assert-True ($display.ActiveDisplayCount -eq 1 -and $display.Connectors -contains 'displayport') 'display topology fields regressed'
 } $displayFunction[0].Extent.Text
+
+. $sensorPath
+$preferredCpu = Select-DfbPreferredTemperature @(
+  [pscustomobject]@{Name='Core Max';Value=61.0},
+  [pscustomobject]@{Name='CPU Package';Value=53.5},
+  [pscustomobject]@{Name='CPU Core #1';Value=64.0}
+) @('(?i)^CPU Package$','(?i)^Core Max$','(?i)^CPU Core #\d+$')
+Assert-True ($preferredCpu.Name -eq 'CPU Package' -and $preferredCpu.Value -eq 53.5) `
+  'bundled sensor selection did not prefer CPU Package over hotter per-core values'
+$sensorComputer = Open-DfbHardwareMonitor (Join-Path $root 'tools')
+try {
+  $temperatureSnapshot = Get-DfbHardwareTemperatures $sensorComputer
+  Assert-True ($null -ne $temperatureSnapshot -and
+    $temperatureSnapshot.PSObject.Properties.Name -contains 'Cpu' -and
+    $temperatureSnapshot.PSObject.Properties.Name -contains 'Gpu') `
+    'bundled sensor provider did not return the CPU/GPU snapshot contract'
+  foreach ($value in @($temperatureSnapshot.Cpu,$temperatureSnapshot.Gpu) | Where-Object { $null -ne $_ }) {
+    Assert-True ([double]$value -ge 10 -and [double]$value -le 125) 'bundled sensor provider returned an implausible temperature'
+  }
+} finally { Close-DfbHardwareMonitor $sensorComputer }
 
 Initialize-LiveMetricsTypes
 Assert-True ([bool]('DfbLivePresentMonSampler' -as [type])) 'PresentMon live sampler type did not compile'

@@ -1,10 +1,10 @@
 {
-    "version":  "0.23.0.3",
-    "displayVersion":  "0.23.0.3",
+    "version":  "0.23.0.4",
+    "displayVersion":  "0.23.0.4",
     "minimumSupportedVersion":  "0.22.3",
-    "notes":  "- 修复原电源方案被删除或失效时还原会反复失败的问题；现在会回退到 Windows「平衡」，并记录未精确恢复原方案的提示。\n- 全量还原存在失败时明确显示「还原未完成」；成功回退会写入还原凭证，重复点击不会再次执行。",
+    "notes":  "- 修复部分 Windows 或安全软件环境中安装器把所有 NTFS 磁盘误判为不可用的问题；临时 staging 标签失败时会复验封闭 ACL 后继续安装。\n- 内置 LibreHardwareMonitor 与签名 PawnIO 驱动，直接读取可信 CPU/GPU 温度，不再要求用户另开硬件监控软件。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "8a82d4478a7050c305d684fc0a18d1814fca95df89232c62a80578b5f65d5b7d",
-    "size":  922112
+    "sha256":  "08ed018f716c1855c2a8ea8f87b3fb5914670f84f47fc990a7646e8b719a62fc",
+    "size":  5425152
 }

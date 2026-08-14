@@ -29,7 +29,9 @@
 
 - `tools/DeltaForce-Recommended.nip` 是本项目生成的配置文件，采用 NVIDIA Profile Inspector 的导入格式（该格式的 schema 与设置项 ID 参考自 [nvidiaProfileInspector](https://github.com/Orbmu2k/nvidiaProfileInspector) 开源项目）。本项目**不分发** Profile Inspector 程序本身，使用者需自行获取。
 - `tools/PresentMon.exe` 来自 Intel / GameTechDev 的 [PresentMon](https://github.com/GameTechDev/PresentMon) 官方发布，用于通过 Windows ETW 采样游戏帧呈现数据；本项目不注入游戏进程。其许可证原文随附于 `tools/PresentMon-LICENSE.txt`。
-- 除上述 PresentMon 外，安装包与启动器均由 Windows 自带的 .NET 编译器现场构建，不再捆绑其他第三方可执行文件。
+- `tools/LibreHardwareMonitorLib.dll` 及其运行依赖来自 [LibreHardwareMonitor v0.9.6](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6)，用于在本机直接读取 CPU、主板 Super I/O 与 GPU 传感器。MPL-2.0 许可证和上游第三方声明分别随附于 `tools/LibreHardwareMonitor-LICENSE.txt`、`tools/LibreHardwareMonitor-THIRD-PARTY-NOTICES.txt`。
+- `tools/PawnIO_setup.exe` 是 [PawnIO](https://pawnio.eu/) v2.2.0 官方签名安装器，为 LibreHardwareMonitor 提供低层传感器访问。安装器在用户确认 UAC 后静默安装该驱动；由于 PawnIO 可能被其他硬件工具共用，卸载本工具时不会自动移除，可在 Windows「已安装的应用」中单独卸载。许可证原文随附于 `tools/PawnIO-LICENSE.txt`。
+- 本项目自己的安装包、启动器和管理员宿主仍由 Windows 自带的 .NET 编译器现场构建。
 
 ## 游戏内设置参考数据
 

@@ -53,6 +53,7 @@ using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using WShapes = System.Windows.Shapes;
 using WinForms = System.Windows.Forms;
 
@@ -252,6 +253,7 @@ static class Program {
             Log(logFile, "桌面快捷方式: " + Installer.CreateDesktopShortcut(codeRoot));
             Log(logFile, runAfter ? "新版文件已切换，等待启动验证: " + codeRoot : "安装完成: " + codeRoot);
             if (!string.IsNullOrEmpty(Installer.LastMigrationNote)) Log(logFile, Installer.LastMigrationNote);
+            if (!string.IsNullOrEmpty(Installer.PawnIoInstallNote)) Log(logFile, Installer.PawnIoInstallNote);
             if (runAfter) {
                 int launchedPid;
                 LaunchDisposition disposition;
@@ -476,7 +478,11 @@ static class Installer {
     const string InstallProductId = "DeltaForceBooster";
     const string AnchorIdentityName = "anchor.identity";
     const string AnchorCodeDirectory = "app";
+    const string PawnIoInstallerRelativePath = @"tools\PawnIO_setup.exe";
+    const string PawnIoInstallerSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032";
     public static string LastMigrationNote;
+    public static string PawnIoInstallNote;
+    public static bool PawnIoRebootRequired;
 
     static string TestRoot() {
 #if DFB_TESTING
@@ -1551,6 +1557,73 @@ static class Installer {
         using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "");
     }
 
+    static bool IsPawnIoCurrent(out Version installedVersion) {
+        installedVersion = null;
+        RegistryView[] views = Environment.Is64BitOperatingSystem
+            ? new RegistryView[] { RegistryView.Registry64, RegistryView.Registry32 }
+            : new RegistryView[] { RegistryView.Registry32 };
+        foreach (RegistryView view in views) {
+            try {
+                using (RegistryKey baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+                using (RegistryKey key = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO")) {
+                    if (key == null) continue;
+                    Version parsed;
+                    if (!Version.TryParse(Convert.ToString(key.GetValue("DisplayVersion"), CultureInfo.InvariantCulture), out parsed)) continue;
+                    installedVersion = parsed;
+                    return parsed.CompareTo(new Version(2, 2, 0, 0)) >= 0;
+                }
+            } catch (Exception) { }
+        }
+        return false;
+    }
+
+    static void EnsurePawnIoInstalled(string stage, Action<int, int, string> onProgress) {
+#if DFB_TESTING
+        // 安装器安全测试必须保持纯临时目录操作，绝不触碰真实内核驱动。
+        if (TestRoot() != null) {
+            PawnIoInstallNote = "测试模式已跳过 PawnIO 驱动安装";
+            return;
+        }
+#endif
+        Version installedVersion;
+        if (IsPawnIoCurrent(out installedVersion)) {
+            PawnIoInstallNote = "硬件传感器驱动已就绪：PawnIO " + installedVersion;
+            return;
+        }
+
+        string installer = ChildPath(stage, PawnIoInstallerRelativePath);
+        EnsureNoReparseExistingPath(installer);
+        if (!File.Exists(installer) ||
+            !string.Equals(FileSha256(installer), PawnIoInstallerSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("PawnIO 驱动安装器完整性复验失败");
+        if (onProgress != null) onProgress(1, 1, "正在安装签名硬件传感器驱动 PawnIO");
+
+        int exitCode;
+        using (Process process = Process.Start(new ProcessStartInfo {
+            FileName = installer,
+            Arguments = "-install -silent",
+            WorkingDirectory = Path.GetDirectoryName(installer),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        })) {
+            if (process == null) throw new InvalidOperationException("PawnIO 驱动安装进程未创建");
+            if (!process.WaitForExit(120000)) {
+                try { process.Kill(); } catch (Exception) { }
+                throw new TimeoutException("PawnIO 驱动安装超时");
+            }
+            exitCode = process.ExitCode;
+        }
+        if (exitCode != 0 && exitCode != 3010)
+            throw new InvalidOperationException("PawnIO 驱动安装失败，退出码 " + exitCode);
+        if (!IsPawnIoCurrent(out installedVersion))
+            throw new InvalidOperationException("PawnIO 安装器已返回成功，但系统没有登记有效版本");
+        PawnIoRebootRequired = exitCode == 3010;
+        PawnIoInstallNote = PawnIoRebootRequired
+            ? "PawnIO 驱动已安装；Windows 要求重启后启用 CPU 温度读取"
+            : "硬件传感器驱动已安装：PawnIO " + installedVersion;
+    }
+
     static bool IsTrustedInstallWriter(SecurityIdentifier sid) {
         if (sid == null) return false;
         string value = sid.Value;
@@ -1599,6 +1672,22 @@ static class Installer {
     static extern uint GetNamedSecurityInfo(string objectName, int objectType, uint securityInformation,
         out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
 
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true,
+        EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string stringSecurityDescriptor,
+        uint stringRevision, out IntPtr securityDescriptor, out uint securityDescriptorSize);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool GetSecurityDescriptorSacl(IntPtr securityDescriptor,
+        [MarshalAs(UnmanagedType.Bool)] out bool saclPresent, out IntPtr sacl,
+        [MarshalAs(UnmanagedType.Bool)] out bool saclDefaulted);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "SetNamedSecurityInfoW")]
+    static extern uint SetNamedSecurityInfo(string objectName, int objectType, uint securityInformation,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "ConvertSecurityDescriptorToStringSecurityDescriptorW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr securityDescriptor,
@@ -1637,19 +1726,101 @@ static class Installer {
             throw new UnauthorizedAccessException("安装锚点 High mandatory label 未包含 OI/CI/NoWriteUp：" + anchor);
     }
 
+    static bool TryEnsureHighIntegrityLabel(string path, out string detail) {
+        try { EnsureHighIntegrityAnchor(path); detail = null; return true; }
+        catch (Exception ex) { detail = ex.Message; return false; }
+    }
+
+    static bool TrySetHighIntegrityLabelNative(string path, out string detail) {
+        const int SE_FILE_OBJECT = 1;
+        const uint LABEL_SECURITY_INFORMATION = 0x00000010;
+        IntPtr descriptor = IntPtr.Zero;
+        try {
+            uint size;
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
+                "S:(ML;OICI;NW;;;HI)", 1, out descriptor, out size)) {
+                detail = "Windows API 无法创建 High MIC 描述符（错误 " + Marshal.GetLastWin32Error() + "）";
+                return false;
+            }
+            bool present, defaulted;
+            IntPtr sacl;
+            if (!GetSecurityDescriptorSacl(descriptor, out present, out sacl, out defaulted) || !present || sacl == IntPtr.Zero) {
+                detail = "Windows API 无法读取 High MIC 描述符（错误 " + Marshal.GetLastWin32Error() + "）";
+                return false;
+            }
+            uint result = SetNamedSecurityInfo(path, SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, sacl);
+            if (result != 0) {
+                detail = "Windows API 写入失败（错误 " + result + "：" + new Win32Exception((int)result).Message + "）";
+                return false;
+            }
+            detail = null;
+            return true;
+        } catch (Exception ex) {
+            detail = "Windows API 异常：" + ex.Message;
+            return false;
+        } finally {
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        }
+    }
+
+    static bool TrySetHighIntegrityLabelIcacls(string path, out string detail) {
+        string icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
+        if (!File.Exists(icacls)) { detail = "系统缺少 icacls.exe"; return false; }
+        try {
+            using (var process = Process.Start(new ProcessStartInfo {
+                FileName = icacls,
+                // 使用 Microsoft 文档给出的继承标记顺序；直接启动 exe，不经过 cmd 解析括号。
+                Arguments = "\"" + path + "\" /setintegritylevel (CI)(OI)H",
+                UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+            })) {
+                if (process == null) { detail = "icacls 未启动"; return false; }
+                if (!process.WaitForExit(15000)) {
+                    try { process.Kill(); } catch (Exception) { }
+                    detail = "icacls 执行超时";
+                    return false;
+                }
+                if (process.ExitCode != 0) {
+                    detail = "icacls 退出码 " + process.ExitCode;
+                    return false;
+                }
+            }
+            detail = null;
+            return true;
+        } catch (Exception ex) {
+            detail = "icacls 异常：" + ex.Message;
+            return false;
+        }
+    }
+
+    static bool TryApplyHighIntegrityLabel(string path, out string detail) {
+#if DFB_TESTING
+        if (Environment.GetEnvironmentVariable("DFB_TEST_FORCE_INTEGRITY_LABEL_FAILURE") == "1" &&
+            Path.GetFileName(path).IndexOf(".dfb-stage-", StringComparison.OrdinalIgnoreCase) >= 0) {
+            detail = "测试注入：High MIC 写入不可用";
+            return false;
+        }
+#endif
+        string verifyDetail;
+        if (TryEnsureHighIntegrityLabel(path, out verifyDetail)) { detail = null; return true; }
+
+        string nativeDetail;
+        if (TrySetHighIntegrityLabelNative(path, out nativeDetail) &&
+            TryEnsureHighIntegrityLabel(path, out verifyDetail)) { detail = null; return true; }
+
+        string icaclsDetail;
+        if (TrySetHighIntegrityLabelIcacls(path, out icaclsDetail) &&
+            TryEnsureHighIntegrityLabel(path, out verifyDetail)) { detail = null; return true; }
+
+        detail = "原状态/复验：" + verifyDetail + "；" + nativeDetail + "；" + icaclsDetail;
+        return false;
+    }
+
     static void SetHighIntegrityAnchor(string anchor) {
         if (TestSkipAcl(anchor)) return;
-        string icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
-        if (!File.Exists(icacls)) throw new FileNotFoundException("系统缺少 icacls.exe", icacls);
-        using (var process = Process.Start(new ProcessStartInfo {
-            FileName = icacls,
-            Arguments = "\"" + anchor + "\" /setintegritylevel (OI)(CI)H",
-            UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
-        })) {
-            if (process == null || !process.WaitForExit(15000) || process.ExitCode != 0)
-                throw new IOException("无法给其他盘安装锚点设置高完整性标签");
-        }
-        EnsureHighIntegrityAnchor(anchor);
+        string detail;
+        if (!TryApplyHighIntegrityLabel(anchor, out detail))
+            throw new IOException("无法给其他盘安装锚点设置高完整性标签：" + detail);
     }
 
     static void EnsureExactAnchorDirectory(string anchor) {
@@ -2450,14 +2621,17 @@ static class Installer {
         EnsureExactAdminSystemEntry(stage, true);
         // 子文件在逐个 Harden 前可能由当前管理员 SID 成为 owner；High IL 的继承标签阻止
         // 同账号 medium token 在解压窗口内利用 owner 身份改 DACL/抢建 junction。
-        string icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
-        using (var process = Process.Start(new ProcessStartInfo {
-            FileName = icacls,
-            Arguments = "\"" + stage + "\" /setintegritylevel (OI)(CI)H",
-            UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
-        })) {
-            if (process == null || !process.WaitForExit(15000) || process.ExitCode != 0)
-                throw new IOException("无法给安装 staging 设置高完整性标签");
+        string integrityDetail;
+        if (!TryApplyHighIntegrityLabel(stage, out integrityDetail)) {
+            // High MIC 是受保护 staging 的附加纵深防护。部分安全软件/精简系统会拦截
+            // LABEL_SECURITY_INFORMATION 与 icacls，但此处已经把 owner/DACL 封闭为仅
+            // Administrators + SYSTEM FullControl；普通用户 token 不具备写入或改 ACL 权限。
+            // 复验该核心边界后继续安装，避免把同一台电脑的所有 NTFS 磁盘都误判为不可用。
+            EnsureNoReparseExistingPath(stage);
+            EnsureExactAdminSystemEntry(stage, true);
+            string note = "系统未接受 staging 的附加 High MIC 标签，已复验封闭 Admin/SYSTEM ACL 后继续";
+            if (!string.IsNullOrEmpty(LastMigrationNote)) LastMigrationNote += "；" + note;
+            else LastMigrationNote = note;
         }
         EnsureNoReparseExistingPath(stage);
         EnsureExactAdminSystemEntry(stage, true);
@@ -2583,6 +2757,8 @@ static class Installer {
     }
 
     static DeferredInstall InstallCore(string dest, Action<int, int, string> onProgress, string migrationSource, bool deferCommit) {
+        PawnIoInstallNote = null;
+        PawnIoRebootRequired = false;
         string requested = Path.GetFullPath(dest.Trim());
         string secure = CheckSecureInstallLocation(requested);
         if (secure != null) throw new UnauthorizedAccessException(secure);
@@ -2639,6 +2815,7 @@ static class Installer {
                 // 明确白名单数据迁到 LocalAppData，旧目录随后仅原子改名保留。
             }
             HardenInstalledTree(stage);
+            EnsurePawnIoInstalled(stage, onProgress);
 
             int stoppedPresentMon = StopInstalledPresentMon(full);
             if (stoppedPresentMon > 0)
@@ -3228,6 +3405,11 @@ class SetupWindow : Window {
             Foreground = Theme.TextSub, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
             Margin = new Thickness(0, 4, 0, 0)
         });
+        warnBox.Children.Add(new TextBlock {
+            Text = "· 硬件温度使用开源 LibreHardwareMonitor，并安装 namazso.eu 签名的 PawnIO 驱动；该驱动可能被其他硬件工具共用，卸载助手不会自动删除。",
+            Foreground = Theme.TextSub, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
+            Margin = new Thickness(0, 4, 0, 0)
+        });
         sp.Children.Add(new Border {
             Child = warnBox, Background = Theme.WarnBoxBg, BorderBrush = Theme.WarnBoxLine,
             BorderThickness = new Thickness(1), Padding = new Thickness(14, 10, 14, 12),
@@ -3662,14 +3844,16 @@ class SetupWindow : Window {
                 Dispatcher.Invoke(new Action(delegate {
                     _installing = false;
                     _installedDir = Installer.CodeRootForInstall(dest);
-                    _destText.Text = "安装位置：" + Installer.InstallRootForDisplay(dest);
+                    _destText.Text = "安装位置：" + Installer.InstallRootForDisplay(dest) +
+                        (string.IsNullOrEmpty(Installer.PawnIoInstallNote) ? "" : "\n" + Installer.PawnIoInstallNote);
                     ApplyAutoLaunchPolicy();
                     ShowStep(3);
                 }));
             } catch (Exception ex) {
                 Dispatcher.Invoke(new Action(delegate {
                     _installing = false;
-                    MessageBox.Show(this, "安装失败：" + ex.Message + "\n\n可换一个位置重试。",
+                    MessageBox.Show(this, "安装失败：" + ex.Message +
+                        "\n\n请重试一次；若所有磁盘都出现同一错误，无需继续换盘，请保留完整提示并反馈。",
                         "安装向导", MessageBoxButton.OK, MessageBoxImage.Error);
                     ShowStep(1);
                 }));
@@ -3772,6 +3956,7 @@ class SetupWindow : Window {
         sb.AppendLine("窗口标题=" + Title);
         sb.AppendLine("步骤=" + string.Join("/", StepNames));
         sb.AppendLine("欢迎标题=欢迎安装 三角洲行动优化助手");
+        sb.AppendLine("硬件传感器=LibreHardwareMonitor/PawnIO（签名驱动；卸载助手不自动删除）");
         sb.AppendLine("按钮=上一步/取消/下一步/开始安装/完成");
         sb.AppendLine("安装磁盘说明=选择要安装到的磁盘，安装器会自动创建安全目录");
         sb.AppendLine("完成页勾选=创建开始菜单快捷方式（含「卸载优化助手」入口）/创建桌面快捷方式（三角洲行动优化助手）/立即运行 三角洲行动优化助手");

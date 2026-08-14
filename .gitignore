@@ -4,11 +4,21 @@ profiles/
 config/
 logs/
 
-# 第三方工具由用户自行下载放入（体积大且各有授权条款），仓库只保留 .nip 配置档
+# 第三方二进制默认不进仓库；发布所需且已在构建脚本固定 SHA256 的组件逐项放行。
 tools/*.exe
 tools/*.dll
 !tools/PresentMon.exe
 !tools/PresentMon-LICENSE.txt
+!tools/PawnIO_setup.exe
+!tools/LibreHardwareMonitorLib.dll
+!tools/HidSharp.dll
+!tools/DiskInfoToolkit.dll
+!tools/RAMSPDToolkit-NDD.dll
+!tools/BlackSharp.Core.dll
+!tools/System.Memory.dll
+!tools/System.Runtime.CompilerServices.Unsafe.dll
+!tools/System.Buffers.dll
+!tools/System.Numerics.Vectors.dll
 
 # 打包产物
 build/out/
