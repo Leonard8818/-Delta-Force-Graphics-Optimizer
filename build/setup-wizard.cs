@@ -459,6 +459,8 @@ static class Installer {
         internal string Pending;
         internal string MigrationFull;
         internal bool HadPrevious;
+        internal bool PreviousWasDamaged;
+        internal string PreviousDamageReason;
         internal bool Completed;
     }
     sealed class PayloadFile {
@@ -1500,8 +1502,10 @@ static class Installer {
         string secure = CheckSecureInstallLocation(full);
         if (secure != null) return secure;
         try {
-            full = CodeRootForInstall(full);
-            ValidateExistingInstallTarget(full);
+            InstallLayout layout = ResolveInstallLayout(full, true);
+            string damagedReason;
+            ValidateExistingInstallTargetForLayout(layout, out damagedReason);
+            full = layout.CodeRoot;
         }
         catch (Exception ex) { return ex.Message; }
         // 即使自选盘根允许当前用户创建兄弟目录，最终代码树也必须由 elevated 安装器
@@ -1825,6 +1829,31 @@ static class Installer {
         if (!TryReadInstallIdentity(root, out launcherHash, out reason))
             throw new IOException("目标目录非空且不是可验证的 DeltaForceBooster 安装：" + reason);
         EnsureProtectedInstallTree(root);
+    }
+
+    // 其他盘的永久 anchor 已用独立身份、精确 ACL 与 High IL 证明属于本产品。若其唯一
+    // codeRoot 因安装中断或安全软件隔离而缺文件，仍允许安装器进入“保留旧树后重装”流程。
+    // Program Files 以及任何未验证的普通非空目录继续严格拒绝，绝不因此放宽覆盖边界。
+    static bool ValidateExistingInstallTargetForLayout(InstallLayout layout, out string damagedReason) {
+        damagedReason = null;
+        string root = layout.CodeRoot;
+        if (!Directory.Exists(root)) return false;
+        EnsureNoReparseExistingPath(root);
+        if (Directory.GetFileSystemEntries(root).Length == 0) return false;
+        string launcherHash, reason;
+        if (TryReadInstallIdentity(root, out launcherHash, out reason)) {
+            EnsureProtectedInstallTree(root);
+            return false;
+        }
+        if (!layout.IsCustomAnchor)
+            throw new IOException("目标目录非空且不是可验证的 DeltaForceBooster 安装：" + reason);
+        ValidateCustomAnchor(layout.InstallRoot);
+        string expected = Path.GetFullPath(Path.Combine(layout.InstallRoot, AnchorCodeDirectory));
+        if (!string.Equals(Path.GetFullPath(root), expected, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("残缺安装目录不在已验证安装锚点的 app 位置：" + root);
+        EnsureProtectedInstallTree(root);
+        damagedReason = reason;
+        return true;
     }
 
     static bool IsManifestDirectory(Dictionary<string, PayloadFile> files, string directory) {
@@ -2304,6 +2333,22 @@ static class Installer {
             throw new IOException("事务目录路径身份不匹配：" + path);
     }
 
+    static void ValidateDamagedManagedTree(string root) {
+        if (!Directory.Exists(root)) throw new IOException("残缺安装目录不存在：" + root);
+        EnsureNoReparseExistingPath(root);
+        if (Directory.GetFileSystemEntries(root).Length == 0)
+            throw new IOException("残缺安装目录意外变为空目录：" + root);
+        EnsureProtectedInstallTree(root);
+    }
+
+    static void ValidateDamagedTransactionCopy(string path, string parent, string leaf, string id) {
+        if (!string.Equals(leaf, AnchorCodeDirectory, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("残缺安装备份只允许用于永久安装锚点的 app 目录");
+        ValidateCustomAnchor(parent);
+        AssertTransactionPath(path, parent, leaf, id, "damaged");
+        ValidateDamagedManagedTree(path);
+    }
+
     static void ValidateTransactionCopyBeforeUse(string path, string parent, string leaf, string id, string kind) {
         AssertTransactionPath(path, parent, leaf, id, kind);
         if (!Directory.Exists(path)) throw new IOException("事务 " + kind + " 目录不存在");
@@ -2347,6 +2392,45 @@ static class Installer {
                 SafeDeleteTree(stage);
             } catch (Exception ex) {
                 LastMigrationNote = "旧版本已恢复；未通过启动验证的新版目录已安全保留：" + stage + "；原因：" + ex.Message;
+            }
+        }
+    }
+
+    // damaged 副本没有完整产品身份，因此永不递归删除；这里只允许在同一个已验证 anchor
+    // 内原子移回 app。安装失败时恢复用户安装前的原始现场，新版 staging 仍按完整身份清理。
+    static void RestoreDamagedTransactionCopy(string full, string saved, string stage,
+        string parent, string leaf, string id) {
+        ValidateDamagedTransactionCopy(saved, parent, leaf, id);
+        AssertTransactionPath(stage, parent, leaf, id, "stage");
+        if (Directory.Exists(stage) || File.Exists(stage)) throw new IOException("恢复残缺安装时 staging 已被占用：" + stage);
+        bool newMovedAside = false;
+        if (Directory.Exists(full)) {
+            ValidateCustomAnchor(parent);
+            string expected = Path.GetFullPath(Path.Combine(parent, AnchorCodeDirectory));
+            if (!string.Equals(Path.GetFullPath(full), expected, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("待恢复目录不在已验证安装锚点的 app 位置：" + full);
+            // 新版可能正是在启动验证期间再次被安全软件移除文件。此时也只做同 anchor
+            // 原子改名并保留，不因产品身份再次不完整而阻断旧现场恢复。
+            try { ValidateExistingInstallTarget(full); }
+            catch (IOException) { ValidateDamagedManagedTree(full); }
+            MoveDirectoryWithRetry(full, stage);
+            newMovedAside = true;
+        }
+        try {
+            MoveDirectoryWithRetry(saved, full);
+            ValidateCustomAnchor(parent);
+            ValidateDamagedManagedTree(full);
+        } catch {
+            if (newMovedAside && !Directory.Exists(full) && Directory.Exists(stage))
+                MoveDirectoryWithRetry(stage, full);
+            throw;
+        }
+        if (newMovedAside && Directory.Exists(stage)) {
+            try {
+                ValidateTransactionCopyBeforeUse(stage, parent, leaf, id, "stage");
+                SafeDeleteTree(stage);
+            } catch (Exception ex) {
+                LastMigrationNote = "安装前的残缺目录已恢复；未通过验证的新版目录已安全保留：" + stage + "；原因：" + ex.Message;
             }
         }
     }
@@ -2430,6 +2514,37 @@ static class Installer {
         }
     }
 
+    static bool HasUnfinishedStandardTransaction(string parent, string leaf) {
+        foreach (string kind in new string[] { "pending", "rollback" }) {
+            string prefix = "." + leaf + ".dfb-" + kind + "-";
+            if (Directory.GetDirectories(parent, prefix + "*", SearchOption.TopDirectoryOnly).Length > 0) return true;
+        }
+        return false;
+    }
+
+    // 若进程恰好在“残缺 app 已改名、全新 app 尚未切入”之间退出，下一次安装先把唯一
+    // damaged 副本移回，再重新走同一套保留式修复，确保配置数据仍会被复制进新版本。
+    static void RecoverInterruptedDamagedRepair(InstallLayout layout, string parent, string leaf) {
+        if (!layout.IsCustomAnchor || Directory.Exists(layout.CodeRoot)) return;
+        string prefix = "." + leaf + ".dfb-damaged-";
+        var candidates = new List<string[]>();
+        foreach (string candidate in Directory.GetDirectories(parent, prefix + "*", SearchOption.TopDirectoryOnly)) {
+            string name = Path.GetFileName(candidate);
+            string id = name.Substring(prefix.Length);
+            if (id.Length != 32 || !System.Text.RegularExpressions.Regex.IsMatch(id, "^[0-9a-fA-F]{32}$"))
+                throw new IOException("发现命名异常的残缺安装备份，已停止自动恢复：" + candidate);
+            ValidateDamagedTransactionCopy(candidate, parent, leaf, id);
+            candidates.Add(new string[] { candidate, id });
+        }
+        if (candidates.Count > 1) throw new IOException("发现多份残缺安装备份且 app 不存在，已停止自动选择，请保留现场");
+        if (candidates.Count == 1) {
+            MoveDirectoryWithRetry(candidates[0][0], layout.CodeRoot);
+            string reason;
+            ValidateExistingInstallTargetForLayout(layout, out reason);
+            LastMigrationNote = "检测到上次修复安装中断，已恢复残缺目录后重新安装";
+        }
+    }
+
     static void CleanupCompletedStaging(string parent, string leaf) {
         string prefix = "." + leaf + ".dfb-stage-";
         foreach (string candidate in Directory.GetDirectories(parent, prefix + "*", SearchOption.TopDirectoryOnly)) {
@@ -2476,27 +2591,35 @@ static class Installer {
         string full = layout.CodeRoot;
         if (File.Exists(full)) throw new IOException("安装目标已被同名文件占用：" + full);
         EnsureNoReparseExistingPath(full);
-        ValidateExistingInstallTarget(full);
+        string damagedReason;
+        bool damagedExisting = ValidateExistingInstallTargetForLayout(layout, out damagedReason);
         string parent = Path.GetDirectoryName(full.TrimEnd('\\'));
         if (string.IsNullOrEmpty(parent)) throw new IOException("安装目标不能是磁盘根目录");
         EnsureNoReparseExistingPath(parent);
         Directory.CreateDirectory(parent);
         EnsureNoReparseExistingPath(parent);
         string leaf = Path.GetFileName(full.TrimEnd('\\'));
-        RecoverInterruptedRollback(full, parent, leaf);
-        ValidateExistingInstallTarget(full);
+        if (!damagedExisting) RecoverInterruptedRollback(full, parent, leaf);
+        RecoverInterruptedDamagedRepair(layout, parent, leaf);
+        damagedExisting = ValidateExistingInstallTargetForLayout(layout, out damagedReason);
+        if (damagedExisting && HasUnfinishedStandardTransaction(parent, leaf))
+            throw new IOException("残缺安装目录旁仍有未完成的更新事务，已保留全部现场，请提交安装日志处理");
         CleanupCompletedStaging(parent, leaf);
         string id = Guid.NewGuid().ToString("N");
         string stage = Path.Combine(parent, "." + leaf + ".dfb-stage-" + id);
         string savedKind = deferCommit ? "pending" : "rollback";
         string rollback = Path.Combine(parent, "." + leaf + ".dfb-" + savedKind + "-" + id);
+        string damagedBackup = Path.Combine(parent, "." + leaf + ".dfb-damaged-" + id);
         AssertTransactionPath(stage, parent, leaf, id, "stage");
         AssertTransactionPath(rollback, parent, leaf, id, savedKind);
-        if (Directory.Exists(stage) || File.Exists(stage) || Directory.Exists(rollback) || File.Exists(rollback))
+        AssertTransactionPath(damagedBackup, parent, leaf, id, "damaged");
+        if (Directory.Exists(stage) || File.Exists(stage) || Directory.Exists(rollback) || File.Exists(rollback) ||
+            Directory.Exists(damagedBackup) || File.Exists(damagedBackup))
             throw new IOException("随机事务目录已存在，安装已停止");
         var receipt = new DeferredInstall {
             Full = full, Parent = parent, Leaf = leaf, Id = id, Stage = stage, Pending = rollback
         };
+        string saved = rollback;
         bool oldMoved = false;
         bool newMoved = false;
         string migrationFull = null;
@@ -2525,11 +2648,21 @@ static class Installer {
             if (injectedFailure == "after-extract") throw new IOException("测试注入：after-extract");
 
             if (Directory.Exists(full)) {
-                ValidateExistingInstallTarget(full);
-                MoveDirectoryWithRetry(full, rollback);
+                string currentDamageReason;
+                bool currentDamaged = ValidateExistingInstallTargetForLayout(layout, out currentDamageReason);
+                if (currentDamaged) {
+                    saved = damagedBackup;
+                    receipt.Pending = damagedBackup;
+                    receipt.PreviousWasDamaged = true;
+                    receipt.PreviousDamageReason = currentDamageReason;
+                    MoveDirectoryWithRetry(full, damagedBackup);
+                    ValidateDamagedTransactionCopy(damagedBackup, parent, leaf, id);
+                } else {
+                    MoveDirectoryWithRetry(full, rollback);
+                    ValidateTransactionCopyBeforeUse(rollback, parent, leaf, id, savedKind);
+                }
                 oldMoved = true;
                 receipt.HadPrevious = true;
-                ValidateTransactionCopyBeforeUse(rollback, parent, leaf, id, savedKind);
             }
             if (injectedFailure == "after-old-move") throw new IOException("测试注入：after-old-move");
             MoveDirectoryWithRetry(stage, full);
@@ -2538,8 +2671,12 @@ static class Installer {
             if (layout.IsCustomAnchor) ValidateCustomAnchor(layout.InstallRoot);
 
             if (oldMoved && !deferCommit) {
-                try { ValidateRollbackBeforeUse(rollback, parent, leaf, id); SafeDeleteTree(rollback); }
-                catch (Exception ex) { LastMigrationNote = "旧版本 rollback 已安全保留，未递归清理：" + rollback + "；原因：" + ex.Message; }
+                if (receipt.PreviousWasDamaged) {
+                    LastMigrationNote = "检测到原安装文件缺失，已完成保留式重装；残缺目录原样保留在：" + saved;
+                } else {
+                    try { ValidateRollbackBeforeUse(rollback, parent, leaf, id); SafeDeleteTree(rollback); }
+                    catch (Exception ex) { LastMigrationNote = "旧版本 rollback 已安全保留，未递归清理：" + rollback + "；原因：" + ex.Message; }
+                }
             }
             if (!deferCommit && !string.IsNullOrEmpty(migrationFull) && Directory.Exists(migrationFull) &&
                 !string.Equals(migrationFull.TrimEnd('\\'), full.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) {
@@ -2548,11 +2685,14 @@ static class Installer {
             return receipt;
         } catch (Exception installError) {
             try {
-                if (oldMoved && Directory.Exists(rollback)) {
-                    if (newMoved) RestoreTransactionCopy(full, rollback, stage, parent, leaf, id, savedKind);
+                if (oldMoved && Directory.Exists(saved)) {
+                    if (newMoved && receipt.PreviousWasDamaged)
+                        RestoreDamagedTransactionCopy(full, saved, stage, parent, leaf, id);
+                    else if (newMoved) RestoreTransactionCopy(full, saved, stage, parent, leaf, id, savedKind);
                     else if (!Directory.Exists(full)) {
-                        ValidateTransactionCopyBeforeUse(rollback, parent, leaf, id, savedKind);
-                        MoveDirectoryWithRetry(rollback, full);
+                        if (receipt.PreviousWasDamaged) ValidateDamagedTransactionCopy(saved, parent, leaf, id);
+                        else ValidateTransactionCopyBeforeUse(saved, parent, leaf, id, savedKind);
+                        MoveDirectoryWithRetry(saved, full);
                     }
                 } else if (!oldMoved && newMoved && Directory.Exists(full) && !Directory.Exists(stage)) {
                     ValidateExistingInstallTarget(full);
@@ -2575,17 +2715,28 @@ static class Installer {
             receipt.Completed = true;
             return "首次安装没有旧版本可恢复，已保留新版文件供诊断";
         }
-        RestoreTransactionCopy(receipt.Full, receipt.Pending, receipt.Stage,
-            receipt.Parent, receipt.Leaf, receipt.Id, "pending");
+        if (receipt.PreviousWasDamaged)
+            RestoreDamagedTransactionCopy(receipt.Full, receipt.Pending, receipt.Stage,
+                receipt.Parent, receipt.Leaf, receipt.Id);
+        else
+            RestoreTransactionCopy(receipt.Full, receipt.Pending, receipt.Stage,
+                receipt.Parent, receipt.Leaf, receipt.Id, "pending");
         receipt.Completed = true;
-        return "旧版本已完整恢复";
+        return receipt.PreviousWasDamaged ? "安装前的残缺目录已原样恢复" : "旧版本已完整恢复";
     }
 
     public static string CommitDeferredInstall(DeferredInstall receipt) {
         if (receipt == null) throw new ArgumentNullException("receipt");
         if (receipt.Completed) return "更新事务已经结束";
         string note = null;
-        if (receipt.HadPrevious && Directory.Exists(receipt.Pending)) {
+        if (receipt.HadPrevious && receipt.PreviousWasDamaged && Directory.Exists(receipt.Pending)) {
+            try {
+                ValidateDamagedTransactionCopy(receipt.Pending, receipt.Parent, receipt.Leaf, receipt.Id);
+                note = "检测到原安装文件缺失，已完成保留式重装；残缺目录原样保留在：" + receipt.Pending;
+            } catch (Exception ex) {
+                note = "新版已通过启动验证；残缺目录备份复验失败，已原样保留：" + receipt.Pending + "；原因：" + ex.Message;
+            }
+        } else if (receipt.HadPrevious && Directory.Exists(receipt.Pending)) {
             string committed = Path.Combine(receipt.Parent, "." + receipt.Leaf + ".dfb-rollback-" + receipt.Id);
             try {
                 ValidateTransactionCopyBeforeUse(receipt.Pending, receipt.Parent, receipt.Leaf, receipt.Id, "pending");

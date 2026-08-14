@@ -644,13 +644,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 新增 FPS、CPU/GPU/内存实时占用，以及 CPU/GPU 实时温度显示。
-- FPS、CPU/GPU/内存卡会直接显示“变化”；每张卡右上角可查看本机历史记录。
-- 新增显示器名称、分辨率等级与刷新率信息，支持 1K、2K、4K 标识。
-- 优化安装路径选择。
-- 新增 UI 优化。
-- 软件通知正文上限提高至 10000 字，新增绿色未读角标，通知中的网页链接可直接点击打开。
-- 加强更新暂存文件的权限复验，提升内置静默更新的可靠性。
+- 修复安装到其他磁盘后，因上次安装中断或安全软件隔离导致启动器缺失时，安装向导阻止重新安装的问题。
+- 对已验证的残缺安装进行保留式修复：重新安装前保留原目录，安装或启动验证失败时恢复原现场。
+- 未验证的普通目录仍保持严格保护，不会被安装器覆盖或清理。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。

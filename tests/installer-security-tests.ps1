@@ -598,6 +598,58 @@ try {
   Assert-True ($code -eq 0) "custom rollback recovery exit=$code"
   Assert-True ((Test-Path -LiteralPath $customMarker) -and -not (Test-Path -LiteralPath $customRollback)) 'custom rollback recovery failed'
 
+  # 单机现场回归：永久 anchor 仍有效，但安全软件/中断使 app 缺少启动器。向导预检应允许
+  # 保留式修复；旧树必须原样留在 anchor 内，普通目录的严格身份检查不得被放宽。
+  $customLauncher = Join-Path $appRoot '启动优化工具.exe'
+  Remove-Item -LiteralPath $customLauncher -Force
+  $checkWritable = $installerType.GetMethod('CheckWritable', [Reflection.BindingFlags]'Static,Public')
+  $writableArgs = New-Object 'object[]' 1; $writableArgs[0] = [string]$appRoot
+  Assert-True ($null -eq $checkWritable.Invoke($null, $writableArgs)) 'verified custom anchor rejected repairable damaged app during preflight'
+  $repairLog = Join-Path $customCase 'damaged-repair.log'
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", '/runafter', "/originsid=$currentUserSid", "/log=`"$repairLog`"")
+  Assert-True ($code -eq 0) "damaged custom app repair exit=$code"
+  Assert-True (Test-Path -LiteralPath $customLauncher -PathType Leaf) 'damaged custom app launcher was not restored'
+  Assert-True ((Test-Path -LiteralPath $customMarker) -and ([IO.File]::ReadAllText($customMarker) -eq '{"keep":true}')) 'damaged custom app repair lost user data'
+  $damagedCopies = @(Get-ChildItem -LiteralPath $anchor -Force | Where-Object Name -Like '.app.dfb-damaged-*')
+  Assert-True ($damagedCopies.Count -eq 1) 'damaged custom app was not retained exactly once'
+  Assert-True ((Test-Path -LiteralPath (Join-Path $damagedCopies[0].FullName 'config\custom-marker.json')) -and
+    -not (Test-Path -LiteralPath (Join-Path $damagedCopies[0].FullName '启动优化工具.exe'))) 'retained damaged app does not match the original state'
+  Assert-True (([IO.File]::ReadAllText($repairLog)) -like '*残缺目录原样保留在*') 'damaged custom app repair was not logged'
+
+  # 默认安装流程会启动新版并等窗口就绪；健康检查失败时也必须恢复安装前的残缺现场。
+  Remove-Item -LiteralPath $customLauncher -Force
+  $env:DFB_TEST_STARTUP_HEALTH_FAIL = '1'
+  try {
+    $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", '/runafter', "/originsid=$currentUserSid",
+      "/log=`"$(Join-Path $customCase 'damaged-startup-failure.log')`"")
+  } finally { Remove-Item Env:DFB_TEST_STARTUP_HEALTH_FAIL -ErrorAction SilentlyContinue }
+  Assert-True ($code -eq 1) "damaged custom app startup rollback exit=$code"
+  Assert-True (-not (Test-Path -LiteralPath $customLauncher)) 'startup rollback did not restore the original damaged app'
+  Assert-True ([IO.File]::ReadAllText($customMarker) -eq '{"keep":true}') 'startup rollback lost damaged-app user data'
+
+  # 安全软件若在新树切入后再次隔离启动器，回滚仍须成功；这棵再次损坏的新版只保留，
+  # 不按完整产品目录递归删除。
+  $damagedDeferredArgs = New-Object 'object[]' 3
+  $damagedDeferredArgs[0] = [string]$appRoot; $damagedDeferredArgs[1] = $null; $damagedDeferredArgs[2] = $null
+  $damagedReceipt = $installDeferred.Invoke($null, $damagedDeferredArgs)
+  Remove-Item -LiteralPath $customLauncher -Force
+  $rollbackDeferred = $installerType.GetMethod('RollbackDeferredInstall', [Reflection.BindingFlags]'Static,Public')
+  $rollbackArgs = New-Object 'object[]' 1; $rollbackArgs[0] = $damagedReceipt
+  [void]$rollbackDeferred.Invoke($null, $rollbackArgs)
+  Assert-True (-not (Test-Path -LiteralPath $customLauncher)) 'second launcher quarantine blocked restoration of the original damaged app'
+  Assert-True (@(Get-ChildItem -LiteralPath $anchor -Force | Where-Object Name -Like '.app.dfb-stage-*').Count -eq 1) `
+    'secondarily damaged new tree was not retained for diagnosis'
+
+  # 新树切入后若事务失败，必须把残缺现场恢复到原 app，而不是留下半次修复。
+  $env:DFB_TEST_INSTALL_FAIL_AT = 'after-new-move'
+  try { $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", "/log=`"$(Join-Path $customCase 'damaged-repair-failure.log')`"") }
+  finally { Remove-Item Env:DFB_TEST_INSTALL_FAIL_AT -ErrorAction SilentlyContinue }
+  Assert-True ($code -eq 1) "damaged custom app rollback exit=$code"
+  Assert-True (-not (Test-Path -LiteralPath $customLauncher)) 'failed damaged repair did not restore the original missing-launcher state'
+  Assert-True ([IO.File]::ReadAllText($customMarker) -eq '{"keep":true}') 'failed damaged repair lost original user data'
+  $code = Invoke-TestSetup @('/silent', "/dir=`"$appRoot`"", "/log=`"$(Join-Path $customCase 'damaged-repair-final.log')`"")
+  Assert-True ($code -eq 0 -and (Test-Path -LiteralPath $customLauncher -PathType Leaf)) 'custom app did not recover after the injected repair failure'
+
   $anchorIdentity = Join-Path $anchor 'anchor.identity'
   $anchorIdentityBytes = [IO.File]::ReadAllBytes($anchorIdentity)
   try {
