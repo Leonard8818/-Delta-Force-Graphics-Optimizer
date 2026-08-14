@@ -687,8 +687,8 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复部分 Windows 或安全软件环境中安装器把所有 NTFS 磁盘误判为不可用的问题；临时 staging 标签失败时会复验封闭 ACL 后继续安装。
-- 内置 LibreHardwareMonitor 与签名 PawnIO 驱动，直接读取可信 CPU/GPU 温度，不再要求用户另开硬件监控软件。
+- 新增服务器排队下载：可查看前方人数与下载槽位，轮到后自动开始，不再让大量下载互相挤占。
+- 下载读取超时或连接中断时，会按已接收字节自动断点续传；多次失败后显示明确的网络提示。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。

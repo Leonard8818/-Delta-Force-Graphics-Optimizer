@@ -1,6 +1,10 @@
 ﻿<#
-  DeltaForceBooster 更新检查模块 — v0.5
+  DeltaForceBooster 更新检查模块 — v0.7
   独立于优化引擎：负责「取清单 → 比版本 → 报告结果」+「带校验的内置下载」。
+  v0.7：官网安装包下载先进入服务器队列；获得名额后使用短时签名地址下载，并继续支持
+        Range 断点续传。排队位置、占用槽位和重试状态都会回报给界面。
+  v0.6：下载读取超时或连接中断时自动按已接收字节断点续传；有限重试耗尽后返回
+        用户可理解的网络错误，不再暴露 PowerShell 的 Read(...) 调用异常。
   v0.5：下载改用 CreateNew + 独占句柄完成大小/SHA256 校验；成品与完整性 sidecar
         落在封闭 ACL staging，交给安装器后启动第一时间再次复验。
   v0.4：更新改为一键完成——校验通过后直接静默安装并自启新版，用户不必再走安装向导。
@@ -137,6 +141,19 @@ function Test-BoosterSetupUrl([string]$Url) {
     return (& $deny "下载域名不在白名单内：$($u.Host)")
   }
   [pscustomobject]@{ Allowed = $true; Reason = '' }
+}
+
+function Get-BoosterDownloadQueueEndpoints([string]$SetupUrl) {
+  $uri = $null
+  if (-not [Uri]::TryCreate("$SetupUrl", [UriKind]::Absolute, [ref]$uri)) { return $null }
+  if ($uri.Scheme -ne 'https' -or $script:BoosterDownloadHosts -notcontains $uri.Host.ToLowerInvariant()) {
+    return $null
+  }
+  $origin = $uri.GetLeftPart([UriPartial]::Authority)
+  [pscustomobject]@{
+    Join = "$origin/report/download-queue/join"
+    Status = "$origin/report/download-queue/status"
+  }
 }
 
 # 完整性校验：大小与 SHA256 任一不符即删除文件并报告失败——留着一个校验失败的
@@ -471,18 +488,206 @@ function Copy-BoosterSetupToAdminStaging {
   $dest
 }
 
-# 内置更新下载：URL 安检 → 流式下载（写进度、可取消）→ 完整性校验。
+# 给网络读取失败打内部标记：只重试 GetResponse/Read/提前 EOF，磁盘写入、响应范围异常、
+# 重定向越过白名单等错误继续立即失败，避免把本地故障或安全校验失败误当成网络抖动。
+function New-BoosterRetryableDownloadException {
+  param([string]$Message, [Exception]$InnerException)
+  $e = $(if ($InnerException) { [IO.IOException]::new($Message, $InnerException) } else { [IO.IOException]::new($Message) })
+  $e.Data['DeltaForceBooster.RetryableDownload'] = $true
+  $e
+}
+
+function Test-BoosterRetryableDownloadException([Exception]$Exception) {
+  $cursor = $Exception
+  while ($cursor) {
+    if ($cursor.Data -and $cursor.Data.Contains('DeltaForceBooster.RetryableDownload')) { return $true }
+    if ($cursor -is [Net.WebException]) {
+      return $cursor.Status -in @(
+        [Net.WebExceptionStatus]::ConnectFailure,
+        [Net.WebExceptionStatus]::ConnectionClosed,
+        [Net.WebExceptionStatus]::KeepAliveFailure,
+        [Net.WebExceptionStatus]::NameResolutionFailure,
+        [Net.WebExceptionStatus]::PipelineFailure,
+        [Net.WebExceptionStatus]::ProxyNameResolutionFailure,
+        [Net.WebExceptionStatus]::ReceiveFailure,
+        [Net.WebExceptionStatus]::RequestCanceled,
+        [Net.WebExceptionStatus]::SendFailure,
+        [Net.WebExceptionStatus]::Timeout
+      )
+    }
+    $cursor = $cursor.InnerException
+  }
+  $false
+}
+
+function Wait-BoosterDownloadRetry {
+  param([hashtable]$State, [int]$DelayMs)
+  $remaining = [Math]::Max(0, $DelayMs)
+  while ($remaining -gt 0) {
+    if ($State.Cancel) { return $false }
+    $slice = [Math]::Min(100, $remaining)
+    Start-Sleep -Milliseconds $slice
+    $remaining -= $slice
+  }
+  -not [bool]$State.Cancel
+}
+
+function Invoke-BoosterQueueJsonRequest {
+  param(
+    [Parameter(Mandatory)][string]$Url,
+    [ValidateSet('GET','POST')][string]$Method = 'GET',
+    [ValidateRange(500, 30000)][int]$TimeoutMs = 5000
+  )
+  $resp = $null; $stream = $null; $reader = $null
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = `
+      [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $req = [Net.HttpWebRequest]::Create($Url)
+    $req.Method = $Method
+    $req.Timeout = $TimeoutMs
+    $req.ReadWriteTimeout = $TimeoutMs
+    $req.UserAgent = 'DeltaForceBooster-Updater'
+    $req.Accept = 'application/json'
+    $req.AllowAutoRedirect = $false
+    if ($Method -eq 'POST') {
+      $body = [Text.Encoding]::UTF8.GetBytes('{}')
+      $req.ContentType = 'application/json'
+      $req.ContentLength = $body.Length
+      $requestStream = $req.GetRequestStream()
+      try { $requestStream.Write($body, 0, $body.Length) } finally { $requestStream.Close() }
+    }
+    try { $resp = $req.GetResponse() }
+    catch [Net.WebException] {
+      if (-not $_.Exception.Response) {
+        throw (New-BoosterRetryableDownloadException '排队服务器连接超时或中断' $_.Exception)
+      }
+      $resp = $_.Exception.Response
+    }
+    $statusCode = [int]$resp.StatusCode
+    $stream = $resp.GetResponseStream()
+    $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+    $raw = $reader.ReadToEnd()
+    if ($raw.Length -gt 65536) { throw '排队服务器响应过大' }
+    $payload = $null
+    if ($raw.Trim()) {
+      try { $payload = $raw | ConvertFrom-Json }
+      catch { throw '排队服务器返回了无效数据' }
+    }
+    [pscustomobject]@{ StatusCode = $statusCode; Payload = $payload }
+  } catch {
+    if (Test-BoosterRetryableDownloadException $_.Exception) { throw }
+    if ($_.Exception -is [Net.WebException] -or $_.Exception -is [IO.IOException]) {
+      throw (New-BoosterRetryableDownloadException '排队服务器连接超时或中断' $_.Exception)
+    }
+    throw
+  } finally {
+    try { if ($reader) { $reader.Close() } } catch {}
+    try { if ($stream) { $stream.Close() } } catch {}
+    try { if ($resp) { $resp.Close() } } catch {}
+  }
+}
+
+function Wait-BoosterDownloadQueue {
+  param(
+    [Parameter(Mandatory)][string]$SetupUrl,
+    [Parameter(Mandatory)][hashtable]$State,
+    [ValidateRange(500, 30000)][int]$TimeoutMs = 5000,
+    [ValidateRange(1, 10)][int]$MaxFailures = 5
+  )
+  $endpoints = Get-BoosterDownloadQueueEndpoints $SetupUrl
+  if (-not $endpoints) { return $SetupUrl }
+
+  $setupUri = [Uri]$SetupUrl
+  $ticket = ''
+  $consecutiveFailures = 0
+  $State.Phase = 'queued'
+  $State.Status = '正在进入服务器下载队列…'
+  $State.QueuePosition = 0; $State.QueueAhead = 0
+  $State.QueueActive = 0; $State.QueueCapacity = 0
+
+  while (-not $State.Cancel) {
+    $requestUrl = $(if ($ticket) {
+      "$($endpoints.Status)?ticket=$([Uri]::EscapeDataString($ticket))"
+    } else { "$($endpoints.Join)" })
+    $method = $(if ($ticket) { 'GET' } else { 'POST' })
+    try {
+      $response = Invoke-BoosterQueueJsonRequest -Url $requestUrl -Method $method -TimeoutMs $TimeoutMs
+    } catch {
+      if (-not (Test-BoosterRetryableDownloadException $_.Exception)) { throw }
+      $consecutiveFailures++
+      if ($consecutiveFailures -ge $MaxFailures) {
+        throw "排队服务器连续无法响应（已自动重试 $MaxFailures 次）。请稍后重试或打开官网下载。"
+      }
+      $State.Status = "排队连接短暂中断，正在重试（$consecutiveFailures/$MaxFailures）…"
+      if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs 2000)) { return $null }
+      continue
+    }
+
+    if ($response.StatusCode -eq 404 -and $ticket) {
+      $ticket = ''
+      $State.Status = '排队名额已过期，正在重新进入队列…'
+      continue
+    }
+    if ($response.StatusCode -eq 429 -or $response.StatusCode -ge 500) {
+      $consecutiveFailures++
+      if ($consecutiveFailures -ge $MaxFailures) {
+        throw "排队服务器繁忙（已自动重试 $MaxFailures 次）。请稍后重试或打开官网下载。"
+      }
+      $State.Status = "排队服务器繁忙，正在重试（$consecutiveFailures/$MaxFailures）…"
+      if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs 2000)) { return $null }
+      continue
+    }
+    if ($response.StatusCode -ne 200 -or -not $response.Payload) {
+      throw "排队服务器返回了异常状态：HTTP $($response.StatusCode)"
+    }
+    $consecutiveFailures = 0
+    $payload = $response.Payload
+    $nextTicket = "$($payload.ticket)"
+    if ($nextTicket -notmatch '^[A-Za-z0-9_-]{20,128}$') { throw '排队服务器返回了无效票据' }
+    $ticket = $nextTicket
+
+    $State.QueuePosition = [Math]::Max(0, [int]$payload.position)
+    $State.QueueAhead = [Math]::Max(0, [int]$payload.ahead)
+    $State.QueueActive = [Math]::Max(0, [int]$payload.active)
+    $State.QueueCapacity = [Math]::Max(1, [int]$payload.capacity)
+    if ("$($payload.state)" -eq 'ready') {
+      $downloadUrl = "$($payload.downloadUrl)"
+      $verdict = Test-BoosterSetupUrl $downloadUrl
+      if (-not $verdict.Allowed) { throw "排队下载地址已拦截：$($verdict.Reason)" }
+      $downloadUri = [Uri]$downloadUrl
+      if ($downloadUri.AbsolutePath -ne $setupUri.AbsolutePath) {
+        throw '排队下载地址与清单安装包路径不一致'
+      }
+      $State.Phase = 'downloading'
+      $State.Status = '已获得服务器下载名额，正在开始下载…'
+      return $downloadUrl
+    }
+    if ("$($payload.state)" -ne 'queued') { throw '排队服务器返回了未知状态' }
+
+    $State.Status = "服务器排队中：前方 $($State.QueueAhead) 位（$($State.QueueActive)/$($State.QueueCapacity) 个槽位使用中）…"
+    $retrySeconds = 2
+    try { $retrySeconds = [Math]::Max(1, [Math]::Min(10, [int]$payload.retryAfter)) } catch {}
+    if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs ($retrySeconds * 1000))) { return $null }
+  }
+  $null
+}
+
+# 内置更新下载：URL 安检 → 流式下载（写进度、可取消、超时断点续传）→ 完整性校验。
 # 同步函数，由界面层丢进后台 runspace 跑，进度经 Synchronized 哈希表回报——
 # PS 5.1 + WPF 下跨线程事件回调很脆，轮询共享状态最稳。
-# $State 键：Received/Total(字节)、Phase(downloading|done|failed|cancelled)、
-#            Error、File(校验通过后的成品路径)、Cancel(界面置 $true 请求中止)、Done
+# $State 键：Received/Total(字节)、Phase(queued|downloading|done|failed|cancelled)、
+#            Status/QueuePosition/QueueAhead/QueueActive/QueueCapacity/RetryCount、
+#            Error、File(校验通过后的成品路径)、
+#            Cancel(界面置 $true 请求中止)、Done
 function Invoke-BoosterSetupDownload {
   param(
     [Parameter(Mandatory)][string]$SetupUrl,
     [Parameter(Mandatory)][string]$Sha256,
     [Parameter(Mandatory)][long]$Size,
     [Parameter(Mandatory)][hashtable]$State,
-    [int]$TimeoutMs = 15000
+    [ValidateRange(100, 300000)][int]$TimeoutMs = 15000,
+    [ValidateRange(1, 8)][int]$MaxAttempts = 4,
+    [ValidateRange(0, 10000)][int]$RetryDelayMs = 750
   )
   $finish = { param($phase, $err) $State.Phase = $phase; $State.Error = "$err"; $State.Done = $true }
   $tmpFile = $null
@@ -492,6 +697,9 @@ function Invoke-BoosterSetupDownload {
   $sideStream = $null
   try {
     $State.Received = 0; $State.Total = $Size; $State.Phase = 'downloading'
+    $State.Status = '正在下载更新…'; $State.RetryCount = 0
+    $State.QueuePosition = 0; $State.QueueAhead = 0
+    $State.QueueActive = 0; $State.QueueCapacity = 0
     $State.Error = ''; $State.File = ''; $State.Done = $false
     $State.ExpectedSha256 = "$Sha256".ToUpperInvariant(); $State.ExpectedSize = $Size
 
@@ -501,6 +709,12 @@ function Invoke-BoosterSetupDownload {
     if ("$Sha256" -notmatch '^[0-9a-fA-F]{64}$') { & $finish 'failed' '清单缺少合法的 SHA256，拒绝下载'; return }
     if ($Size -le 0) { & $finish 'failed' '清单缺少合法的文件大小，拒绝下载'; return }
 
+    $downloadUrl = Wait-BoosterDownloadQueue -SetupUrl $SetupUrl -State $State `
+      -TimeoutMs ([Math]::Max(500, [Math]::Min(30000, $TimeoutMs)))
+    if ($State.Cancel -or -not $downloadUrl) { & $finish 'cancelled' '已取消下载'; return }
+    $State.Phase = 'downloading'
+    $State.Status = '正在下载更新…'
+
     # GUID staging + CreateNew。非提权态保留源句柄禁止写/删，同时让管理员 helper 只读打开、
     # 复验并复制到 Administrators-owned ProgramData；普通 GUI 最终绝不执行 user-owned 文件。
     $stageInfo = New-BoosterSecureStaging
@@ -509,29 +723,90 @@ function Invoke-BoosterSetupDownload {
 
     [Net.ServicePointManager]::SecurityProtocol = `
       [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $req = [Net.WebRequest]::Create($SetupUrl)
-    $req.Timeout = $TimeoutMs
-    $req.ReadWriteTimeout = $TimeoutMs
-    $req.UserAgent = 'DeltaForceBooster-Updater'
-    $resp = $req.GetResponse()
-    $redirectVerdict = Test-BoosterSetupUrl "$($resp.ResponseUri.AbsoluteUri)"
-    if (-not $redirectVerdict.Allowed) { throw "下载重定向已拦截：$($redirectVerdict.Reason)" }
-    $inStream = $resp.GetResponseStream()
     $outStream = [IO.FileStream]::new($tmpFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite,
       [IO.FileShare]::Read, 65536, [IO.FileOptions]::WriteThrough)
-    try {
-      $buf = New-Object byte[] 65536
-      while ($true) {
-        if ($State.Cancel) { & $finish 'cancelled' '已取消下载'; break }
-        $n = $inStream.Read($buf, 0, $buf.Length)
-        if ($n -le 0) { break }
-        $outStream.Write($buf, 0, $n)
-        $State.Received = [long]$State.Received + $n
-        # 服务器回的字节数超过清单声明即刻中止：反正校验必失败，没必要让它填满磁盘
-        if ([long]$State.Received -gt $Size) { & $finish 'failed' '下载内容超过清单声明的大小，已中止并删除'; break }
+
+    $buf = New-Object byte[] 65536
+    $attempt = 0
+    while ([long]$State.Received -lt $Size -and -not $State.Done) {
+      $attempt++
+      $requestedOffset = [long]$State.Received
+      $resp = $null; $inStream = $null; $retryError = $null
+      try {
+        if ($outStream.Length -ne $requestedOffset) { throw '本地下载进度与临时文件长度不一致' }
+        $outStream.Position = $requestedOffset
+        $req = [Net.WebRequest]::Create($downloadUrl)
+        $req.Timeout = $TimeoutMs
+        $req.ReadWriteTimeout = $TimeoutMs
+        $req.UserAgent = 'DeltaForceBooster-Updater'
+        $req.AllowAutoRedirect = $true
+        if ($requestedOffset -gt 0) { $req.AddRange($requestedOffset) }
+        try { $resp = $req.GetResponse() }
+        catch { throw $_.Exception }
+
+        $redirectVerdict = Test-BoosterSetupUrl "$($resp.ResponseUri.AbsoluteUri)"
+        if (-not $redirectVerdict.Allowed) { throw "下载重定向已拦截：$($redirectVerdict.Reason)" }
+
+        if ($resp -is [Net.HttpWebResponse]) {
+          $status = [int]$resp.StatusCode
+          if ($status -notin @(200, 206)) { throw "下载服务器返回了不支持的状态码：$status" }
+          if ($status -eq 206) {
+            $contentRange = "$($resp.Headers['Content-Range'])"
+            if ($contentRange -notmatch '^bytes\s+(\d+)-(\d+)/(\d+)$') {
+              throw '断点续传响应缺少合法的 Content-Range'
+            }
+            $rangeStart = [long]$Matches[1]; $rangeEnd = [long]$Matches[2]; $rangeTotal = [long]$Matches[3]
+            if ($rangeStart -ne $requestedOffset -or $rangeEnd -lt $rangeStart -or
+                $rangeEnd -ge $Size -or $rangeTotal -ne $Size) {
+              throw "断点续传范围与清单不一致：$contentRange"
+            }
+          } elseif ($requestedOffset -gt 0) {
+            # 少数代理会忽略 Range 并回 200；此时只能从零覆盖，绝不能把完整响应追加到旧片段。
+            $outStream.SetLength(0); $outStream.Position = 0
+            $State.Received = 0L; $requestedOffset = 0L
+          }
+        }
+
+        $remainingBytes = $Size - [long]$State.Received
+        if ($resp.ContentLength -gt $remainingBytes) {
+          throw "下载响应超过清单声明的剩余大小（剩余 $remainingBytes / 响应 $($resp.ContentLength) 字节）"
+        }
+        $State.Status = $(if ([long]$State.Received -gt 0) { '正在从中断位置继续下载…' } else { '正在下载更新…' })
+        $inStream = $resp.GetResponseStream()
+        while ([long]$State.Received -lt $Size) {
+          if ($State.Cancel) { & $finish 'cancelled' '已取消下载'; break }
+          $want = [int][Math]::Min([long]$buf.Length, $Size - [long]$State.Received)
+          try { $n = $inStream.Read($buf, 0, $want) }
+          catch { throw (New-BoosterRetryableDownloadException '更新包网络读取超时或连接中断' $_.Exception) }
+          if ($n -le 0) {
+            throw (New-BoosterRetryableDownloadException '下载连接提前结束' $null)
+          }
+          # 每次最多只请求清单剩余字节；仍在写入前再检查一次，永不让响应填满磁盘。
+          if ($n -gt ($Size - [long]$State.Received)) { throw '下载内容超过清单声明的大小，已中止并删除' }
+          $outStream.Write($buf, 0, $n)
+          $State.Received = [long]$State.Received + $n
+        }
+      } catch {
+        $retryError = $_.Exception
+      } finally {
+        try { if ($inStream) { $inStream.Close() } } catch {}
+        try { if ($resp) { $resp.Close() } } catch {}
       }
-    } finally {
-      $inStream.Close(); $resp.Close()
+
+      if ($State.Done) { break }
+      if ($retryError) {
+        if (-not (Test-BoosterRetryableDownloadException $retryError)) { throw $retryError }
+        if ($State.Cancel) { & $finish 'cancelled' '已取消下载'; break }
+        if ($attempt -ge $MaxAttempts) {
+          throw "网络连接在下载过程中连续中断或超时（已自动尝试 $MaxAttempts 次）。请检查网络后重试，或改为打开下载页。"
+        }
+        $State.RetryCount = $attempt
+        $State.Status = "网络短暂中断，正在断点续传（重试 $attempt/$($MaxAttempts - 1)）…"
+        if (-not (Wait-BoosterDownloadRetry -State $State -DelayMs $RetryDelayMs)) {
+          & $finish 'cancelled' '已取消下载'
+          break
+        }
+      }
     }
     if ($State.Done) {
       $outStream.Close(); $outStream = $null

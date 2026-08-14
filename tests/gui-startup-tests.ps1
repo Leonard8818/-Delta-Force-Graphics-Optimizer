@@ -28,10 +28,10 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.4'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.4'") -and
-    $raw.Contains('Text="[ v0.23.0.4 ]"')) `
-  'the unified v0.23.0.4 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.5'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.5'") -and
+    $raw.Contains('Text="[ v0.23.0.5 ]"')) `
+  'the unified v0.23.0.5 version is missing or inconsistent'
 Assert-True ($raw.Contains('以下内容请进入BIOS按照教程手动操作。') -and
   -not $raw.Contains('以下问题本工具改不了，但按教程手动处理并不难：')) `
   'health-check BIOS guidance still uses the old wording'
