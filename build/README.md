@@ -2,7 +2,7 @@
 
 本目录负责两件事：**打 Windows 安装包**、**发布版本更新清单**（配合 v0.11 起的内置更新）。
 全部只用系统自带组件（PowerShell + .NET Framework csc），不需要安装任何第三方工具。
-v0.3 起弃用 IExpress：它的解压界面不可定制、安装位置只能硬编码，改为 csc 现场编译
+v0.23.0.0 起弃用 IExpress：它的解压界面不可定制、安装位置只能硬编码，改为 csc 现场编译
 `setup-wizard.cs`（WPF 图形安装向导，官网同款三角洲视觉）。
 （macOS 不做：三角洲行动没有 macOS 版，本工具改的全是 Windows 注册表/电源计划/系统服务，Mac 上没有对应物。）
 
@@ -133,9 +133,10 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
 
 ```json
 {
-  "version": "0.22.8",
+  "version": "0.23.0.0",
+  "displayVersion": "0.23.0.0",
   "minimumSupportedVersion": "0.22.3",
-  "notes": "- 修复管理员请求未指定 GpuSpoofModel 时的参数验证失败。",
+  "notes": "- 新增实时硬件状态与显示器信息；修正 CPU 监控口径并记住窗口高度。",
   "url": "https://df.ltz88.cn/",
   "setupUrl": "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
   "sha256": "（安装包的 SHA256，小写十六进制，构建脚本自动填）",

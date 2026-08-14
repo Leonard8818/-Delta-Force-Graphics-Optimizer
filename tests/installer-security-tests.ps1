@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $guiText = [IO.File]::ReadAllText((Join-Path $root 'gui\DeltaForceBooster-GUI.ps1'))
 if ($guiText -notmatch "\`$script:GuiVersion\s*=\s*'([0-9.]+)'") { throw '无法解析 GUI 版本号' }
+if ($guiText -notmatch "\`$script:DisplayVersion\s*=\s*'([0-9.]+)'") { throw '无法解析 GUI 显示版本号' }
 $setup = Join-Path $root "build\DeltaForceBooster-Setup-v$($Matches[1])-TEST.exe"
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
   throw '请先运行：powershell -File build\make-installer.ps1 -TestBuild'
@@ -15,10 +16,20 @@ function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERT: $Message" }
 }
 $installerBuildSource = [IO.File]::ReadAllText((Join-Path $root 'build\make-installer.ps1'))
+$updaterSource = [IO.File]::ReadAllText((Join-Path $root 'scripts\updater.ps1'))
+$stagingAclFunction = [regex]::Match($updaterSource, '(?s)function Set-BoosterStagingFileAcl\s*\{.*?\n\}').Value
+Assert-True ($stagingAclFunction -match 'GetAccessControl' -and
+  $stagingAclFunction -match 'GetAccessRules' -and
+  $stagingAclFunction -match 'ReadAndExecute' -and
+  $stagingAclFunction -match 'FullControl' -and
+  $stagingAclFunction -match 'ACL 写入后复验失败') `
+  'secure update staging does not re-read and verify the file ACL after writing it'
 $releaseManifest = Get-Content -LiteralPath (Join-Path $root 'build\update-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$currentVersion = [regex]::Match($guiText, "(?m)^\`$script:GuiVersion\s*=\s*'([0-9.]+)'\s*$").Groups[1].Value
 Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.22\.3'" -and
-  "$($releaseManifest.version)" -eq '0.22.8' -and "$($releaseManifest.minimumSupportedVersion)" -eq '0.22.3') `
-  'release policy must force every version below v0.22.3 to upgrade to the latest v0.22.8'
+  "$($releaseManifest.version)" -eq $currentVersion -and "$($releaseManifest.displayVersion)" -eq $currentVersion -and
+  "$($releaseManifest.minimumSupportedVersion)" -eq '0.22.3') `
+  'release manifest version or mandatory-upgrade floor is stale'
 $disclaimerText = [IO.File]::ReadAllText((Join-Path $root 'DISCLAIMER.md'))
 Assert-True ($disclaimerText -notmatch '自动寻找最佳配置|自动调优|experiments') `
   'usage notice still exposes automatic best-configuration Beta information'
@@ -28,22 +39,22 @@ $updaterPolicyDir = Join-Path $testBase 'updater-policy'
 [void][IO.Directory]::CreateDirectory($updaterPolicyDir)
 $policyManifestPath = Join-Path $updaterPolicyDir 'manifest.json'
 $policyManifest = [ordered]@{
-  version = '0.22.8'; minimumSupportedVersion = '0.22.3'; notes = '- test'
+  version = $currentVersion; displayVersion = $currentVersion; minimumSupportedVersion = '0.22.3'; notes = '- test'
   url = 'https://df.ltz88.cn/'; setupUrl = 'https://df.ltz88.cn/DeltaForceBooster-Setup.exe'
   sha256 = ('0' * 64); size = 1
 }
 [IO.File]::WriteAllText($policyManifestPath, ($policyManifest | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 $script:BoosterUserConfigDir = Join-Path $updaterPolicyDir 'config'
 . (Join-Path $root 'scripts\updater.ps1')
-Set-BoosterSkipVersion '0.22.8' | Out-Null
+Set-BoosterSkipVersion $currentVersion | Out-Null
 $mandatoryUpdate = Test-BoosterUpdate -CurrentVersion '0.22.2' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri
 Assert-True ($mandatoryUpdate -and $mandatoryUpdate.Mandatory -and $mandatoryUpdate.CanInline -and
-  "$($mandatoryUpdate.MinimumSupportedVersion)" -eq '0.22.3') `
-  'v0.22.2 can skip or defer the mandatory v0.22.8 update'
+  "$($mandatoryUpdate.MinimumSupportedVersion)" -eq '0.22.3' -and "$($mandatoryUpdate.DisplayVersion)" -eq $currentVersion) `
+  'v0.22.2 can skip or defer the mandatory current update'
 $optionalUpdate = Test-BoosterUpdate -CurrentVersion '0.22.3' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri -IncludeSkipped
-Assert-True ($optionalUpdate -and -not $optionalUpdate.Mandatory) 'v0.22.3 does not see v0.22.8 as an optional update'
-Assert-True ($null -eq (Test-BoosterUpdate -CurrentVersion '0.22.8' -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri)) `
-  'v0.22.8 incorrectly detects its own release as an update'
+Assert-True ($optionalUpdate -and -not $optionalUpdate.Mandatory) 'v0.22.3 does not see the current release as an optional update'
+Assert-True ($null -eq (Test-BoosterUpdate -CurrentVersion $currentVersion -ManifestUrl ([Uri]$policyManifestPath).AbsoluteUri)) `
+  'current release incorrectly detects itself as an update'
 $setupSource = [IO.File]::ReadAllText((Join-Path $root 'build\setup-wizard.cs'))
 Assert-True ($setupSource -match 'PROC_THREAD_ATTRIBUTE_PARENT_PROCESS' -and
   $setupSource -match 'PROCESS_CREATE_PROCESS' -and $setupSource -match 'EXTENDED_STARTUPINFO_PRESENT') `

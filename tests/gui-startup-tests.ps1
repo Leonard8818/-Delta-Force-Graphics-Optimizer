@@ -26,6 +26,15 @@ $raw = [IO.File]::ReadAllText($guiPath, [Text.Encoding]::UTF8)
 $referenceRaw = Get-Content -LiteralPath (Join-Path $root 'data\streamer-settings.json') -Raw -Encoding UTF8
 $referenceData = $referenceRaw | ConvertFrom-Json
 
+Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
+  'normal main-window close does not terminate background runspaces and release the launcher session'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.0'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.0'") -and
+    $raw.Contains('Text="[ v0.23.0.0 ]"')) `
+  'the unified v0.23.0.0 version is missing or inconsistent'
+Assert-True ($raw.Contains('以下内容请进入BIOS按照教程手动操作。') -and
+  -not $raw.Contains('以下问题本工具改不了，但按教程手动处理并不难：')) `
+  'health-check BIOS guidance still uses the old wording'
 Assert-True (-not $raw.Contains('「立即更新」全程自动：')) 'obsolete inline-update explanation is still shown'
 Assert-True $raw.Contains("`$script:UpdUi.InlineNote.Visibility = 'Collapsed'") 'inline-update explanation row is not collapsed'
 Assert-True ($raw -match 'Start-Process\s+-FilePath\s+\$PresentMon\s+-WorkingDirectory\s+\(\[Environment\]::SystemDirectory\)') `
@@ -66,7 +75,7 @@ Assert-True ($raw.Contains('x:Name="TabFrameFixBtn" Content="掉帧修复"') -an
   'frame-drop repair tab is not wired into the main navigation'
 Assert-True ($raw.Contains('x:Name="TabTuneBtn" Style="{StaticResource TabBtn}" Tag="" IsEnabled="False" Opacity="1"') -and
   $raw.Contains('Text="AI定制优化"') -and
-  $raw.Contains('Text="（敬请期待）" Foreground="{StaticResource Gold}" FontWeight="Bold"') -and
+  $raw.Contains('Text="（敬请期待）" Foreground="{DynamicResource Gold}" FontWeight="Bold"') -and
   -not $raw.Contains("`$ui.TabTuneBtn.Add_Click({ Select-Tab 'tune' })")) `
   'AI custom optimization placeholder is not disabled or its coming-soon label is not highlighted'
 Assert-True ($raw.Contains('x:Name="FrameFixCacheBtn" Content="清理着色器缓存"') -and

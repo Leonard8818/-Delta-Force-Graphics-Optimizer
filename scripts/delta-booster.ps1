@@ -1490,6 +1490,15 @@ function Get-DisplayTopologyInfo {
       Where-Object { $_.Active -ne $false })
     $queried = $true
   } catch {}
+  $displayNames = @()
+  try {
+    $displayNames = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -ErrorAction Stop |
+      Where-Object { $_.Active -ne $false } | ForEach-Object {
+        $chars = @($_.UserFriendlyName | Where-Object { [int]$_ -gt 0 -and [int]$_ -le 0xFFFF } |
+          ForEach-Object { [char][int]$_ })
+        ("$($chars -join '')" -replace '[\x00-\x1f\x7f]',' ').Trim()
+      } | Where-Object { $_ } | Select-Object -Unique)
+  } catch {}
   $connectors = @()
   $internal = 0; $external = 0
   foreach ($connection in $connections) {
@@ -1516,6 +1525,8 @@ function Get-DisplayTopologyInfo {
     ExternalDisplayCount = [int]$external
     HasInternalDisplay = $(if ($queried -and $connections.Count -gt 0) { [bool]($internal -gt 0) } else { $null })
     Connectors = [string[]]@($connectors | Sort-Object -Unique)
+    DisplayNames = [string[]]$displayNames
+    PrimaryDisplayName = $(if ($displayNames.Count) { "$($displayNames[0])" } else { '' })
   }
 }
 
@@ -1676,6 +1687,8 @@ function Get-HardwareInfo {
     DisplayWidth   = $(if ($display) { [int]$display.DisplayWidth } else { 0 })
     DisplayHeight  = $(if ($display) { [int]$display.DisplayHeight } else { 0 })
     DisplayRefreshHz = $(if ($display) { [int]$display.DisplayRefreshHz } else { 0 })
+    DisplayName    = "$($displayTopology.PrimaryDisplayName)"
+    DisplayNames   = [string[]]@($displayTopology.DisplayNames)
     DisplayGpuVendor = $(if ($display) { "$($display.Vendor)" } else { 'Unknown' })
     DisplayGpuName = $(if ($display) { "$($display.Name)" } else { '' })
     DisplayGpuPnp = $(if ($display) { "$($display.Pnp)" } else { '' })

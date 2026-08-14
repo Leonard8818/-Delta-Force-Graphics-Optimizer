@@ -1,9 +1,10 @@
 {
-    "version":  "0.22.8",
+    "version":  "0.23.0.0",
+    "displayVersion":  "0.23.0.0",
     "minimumSupportedVersion":  "0.22.3",
-    "notes":  "- 修复未选择显卡伪装型号时，管理员引擎错误提示 GpuSpoofModel 参数验证失败的问题。\n- 修复管理员引擎启动时错误提示「-RequestFile 不能与其他动作或业务参数同时使用」的问题。\n- 修复执行优化时错误提示「优化请求包含还原参数」的问题。",
+    "notes":  "- 新增 FPS、CPU/GPU/内存实时占用，以及 CPU/GPU 实时温度显示。\n- FPS、CPU/GPU/内存卡会直接显示“变化”；每张卡右上角可查看本机历史记录。\n- 新增显示器名称、分辨率等级与刷新率信息，支持 1K、2K、4K 标识。\n- 优化安装路径选择。\n- 新增 UI 优化。\n- 软件通知正文上限提高至 10000 字，新增绿色未读角标，通知中的网页链接可直接点击打开。\n- 加强更新暂存文件的权限复验，提升内置静默更新的可靠性。",
     "url":  "https://df.ltz88.cn/",
     "setupUrl":  "https://df.ltz88.cn/DeltaForceBooster-Setup.exe",
-    "sha256":  "e839e26f60c9acfa3008834fca581ed9dc575bb428696b4e1272ccd6c0369701",
-    "size":  888832
+    "sha256":  "d28526328b1c2befe2722f85015516c37b72daa158b0f8ea999241475bf9faa3",
+    "size":  916992
 }

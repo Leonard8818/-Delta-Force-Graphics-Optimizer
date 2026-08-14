@@ -10,7 +10,7 @@
         gui\app.ico 偶发被占用导致安装中途失败。
   v0.7.2：profiles\ 不再进包——那里只有用户自存方案，v0.16.1 的安装包因此把构建者
         本机的方案发给了所有下载者。
-  v0.7.1：版本号改以 $script:GuiVersion 为准并与界面徽标交叉校验（漏改一处就构建失败）；
+  v0.7.1：内部发布序号改以 $script:GuiVersion 为准，品牌显示版本与界面徽标交叉校验；
         程序集四段版本号按位补齐，三段版本（0.16.1）不再拼出五段导致 csc 报错。
   v0.7：重写内嵌卸载脚本——①卸载前可先按备份还原系统改动（默认是）；②无条件清理
         PowerPlanLock 计划任务（SYSTEM 每分钟锁电源方案，残留后普通用户几乎停不掉）；
@@ -37,13 +37,16 @@ $ErrorActionPreference = 'Stop'
 $root  = Split-Path -Parent $PSScriptRoot
 $build = $PSScriptRoot
 
-# 版本号以 $script:GuiVersion 为准：更新检查拿它跟服务器清单比版本，界面徽标只是显示。
-# 两者曾经各写各的，漏改一处就会发出「版本号自称 0.16 的 0.16.1 包」，构建期直接卡住
+# 版本统一使用四段格式；更新比较、安装身份、程序集元数据、文件名和用户界面必须一致。
 $guiText = [IO.File]::ReadAllText((Join-Path $root 'gui\DeltaForceBooster-GUI.ps1'), [Text.Encoding]::UTF8)
 if ($guiText -notmatch '\$script:GuiVersion\s*=\s*''([\d.]+)''') { throw '无法从 GUI 文件解析 $script:GuiVersion' }
 $ver  = $Matches[1]
+if ($guiText -notmatch '\$script:DisplayVersion\s*=\s*''([\d.]+)''') { throw '无法从 GUI 文件解析 $script:DisplayVersion' }
+$displayVer = $Matches[1]
 if ($guiText -notmatch '\[ v([\d.]+) \]') { throw '无法从 GUI 文件解析版本徽标' }
-if ($Matches[1] -ne $ver) { throw "版本号不一致：`$script:GuiVersion=$ver 但徽标写的是 $($Matches[1])，先改成一致再构建" }
+if ($Matches[1] -ne $displayVer) { throw "显示版本不一致：`$script:DisplayVersion=$displayVer 但徽标写的是 $($Matches[1])" }
+if ($ver -ne $displayVer) { throw "版本未统一：`$script:GuiVersion=$ver，`$script:DisplayVersion=$displayVer" }
+if ($ver -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "版本必须是四段格式：$ver" }
 # 程序集版本号必须正好四段，多一段少一段 csc 都会报错
 $seg  = @($ver -split '\.') + @('0', '0', '0', '0')
 $ver4 = ($seg[0..3]) -join '.'
@@ -122,7 +125,7 @@ $installIdentity = "SchemaVersion=2`nProductId=DeltaForceBooster`nLauncherSha256
   (New-Object Text.UTF8Encoding($false)))
 
 # 卸载脚本随包落到安装目录。
-# 安装位置从 v0.3 起可自选，卸载目标以脚本自身所在目录为准，不再假定 %LOCALAPPDATA%。
+# 安装位置从 v0.23.0.0 起可自选，卸载目标以脚本自身所在目录为准，不再假定 %LOCALAPPDATA%。
 # 全程不用 WScript.Shell：它按系统 ANSI 代码页转字符串，非中文代码页（如 1252）的系统上
 # 中文全变 "?"。消息框走 .NET WinForms（原生 Unicode）。
 $uninstallPs = @'
@@ -596,7 +599,7 @@ if (-not (Test-Path $csc)) { $csc = Join-Path $windowsDir 'Microsoft.NET\Framewo
 if (-not (Test-Path $csc)) { throw '本机没有 .NET Framework csc.exe，无法编译安装向导' }
 
 $csSrc = [IO.File]::ReadAllText((Join-Path $build 'setup-wizard.cs'), [Text.Encoding]::UTF8)
-$csSrc = $csSrc.Replace('__VER4__', $ver4).Replace('__VER__', $ver)
+$csSrc = $csSrc.Replace('__VER4__', $ver4).Replace('__DISPLAY_VER__', $displayVer).Replace('__VER__', $ver)
 $csFile = Join-Path $work 'setup-wizard.cs'
 # UTF-8 BOM + /codepage:65001 双保险：csc 默认按当前代码页读源文件（本机 ACP=1252），
 # 缺了任何一个中文字符串都会在编译期被打碎
@@ -613,7 +616,7 @@ $refNames = @('PresentationFramework', 'PresentationCore', 'WindowsBase', 'Syste
               'System.IO.Compression', 'System.IO.Compression.FileSystem')
 $refArgs = $refNames | ForEach-Object { "/r:$(Resolve-GacRef $_)" }
 
-$setupFileName = $(if ($TestBuild) { "DeltaForceBooster-Setup-v$ver-TEST.exe" } else { "DeltaForceBooster-Setup-v$ver.exe" })
+$setupFileName = $(if ($TestBuild) { "DeltaForceBooster-Setup-v$displayVer-TEST.exe" } else { "DeltaForceBooster-Setup-v$displayVer.exe" })
 $setupTmp = Join-Path $work $setupFileName
 $defineArgs = @($(if ($TestBuild) { '/define:DFB_TESTING' }))
 & $csc /nologo /target:winexe /platform:anycpu /optimize+ /codepage:65001 `
@@ -638,17 +641,21 @@ if ($TestBuild) {
 # 手工计算迟早抄错一次哈希。公开更新说明也在构建时固定生成，避免发布时漏改占位符。
 # setupUrl 固定指向服务器上的无版本号文件名（发布即覆盖），域名必须保持在
 # scripts\updater.ps1 的白名单内，否则老客户端会拒绝下载。
-$setupOut = Join-Path $build "DeltaForceBooster-Setup-v$ver.exe"
+$setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复未选择显卡伪装型号时，管理员引擎错误提示 GpuSpoofModel 参数验证失败的问题。
-- 修复管理员引擎启动时错误提示「-RequestFile 不能与其他动作或业务参数同时使用」的问题。
-- 修复执行优化时错误提示「优化请求包含还原参数」的问题。
+- 新增 FPS、CPU/GPU/内存实时占用，以及 CPU/GPU 实时温度显示。
+- FPS、CPU/GPU/内存卡会直接显示“变化”；每张卡右上角可查看本机历史记录。
+- 新增显示器名称、分辨率等级与刷新率信息，支持 1K、2K、4K 标识。
+- 优化安装路径选择。
+- 新增 UI 优化。
+- 软件通知正文上限提高至 10000 字，新增绿色未读角标，通知中的网页链接可直接点击打开。
+- 加强更新暂存文件的权限复验，提升内置静默更新的可靠性。
 '@
 $manifestObj = [ordered]@{
-  # 与 $script:GuiVersion 逐字一致：客户端拿自身版本跟这里比大小，补位只会让
-  # 「已是最新」和「有新版本」的判定跟着版本号写法漂
+  # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。
   version  = "$ver"
+  displayVersion = "$displayVer"
   # 旧版存在必须淘汰的问题；支持该字段的客户端低于本版时不允许跳过。
   minimumSupportedVersion = '0.22.3'
   notes    = $manifestNotes

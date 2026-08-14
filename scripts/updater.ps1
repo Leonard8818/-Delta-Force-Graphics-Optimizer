@@ -220,6 +220,26 @@ function Set-BoosterStagingFileAcl {
   $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($admins, 'FullControl', $allow)))
   $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($ReaderSid, 'ReadAndExecute', $allow)))
   (New-Object IO.FileInfo($Path)).SetAccessControl($acl)
+  # staging 一旦被错误的 ACL 工具或平台差异写成空 DACL，连提权安装器也读不到文件。
+  # 因此不能只相信 SetAccessControl 没抛异常：写完必须从磁盘重新读取并验证。
+  $written = (New-Object IO.FileInfo($Path)).GetAccessControl([Security.AccessControl.AccessControlSections]'Owner, Access')
+  $writtenOwner = $written.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if ($writtenOwner -ne $owner.Value) { throw "更新 staging 文件所有者写入失败：$Path" }
+  $rights = @{}
+  foreach ($rule in $written.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq $allow) {
+      $sid = $rule.IdentityReference.Value
+      if (-not $rights.ContainsKey($sid)) { $rights[$sid] = [Security.AccessControl.FileSystemRights]0 }
+      $rights[$sid] = $rights[$sid] -bor $rule.FileSystemRights
+    }
+  }
+  $readExecute = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+  $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
+  if (-not $rights.ContainsKey($system.Value) -or (($rights[$system.Value] -band $fullControl) -ne $fullControl) -or
+      -not $rights.ContainsKey($admins.Value) -or (($rights[$admins.Value] -band $fullControl) -ne $fullControl) -or
+      -not $rights.ContainsKey($ReaderSid.Value) -or (($rights[$ReaderSid.Value] -band $readExecute) -ne $readExecute)) {
+    throw "更新 staging 文件 ACL 写入后复验失败：$Path"
+  }
 }
 
 function Test-BoosterProtectedDirectoryAcl([string]$Path) {
@@ -592,6 +612,7 @@ function Test-BoosterUpdate {
     $canInline = ($urlVerdict.Allowed -and $sha -match '^[0-9a-fA-F]{64}$' -and $size -gt 0)
     [pscustomobject]@{
       Version    = "$($m.version)"
+      DisplayVersion = $(if ("$($m.displayVersion)".Trim()) { "$($m.displayVersion)".Trim() } else { "$($m.version)" })
       Notes      = "$($m.notes)"
       Url        = "$($m.url)"
       Current    = "$CurrentVersion"

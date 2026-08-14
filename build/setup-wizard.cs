@@ -1,6 +1,6 @@
 ﻿// DeltaForceBooster 图形安装向导 — 源码由 build\make-installer.ps1 注入版本号后用系统自带 csc 编译。
 //
-// 为什么是 C# + WPF 而不是沿用 IExpress：IExpress 的界面不可定制、无法让用户选安装位置；
+// 为什么是 C# + WPF 而不是沿用 IExpress：IExpress 的界面不可定制、无法让用户选安装磁盘；
 // make-launcher.ps1 已验证「系统 csc 编译 + 内嵌图标/清单」这条零第三方依赖路线可行，这里沿用。
 // 为什么 payload 内嵌为程序集资源（/resource:）：真正单文件分发，运行时直接从自身程序集解流，
 // 不经过 IExpress 那种落盘自解压临时目录。
@@ -47,7 +47,9 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -55,7 +57,7 @@ using WShapes = System.Windows.Shapes;
 using WinForms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("三角洲行动优化助手 安装向导")]
-[assembly: AssemblyDescription("DeltaForceBooster 安装向导（可自选安装位置）")]
+[assembly: AssemblyDescription("DeltaForceBooster 安装向导（可选择安装磁盘）")]
 [assembly: AssemblyProduct("DeltaForceBooster")]
 [assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
 [assembly: AssemblyCopyright("DeltaForceBooster MIT 开源项目")]
@@ -66,6 +68,7 @@ namespace DfbSetup {
 
 static class Program {
     public const string Version = "__VER__";
+    public const string DisplayVersion = "__DISPLAY_VER__";
     enum LaunchDisposition { Started, Skipped, Failed }
 
     [STAThread]
@@ -429,6 +432,19 @@ static class Program {
 static class Installer {
     public const string NeedAdmin = "NEED_ADMIN";
     static long _requiredBytes = -1;
+    public sealed class InstallDriveOption {
+        public string Root;
+        public string VolumeLabel;
+        public string FileSystem;
+        public string Destination;
+        public string DisabledReason;
+        public string TechnicalReason;
+        public DriveType DriveType;
+        public long AvailableFreeSpace;
+        public bool IsRecommended;
+        public bool IsSystem;
+        public bool IsSupported { get { return string.IsNullOrEmpty(DisabledReason); } }
+    }
     sealed class InstallLayout {
         public string InstallRoot;
         public string CodeRoot;
@@ -697,6 +713,79 @@ static class Installer {
         if (string.IsNullOrEmpty(pf)) pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         if (string.IsNullOrEmpty(pf)) throw new InvalidOperationException("系统未提供 Program Files 路径");
         return Path.Combine(pf, "DeltaForceBooster");
+    }
+
+    // 位置页只让用户做一个真正有意义的选择：装到哪块磁盘。
+    // 安全目录由安装器自动生成，避免“可以浏览任意文件夹，接着又因安全策略拒绝”。
+    public static string InstallDirForDrive(string driveRoot) {
+        if (string.IsNullOrWhiteSpace(driveRoot)) throw new ArgumentException("磁盘根目录为空", "driveRoot");
+        string full = Path.GetFullPath(driveRoot);
+        string root = Path.GetPathRoot(full);
+        if (string.IsNullOrEmpty(root) || root.Length != 3 || root[1] != ':')
+            throw new ArgumentException("请提供带盘符的本地磁盘根目录", "driveRoot");
+        string defaultDir = DefaultDir();
+        string defaultRoot = Path.GetPathRoot(defaultDir);
+        if (string.Equals(root.TrimEnd('\\'), defaultRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            return defaultDir;
+        return Path.Combine(root, "DeltaForceBooster");
+    }
+
+    public static string DriveDisabledReason(bool isReady, DriveType driveType, string fileSystem) {
+        if (!isReady) return "磁盘未就绪";
+        if (driveType != DriveType.Fixed) return "仅支持本地固定磁盘";
+        if (!string.Equals(fileSystem, "NTFS", StringComparison.OrdinalIgnoreCase))
+            return "需要 NTFS（当前 " + (string.IsNullOrEmpty(fileSystem) ? "未知格式" : fileSystem) + "）";
+        return null;
+    }
+
+    public static InstallDriveOption[] GetInstallDriveOptions() {
+        var options = new List<InstallDriveOption>();
+        string defaultRoot = Path.GetPathRoot(DefaultDir());
+        string systemRoot = Path.GetPathRoot(Environment.SystemDirectory);
+        foreach (DriveInfo drive in DriveInfo.GetDrives()) {
+            string root;
+            try { root = Path.GetPathRoot(drive.Name); }
+            catch (Exception) { continue; }
+            if (string.IsNullOrEmpty(root) || root.Length != 3 || root[1] != ':') continue;
+            var option = new InstallDriveOption {
+                Root = root,
+                Destination = InstallDirForDrive(root),
+                AvailableFreeSpace = -1,
+                DriveType = drive.DriveType,
+                IsRecommended = string.Equals(root.TrimEnd('\\'), defaultRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase),
+                IsSystem = !string.IsNullOrEmpty(systemRoot) &&
+                    string.Equals(root.TrimEnd('\\'), systemRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+            };
+            try {
+                bool isReady = drive.IsReady;
+                if (isReady) {
+                    option.VolumeLabel = drive.VolumeLabel ?? "";
+                    option.FileSystem = drive.DriveFormat ?? "";
+                    option.AvailableFreeSpace = drive.AvailableFreeSpace;
+                }
+                option.DisabledReason = DriveDisabledReason(isReady, drive.DriveType, option.FileSystem);
+                if (option.DisabledReason == null) {
+                    string secure = CheckSecureInstallLocation(option.Destination);
+                    if (secure != null) {
+                        option.TechnicalReason = secure;
+                        option.DisabledReason = secure.IndexOf("同名文件", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            secure.IndexOf("同名目录", StringComparison.OrdinalIgnoreCase) >= 0
+                            ? "已有同名项目，且不属于本软件"
+                            : "磁盘根目录权限不符合安全要求";
+                    }
+                }
+            } catch (Exception ex) {
+                option.DisabledReason = "磁盘信息读取失败";
+                option.TechnicalReason = ex.Message;
+            }
+            options.Add(option);
+        }
+        options.Sort(delegate(InstallDriveOption a, InstallDriveOption b) {
+            if (a.IsRecommended != b.IsRecommended) return a.IsRecommended ? -1 : 1;
+            if (a.IsSupported != b.IsSupported) return a.IsSupported ? -1 : 1;
+            return string.Compare(a.Root, b.Root, StringComparison.OrdinalIgnoreCase);
+        });
+        return options.ToArray();
     }
 
     // 位置页的风险提示据此判断：当前输入路径是否位于下载文件夹之内
@@ -1310,7 +1399,7 @@ static class Installer {
                 return "安装目标不能是磁盘根目录";
             parent = Path.GetDirectoryName(full.TrimEnd('\\'));
             if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
-                return "安装目标的父目录必须已经存在；请先通过“浏览…”选择现有目录";
+                return "安装目标的父目录必须已经存在；请通过安装向导选择磁盘";
             return null;
         } catch (Exception ex) { return "目标磁盘检查失败：" + ex.Message; }
     }
@@ -2669,20 +2758,75 @@ static class Theme {
     public static readonly SolidColorBrush WarnBoxBg  = B("#FF171307");
     public static readonly SolidColorBrush WarnBoxLine = B("#66E5C46A");
     public static readonly FontFamily Mono = new FontFamily("Consolas");
+
+    // 原生 ScrollBar 的浅色默认皮肤会破坏深色安装器。只在根节点注入一次主题模板，
+    // 磁盘数量溢出时出现的滚动条会沿用安装器的青绿配色。
+    public static Style ScrollBarStyle() {
+        const string xaml = @"
+<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+       xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
+       TargetType='{x:Type ScrollBar}'>
+  <Setter Property='Width' Value='10'/>
+  <Setter Property='MinWidth' Value='10'/>
+  <Setter Property='Background' Value='#0A1613'/>
+  <Setter Property='Template'>
+    <Setter.Value>
+      <ControlTemplate TargetType='{x:Type ScrollBar}'>
+        <Grid Background='{TemplateBinding Background}'>
+          <Track x:Name='PART_Track' Orientation='{TemplateBinding Orientation}'
+                 IsDirectionReversed='True' Focusable='False'>
+            <Track.DecreaseRepeatButton>
+              <RepeatButton Command='{x:Static ScrollBar.PageUpCommand}'
+                            Background='Transparent' BorderThickness='0' Focusable='False'/>
+            </Track.DecreaseRepeatButton>
+            <Track.Thumb>
+              <Thumb Background='#2A4A40' BorderBrush='#00E884' BorderThickness='1'>
+                <Thumb.Template>
+                  <ControlTemplate TargetType='{x:Type Thumb}'>
+                    <Border Background='{TemplateBinding Background}'
+                            BorderBrush='{TemplateBinding BorderBrush}'
+                            BorderThickness='{TemplateBinding BorderThickness}'
+                            CornerRadius='3' Margin='2,1'/>
+                  </ControlTemplate>
+                </Thumb.Template>
+              </Thumb>
+            </Track.Thumb>
+            <Track.IncreaseRepeatButton>
+              <RepeatButton Command='{x:Static ScrollBar.PageDownCommand}'
+                            Background='Transparent' BorderThickness='0' Focusable='False'/>
+            </Track.IncreaseRepeatButton>
+          </Track>
+        </Grid>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>";
+        return (Style)XamlReader.Parse(xaml);
+    }
 }
 
 // ---------------- 安装向导窗口（界面全部代码构建，不依赖 XAML 编译） ----------------
 class SetupWindow : Window {
     const double BarWidth = 500;                 // 进度条轨道宽度（像素），填充按比例算
-    static readonly string[] StepNames = { "欢迎", "安装位置", "安装", "完成" };
+    static readonly string[] StepNames = { "欢迎", "安装磁盘", "安装", "完成" };
+
+    sealed class DriveCardView {
+        public Installer.InstallDriveOption Option;
+        public Border Card;
+        public TextBlock Marker;
+    }
 
     Grid[] _pages;
     TextBlock[] _stepNums, _stepLabels;
     TextBox _pathBox;
-    TextBlock _spaceText, _warnText, _dlWarnText, _pctText, _cntText, _fileText, _destText, _hintText;
+    TextBlock _spaceText, _warnText, _pctText, _cntText, _fileText, _destText, _hintText;
     TextBlock _runLabel, _runHelpText;
     Border _barFill, _closeBtn;
     Grid _btnNext, _btnBack, _btnInstall, _btnFinish, _btnCancel;
+    UniformGrid _driveGrid;
+    ScrollViewer _driveScroll;
+    readonly List<DriveCardView> _driveCards = new List<DriveCardView>();
+    string _selectedDriveRoot;
     StackPanel _runRow;
     TextBlock _checkMark, _deskMark, _menuMark;
     bool _runChecked = true;
@@ -2707,11 +2851,13 @@ class SetupWindow : Window {
         Foreground = Theme.TextMain;
         Content = BuildRoot();
         ShowStep(0);
-        _pathBox.Text = Installer.DefaultDir();
+        SelectDriveForPath(Installer.DefaultDir(), false);
         // 提权重启回传路径时直接落到位置页，别让用户从头再点一遍
         if (!string.IsNullOrEmpty(presetDir)) {
-            try { _pathBox.Text = Installer.InstallRootForDisplay(presetDir); }
-            catch (Exception) { _pathBox.Text = presetDir; }
+            string selected;
+            try { selected = Installer.InstallRootForDisplay(presetDir); }
+            catch (Exception) { selected = presetDir; }
+            SelectDriveForPath(selected, true);
             ShowStep(1);
         }
     }
@@ -2725,6 +2871,7 @@ class SetupWindow : Window {
     // ---------- 结构 ----------
     UIElement BuildRoot() {
         var root = new Grid();
+        root.Resources.Add(typeof(ScrollBar), Theme.ScrollBarStyle());
         // 官网页面底色不是纯黑：带青绿调的细微垂直渐变。背景挂在根 Grid 上
         // 而不是 Window 上，离屏渲染视觉树时 PNG 才不会透明
         var bg = new LinearGradientBrush();
@@ -2782,7 +2929,7 @@ class SetupWindow : Window {
         Grid.SetColumn(t, 1); g.Children.Add(t);
 
         var ver = new TextBlock {
-            Text = "SETUP v" + Program.Version,
+            Text = "SETUP v" + Program.DisplayVersion,
             Foreground = Theme.Gold, FontFamily = Theme.Mono, FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0)
         };
@@ -2943,67 +3090,195 @@ class SetupWindow : Window {
         return page;
     }
 
-    // ---------- 页面 2：安装位置 ----------
+    // ---------- 页面 2：安装磁盘 ----------
     Grid BuildLocationPage() {
         var page = new Grid();
         var sp = new StackPanel();
-        sp.Children.Add(SectionLabel("INSTALL LOCATION", "选择安装位置"));
+        sp.Children.Add(SectionLabel("INSTALL DRIVE", "选择安装磁盘"));
+        sp.Children.Add(new TextBlock {
+            Text = "选择要安装到的磁盘，安装器会自动创建安全目录，不需要自己找文件夹。",
+            Foreground = Theme.TextSub, FontSize = 11, Margin = new Thickness(0, 0, 0, 8)
+        });
+        _driveGrid = new UniformGrid { Columns = 2 };
+        _driveScroll = new ScrollViewer {
+            MaxHeight = 142, Content = _driveGrid,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Padding = new Thickness(0, 0, 4, 0)
+        };
+        sp.Children.Add(_driveScroll);
 
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        sp.Children.Add(new TextBlock {
+            Text = "实际安装位置",
+            Foreground = Theme.TextFaint, FontSize = 11, Margin = new Thickness(0, 8, 0, 5)
+        });
         _pathBox = new TextBox {
             Height = 34, VerticalContentAlignment = VerticalAlignment.Center,
             Background = Theme.InputBg, Foreground = Theme.TextMain,
             BorderBrush = Theme.Line2, BorderThickness = new Thickness(1),
             CaretBrush = Theme.Green, Padding = new Thickness(8, 0, 8, 0),
-            FontFamily = Theme.Mono, FontSize = 12
+            FontFamily = Theme.Mono, FontSize = 12, IsReadOnly = true
         };
         _pathBox.TextChanged += delegate { UpdateSpaceInfo(); };
-        Grid.SetColumn(_pathBox, 0); row.Children.Add(_pathBox);
-        var browse = MakeButton("浏览…", false, OnBrowseClick);
-        browse.Height = 34;
-        Grid.SetColumn(browse, 1); row.Children.Add(browse);
-        sp.Children.Add(row);
-
-        sp.Children.Add(new TextBlock {
-            Text = "路径可直接编辑；通过「浏览…」选择目录时会自动附加 DeltaForceBooster 子目录。",
-            Foreground = Theme.TextFaint, FontSize = 11, Margin = new Thickness(0, 6, 0, 0)
-        });
+        sp.Children.Add(_pathBox);
         _spaceText = new TextBlock {
             Foreground = Theme.TextSub, FontFamily = Theme.Mono, FontSize = 12,
-            Margin = new Thickness(0, 12, 0, 0)
+            Margin = new Thickness(0, 7, 0, 0)
         };
         sp.Children.Add(_spaceText);
 
         var keepBox = new TextBlock {
-            Text = "覆盖安装保护：先完整暂存并校验，再原子切换，失败自动回滚。配置与自存方案保存在 LocalAppData，系统还原备份保存在 ProgramData，不会混进程序目录。",
-            Foreground = Theme.TextSub, TextWrapping = TextWrapping.Wrap, LineHeight = 19
+            Text = "安全安装：覆盖更新前先完整校验，再原子切换，失败自动回滚。用户配置和系统还原备份不会混进程序目录。",
+            Foreground = Theme.TextSub, TextWrapping = TextWrapping.Wrap, LineHeight = 18
         };
         sp.Children.Add(new Border {
             Child = keepBox, Background = Theme.BtnBg, BorderBrush = Theme.Line,
-            BorderThickness = new Thickness(1), Padding = new Thickness(14, 10, 14, 10),
-            Margin = new Thickness(0, 14, 0, 0)
+            BorderThickness = new Thickness(1), Padding = new Thickness(12, 8, 12, 8),
+            Margin = new Thickness(0, 9, 0, 0)
         });
         sp.Children.Add(new TextBlock {
-            Text = "默认安装到 Program Files。其他固定 NTFS 盘请直接选择磁盘根目录：安装器会创建一级永久保护目录，程序代码放在它的 app 子目录。",
+            Text = "系统盘自动使用 Program Files；其他固定 NTFS 盘自动使用盘符根目录下的 DeltaForceBooster 保护目录，程序代码位于 app 子目录。只有点击「开始安装」后才会请求 UAC。",
             Foreground = Theme.TextFaint, FontSize = 11, TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 10, 0, 0)
+            Margin = new Thickness(0, 7, 0, 0)
         });
-        // 下载目录对普通用户可写，不能再作为程序代码安装位置。
-        _dlWarnText = new TextBlock {
-            Text = "当前位置在「下载」文件夹内，普通进程可以替换程序脚本，本安装器会拒绝该位置。可使用默认路径，或直接选择其他固定 NTFS 盘的根目录。",
-            Foreground = Theme.Gold, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
-            Margin = new Thickness(0, 12, 0, 0), Visibility = Visibility.Collapsed
-        };
-        sp.Children.Add(_dlWarnText);
         _warnText = new TextBlock {
             Foreground = Theme.Gold, TextWrapping = TextWrapping.Wrap, LineHeight = 19,
-            Margin = new Thickness(0, 12, 0, 0), Visibility = Visibility.Collapsed
+            Margin = new Thickness(0, 7, 0, 0), Visibility = Visibility.Collapsed
         };
         sp.Children.Add(_warnText);
+        BuildDriveCards();
         page.Children.Add(sp);
         return page;
+    }
+
+    void BuildDriveCards() {
+        _driveCards.Clear();
+        _driveGrid.Children.Clear();
+        foreach (Installer.InstallDriveOption option in Installer.GetInstallDriveOptions()) {
+            string driveName = option.Root.TrimEnd('\\');
+            string label = string.IsNullOrEmpty(option.VolumeLabel) ? "本地磁盘" : option.VolumeLabel;
+            string title = driveName + "  " + (option.IsSystem ? "系统盘" : label);
+            if (option.IsRecommended) title += "（推荐）";
+            string status;
+            if (option.IsSupported) {
+                status = string.Format(CultureInfo.InvariantCulture, "{0:F1} GB 可用  ·  {1}",
+                    option.AvailableFreeSpace / 1073741824.0, option.FileSystem);
+            } else {
+                status = "不可选  ·  " + option.DisabledReason;
+            }
+
+            var grid = new Grid { MinHeight = 61 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var marker = new TextBlock {
+                Text = option.IsSupported ? "○" : "—", FontSize = 17,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(marker, 0); grid.Children.Add(marker);
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(new TextBlock {
+                Text = title, Foreground = option.IsSupported ? (Brush)Theme.TextMain : Theme.TextFaint,
+                FontWeight = option.IsRecommended ? FontWeights.Bold : FontWeights.Normal
+            });
+            text.Children.Add(new TextBlock {
+                Text = option.Destination, Foreground = Theme.TextFaint, FontFamily = Theme.Mono,
+                FontSize = 9, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 3, 4, 0)
+            });
+            var statusText = new TextBlock {
+                Text = status, Foreground = option.IsSupported ? (Brush)Theme.Green : Theme.Gold,
+                FontFamily = Theme.Mono, FontSize = 9, TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 3, 4, 0)
+            };
+            text.Children.Add(statusText);
+            Grid.SetColumn(text, 1); grid.Children.Add(text);
+            var card = new Border {
+                Child = grid, Background = Theme.InputBg, BorderBrush = Theme.Line,
+                BorderThickness = new Thickness(1), Padding = new Thickness(7, 4, 7, 4),
+                Margin = new Thickness(0, 0, 6, 6), Focusable = option.IsSupported,
+                Cursor = option.IsSupported ? Cursors.Hand : Cursors.Arrow,
+                Opacity = option.IsSupported ? 1.0 : 0.58
+            };
+            card.ToolTip = string.IsNullOrEmpty(option.TechnicalReason)
+                ? (option.IsSupported ? option.Destination : option.DisabledReason)
+                : option.DisabledReason + "\n" + option.TechnicalReason;
+            var view = new DriveCardView { Option = option, Card = card, Marker = marker };
+            if (option.IsSupported) {
+                card.MouseLeftButtonDown += delegate { card.Focus(); };
+                card.MouseLeftButtonUp += delegate { SelectDriveOption(view.Option); };
+                card.KeyDown += delegate(object sender, KeyEventArgs e) {
+                    if (e.Key == Key.Enter || e.Key == Key.Space) {
+                        SelectDriveOption(view.Option);
+                        e.Handled = true;
+                    }
+                };
+                card.MouseEnter += delegate {
+                    if (!IsSelectedDrive(view.Option.Root)) card.BorderBrush = Theme.Green;
+                };
+                card.MouseLeave += delegate { RefreshDriveCards(); };
+                card.GotKeyboardFocus += delegate { card.BorderBrush = Theme.Green; };
+                card.LostKeyboardFocus += delegate { RefreshDriveCards(); };
+            }
+            _driveCards.Add(view);
+            _driveGrid.Children.Add(card);
+        }
+        if (_driveCards.Count == 0) {
+            _driveGrid.Children.Add(new TextBlock {
+                Text = "未检测到带盘符的本地磁盘。",
+                Foreground = Theme.Red, Margin = new Thickness(8, 12, 8, 0)
+            });
+        }
+        // 一到四块磁盘全部平铺展示；只有第五块开始才出现纵向滚动条。
+        _driveScroll.Height = _driveCards.Count > 4 ? 142 : Math.Ceiling(Math.Max(1, _driveCards.Count) / 2.0) * 67;
+        _driveScroll.VerticalScrollBarVisibility = _driveCards.Count > 4
+            ? ScrollBarVisibility.Visible : ScrollBarVisibility.Hidden;
+    }
+
+    bool IsSelectedDrive(string root) {
+        return !string.IsNullOrEmpty(_selectedDriveRoot) &&
+            string.Equals(_selectedDriveRoot.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    void RefreshDriveCards() {
+        foreach (DriveCardView view in _driveCards) {
+            bool selected = view.Option.IsSupported && IsSelectedDrive(view.Option.Root);
+            view.Marker.Text = view.Option.IsSupported ? (selected ? "●" : "○") : "—";
+            view.Marker.Foreground = selected ? (Brush)Theme.Green : Theme.TextFaint;
+            view.Card.BorderBrush = selected ? (Brush)Theme.Green : Theme.Line;
+            view.Card.Background = selected ? (Brush)Theme.BtnBg : Theme.InputBg;
+        }
+    }
+
+    void SelectDriveOption(Installer.InstallDriveOption option) {
+        if (option == null || !option.IsSupported) return;
+        _selectedDriveRoot = option.Root;
+        _pathBox.Text = option.Destination;
+        RefreshDriveCards();
+    }
+
+    void SelectDriveForPath(string path, bool preserveExactPath) {
+        string requestedRoot = null;
+        try { requestedRoot = Path.GetPathRoot(Path.GetFullPath(path)); }
+        catch (Exception) { }
+        Installer.InstallDriveOption selected = null;
+        bool matchedRequested = false;
+        foreach (DriveCardView view in _driveCards) {
+            if (!view.Option.IsSupported) continue;
+            if (!string.IsNullOrEmpty(requestedRoot) &&
+                string.Equals(view.Option.Root.TrimEnd('\\'), requestedRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) {
+                selected = view.Option;
+                matchedRequested = true;
+                break;
+            }
+            if (selected == null) selected = view.Option;
+        }
+        if (selected != null) {
+            _selectedDriveRoot = selected.Root;
+            _pathBox.Text = preserveExactPath && matchedRequested ? path : selected.Destination;
+        } else {
+            _selectedDriveRoot = null;
+            _pathBox.Text = string.IsNullOrEmpty(path) ? Installer.DefaultDir() : path;
+        }
+        RefreshDriveCards();
     }
 
     // ---------- 页面 3：安装进度 ----------
@@ -3159,7 +3434,7 @@ class SetupWindow : Window {
         _closeBtn.Visibility   = (s == 2) ? Visibility.Hidden : Visibility.Visible;
         switch (s) {
             case 0: _hintText.Text = "安装过程只复制文件，不修改任何系统设置"; break;
-            case 1: _hintText.Text = "其他盘仅用卷根一级永久保护目录；代码位于其 app 子目录"; break;
+            case 1: _hintText.Text = "选择磁盘即可，安全安装路径由安装器自动生成"; break;
             case 2: _hintText.Text = "正在安装，请稍候…"; break;
             default: _hintText.Text = "遇到问题可通过开始菜单或安装目录里的「卸载.bat」卸载"; break;
         }
@@ -3176,34 +3451,10 @@ class SetupWindow : Window {
                 driveRoot.TrimEnd('\\'));
             _spaceText.Foreground = Theme.TextSub;
         } catch (Exception) {
-            _spaceText.Text = "无法识别目标磁盘，请检查路径。";
+            _spaceText.Text = "无法识别目标磁盘，请重新选择。";
             _spaceText.Foreground = Theme.Red;
         }
         if (_warnText != null) _warnText.Visibility = Visibility.Collapsed;
-        // 路径每次变化都重新判定是否在下载文件夹内，提示随之显隐
-        if (_dlWarnText != null)
-            _dlWarnText.Visibility = Installer.IsUnderDownloads(_pathBox.Text)
-                ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    void OnBrowseClick() {
-        var dlg = new WinForms.FolderBrowserDialog();
-        dlg.Description = "选择磁盘根目录（将创建 DeltaForceBooster 受保护目录）或已有受保护安装目录";
-        try { if (Directory.Exists(_pathBox.Text.Trim())) dlg.SelectedPath = _pathBox.Text.Trim(); } catch (Exception) { }
-        if (dlg.ShowDialog() == WinForms.DialogResult.OK) {
-            string p = dlg.SelectedPath;
-            string leaf = Path.GetFileName(p.TrimEnd('\\'));
-            string root = Path.GetPathRoot(p);
-            string parent = Path.GetDirectoryName(p.TrimEnd('\\'));
-            if (string.Equals(p.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
-                p = Path.Combine(p, "DeltaForceBooster");
-            else if (!string.IsNullOrEmpty(parent) &&
-                !string.Equals(parent.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(leaf, "DeltaForceBooster", StringComparison.OrdinalIgnoreCase))
-                p = Path.Combine(p, "DeltaForceBooster");
-            try { p = Installer.InstallRootForDisplay(p); } catch (Exception) { }
-            _pathBox.Text = p;
-        }
     }
 
     void ShowWarn(string msg, bool isError) {
@@ -3230,7 +3481,7 @@ class SetupWindow : Window {
                 "需要管理员权限", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (r == MessageBoxResult.Yes) RelaunchElevated(dest);
         } else {
-            ShowWarn("该位置不符合安全安装要求（" + err + "）。其他盘请直接选择固定 NTFS 磁盘根目录；程序会安装到一级受保护目录的 app 子目录。", true);
+            ShowWarn("该磁盘不符合安全安装要求（" + err + "）。请在上方重新选择可用的固定 NTFS 磁盘。", true);
         }
     }
 
@@ -3346,8 +3597,7 @@ class SetupWindow : Window {
         switch (state) {
             case 0: ShowStep(0); break;
             case 1:
-                _pathBox.Text = Installer.DefaultDir();
-                UpdateSpaceInfo();
+                SelectDriveForPath(Installer.DefaultDir(), false);
                 ShowStep(1);
                 break;
             case 2:
@@ -3360,8 +3610,7 @@ class SetupWindow : Window {
                 break;
             default:
                 ShowStep(1);
-                _pathBox.Text = "C:\\Program Files\\DeltaForceBooster";
-                UpdateSpaceInfo();
+                SelectDriveForPath(Installer.DefaultDir(), false);
                 ShowWarn("所选位置需要管理员权限，开始安装时会提权并保护程序目录。", false);
                 break;
         }
@@ -3372,13 +3621,22 @@ class SetupWindow : Window {
         sb.AppendLine("窗口标题=" + Title);
         sb.AppendLine("步骤=" + string.Join("/", StepNames));
         sb.AppendLine("欢迎标题=欢迎安装 三角洲行动优化助手");
-        sb.AppendLine("按钮=上一步/取消/下一步/开始安装/完成/浏览…");
+        sb.AppendLine("按钮=上一步/取消/下一步/开始安装/完成");
+        sb.AppendLine("安装磁盘说明=选择要安装到的磁盘，安装器会自动创建安全目录");
         sb.AppendLine("完成页勾选=创建开始菜单快捷方式（含「卸载优化助手」入口）/创建桌面快捷方式（三角洲行动优化助手）/立即运行 三角洲行动优化助手");
         sb.AppendLine("默认路径=" + Installer.DefaultDir());
+        sb.AppendLine("当前选择磁盘=" + (_selectedDriveRoot ?? ""));
+        sb.AppendLine("实际安装位置=" + _pathBox.Text);
+        sb.AppendLine("安装位置只读=" + _pathBox.IsReadOnly);
+        sb.AppendLine("磁盘布局=双列平铺；超过4项滚动");
+        sb.AppendLine("滚动条主题=深色绿");
+        foreach (DriveCardView view in _driveCards) {
+            sb.AppendLine("磁盘选项=" + view.Option.Root + "|" +
+                (view.Option.IsSupported ? "可选" : "不可选：" + view.Option.DisabledReason) + "|" +
+                view.Option.Destination);
+        }
         sb.AppendLine("所需空间行=" + _spaceText.Text);
         sb.AppendLine("权限警告=" + _warnText.Text);
-        sb.AppendLine("下载目录提醒可见=" + (_dlWarnText.Visibility == Visibility.Visible));
-        sb.AppendLine("下载目录提醒=" + _dlWarnText.Text);
         return sb.ToString();
     }
 }

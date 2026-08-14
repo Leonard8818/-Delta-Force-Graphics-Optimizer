@@ -8,7 +8,7 @@
         EngineHost 与全部可执行负载，再通过双向命名管道启动唯一的管理员会话。
   v0.4：启动器改为 asInvoker；启动 GUI 前校验关键脚本/PresentMon 的发布哈希，
         安装文件被替换或经重解析点跳转时拒绝启动并提示重新安装。
-  v0.3：程序集版本号按位补齐到四段，三段 GUI 版本不再拼成五段导致 csc 编译失败。
+  v0.23.0.0：产品统一使用四段版本号，避免界面、更新清单与程序集元数据不一致。
   v0.2：ICO 除内嵌进 exe 外，另落一份 gui\app.ico 随包分发——WPF 窗口不设 Icon 时
         任务栏/Alt-Tab 显示宿主 powershell.exe 的图标（实机反馈），GUI 启动时读它。
   用系统自带的 .NET Framework csc.exe 编译出根目录「启动优化工具.exe」，零第三方依赖：
@@ -28,9 +28,9 @@ $work = Join-Path $env:TEMP "dfb-launcher-$PID"
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Path $work | Out-Null
 
-# 版本号跟随 GUI 徽标，exe 的文件版本与界面保持一致
+# 文件版本跟随单调递增的内部发布序号；界面徽标允许使用更简洁的品牌版本。
 $guiText = [IO.File]::ReadAllText((Join-Path $root 'gui\DeltaForceBooster-GUI.ps1'), [Text.Encoding]::UTF8)
-if ($guiText -notmatch '\[ v([\d.]+) \]') { throw '无法从 GUI 文件解析版本号' }
+if ($guiText -notmatch '\$script:GuiVersion\s*=\s*''([\d.]+)''') { throw '无法从 GUI 文件解析内部版本号' }
 $ver = $Matches[1]
 $verParts = @($ver -split '\.') + @('0', '0', '0', '0')
 $ver4 = ($verParts[0..3]) -join '.'

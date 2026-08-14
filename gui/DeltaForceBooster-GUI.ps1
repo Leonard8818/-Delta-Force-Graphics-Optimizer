@@ -1,9 +1,16 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.22.8
+  DeltaForceBooster 图形界面 — v0.23.0.0
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
-  渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角 + 等高线纹理）+ 金色分类标签 #E5C46A
+  渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.0：CPU/GPU 硬件与温度卡提前；FPS、CPU/GPU/内存卡直接显示记录变化并可查看历史；
+         百分号与温度单位跟随数值字号和颜色；深色主题恢复金黄强调色，移除执行优化按钮内的
+         等高线，并用绿色数字角标提醒未读消息。
+  v0.22.10：CPU 占用改用 Windows Processor Utility 口径，避免混合架构处理器明显偏低；
+         不再把主板 ACPI 温区冒充为 CPU 封装温度；主窗口默认增高并记住上次高度。
+  v0.22.9：新增实时硬件状态与显示器信息，拉长主窗口以完整展示新增内容，
+        并将软件通知正文上限提高至 10000 字。
   v0.22.8：修复未选择显卡伪装型号时管理员请求触发参数验证失败的问题。
   v0.22.7：修复管理员引擎通过 RequestFile 启动时被误判为混合参数的问题。
   v0.22.6：修复执行优化和读取还原目录时可选参数被误判的问题。
@@ -471,8 +478,11 @@ catch {
   }
 }
 
-# 界面版本号：标题栏徽标 / 页脚 / 更新检查共用同一处定义，避免三处漂移
-$script:GuiVersion = '0.22.8'
+# 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
+$script:GuiVersion = '0.23.0.0'
+$script:DisplayVersion = '0.23.0.0'
+# 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
+$script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
 # 更新模块独立可缺失：老用户手动拷贝升级时可能没有该文件，缺了也不能影响主功能
 if (Test-Path -LiteralPath $script:UpdaterPath) { try { . $script:UpdaterPath } catch {} }
@@ -488,9 +498,9 @@ Add-Type -AssemblyName PresentationFramework
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="三角洲行动 · 画面优化助手" Width="780" Height="860"
+        Title="三角洲行动 · 画面优化助手" Width="780" Height="1200" MinHeight="640"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
-        BorderBrush="#FF1B2E28" BorderThickness="1"
+        BorderBrush="{DynamicResource Line}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <!-- 官网页面底色不是纯黑：带青绿调的细微垂直渐变 -->
   <Window.Background>
@@ -512,33 +522,20 @@ $xaml = @'
     <SolidColorBrush x:Key="TextMut"   Color="#FF7A8580"/>
     <SolidColorBrush x:Key="Green"     Color="#FF00E884"/>
     <SolidColorBrush x:Key="GreenDark" Color="#FF04241B"/>
-    <SolidColorBrush x:Key="GreenLine" Color="#FF17603F"/>
+    <SolidColorBrush x:Key="GreenLine" Color="#FF00E884"/>
     <SolidColorBrush x:Key="Gold"      Color="#FFE5C46A"/>
     <SolidColorBrush x:Key="GoldDark"  Color="#FF3A2C0C"/>
     <SolidColorBrush x:Key="Danger"    Color="#FFE5484D"/>
-
-    <!-- 官网下载按钮同款：绿色实底之上叠一层略暗的等高线纹路（战术地图质感）。
-         用 DrawingBrush 平铺而不是 Path 叠加：笔画粗细不随控件尺寸缩放（教训 #3） -->
-    <DrawingBrush x:Key="CtaFill" TileMode="Tile" Viewport="0,0,64,40" ViewportUnits="Absolute"
-                  Viewbox="0,0,64,40" ViewboxUnits="Absolute">
-      <DrawingBrush.Drawing>
-        <DrawingGroup>
-          <GeometryDrawing Brush="#FF00E884">
-            <GeometryDrawing.Geometry>
-              <RectangleGeometry Rect="0,0,64,40"/>
-            </GeometryDrawing.Geometry>
-          </GeometryDrawing>
-          <GeometryDrawing>
-            <GeometryDrawing.Pen>
-              <Pen Brush="#4C043C28" Thickness="1"/>
-            </GeometryDrawing.Pen>
-            <GeometryDrawing.Geometry>
-              <PathGeometry Figures="M 0,7 C 12,3 22,12 34,8 C 46,4 56,11 64,7 M 0,20 C 10,25 24,15 36,21 C 48,26 58,18 64,20 M 0,33 C 14,29 28,37 42,32 C 52,28 60,35 64,33"/>
-            </GeometryDrawing.Geometry>
-          </GeometryDrawing>
-        </DrawingGroup>
-      </DrawingBrush.Drawing>
-    </DrawingBrush>
+    <SolidColorBrush x:Key="AccentPanel"   Color="#FF0E2A21"/>
+    <SolidColorBrush x:Key="TableHeader"   Color="#FF0C1915"/>
+    <SolidColorBrush x:Key="ComboSurface"  Color="#FF0B1712"/>
+    <SolidColorBrush x:Key="HoverPanel"    Color="#FF12291F"/>
+    <SolidColorBrush x:Key="SelectedPanel" Color="#FF0F2118"/>
+    <SolidColorBrush x:Key="WindowHover"   Color="#FF14241F"/>
+    <SolidColorBrush x:Key="DisabledText"  Color="#FF56615C"/>
+    <SolidColorBrush x:Key="WarningPanel"  Color="#FF2A2008"/>
+    <SolidColorBrush x:Key="DangerPanel"   Color="#FF1A0E10"/>
+    <SolidColorBrush x:Key="InputSurface"  Color="#FF0C1814"/>
 
     <Style x:Key="TacCheck" TargetType="CheckBox">
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -547,14 +544,14 @@ $xaml = @'
           <ControlTemplate TargetType="CheckBox">
             <Border Background="Transparent" Padding="0,3">
               <StackPanel Orientation="Horizontal">
-                <Border x:Name="Box" Width="13" Height="13" BorderBrush="#FF2C443B"
+                <Border x:Name="Box" Width="13" Height="13" BorderBrush="{DynamicResource LineHi}"
                         BorderThickness="1" Background="Transparent" VerticalAlignment="Center">
                   <Grid>
-                    <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="#FF04241B"
+                    <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="{DynamicResource GreenDark}"
                           StrokeThickness="2" Visibility="Collapsed"/>
                     <!-- 第三态（部分选中）：绿色小方块。只有全选框会进入此态，
                          普通项复选框永远只在勾/不勾之间切换 -->
-                    <Border x:Name="PartMark" Width="7" Height="7" Background="#FF00E884"
+                    <Border x:Name="PartMark" Width="7" Height="7" Background="{DynamicResource Green}"
                             HorizontalAlignment="Center" VerticalAlignment="Center"
                             Visibility="Collapsed"/>
                   </Grid>
@@ -564,16 +561,16 @@ $xaml = @'
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Box" Property="Background" Value="#FF00E884"/>
-                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="Background" Value="{DynamicResource Green}"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Green}"/>
                 <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="{x:Null}">
-                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Green}"/>
                 <Setter TargetName="PartMark" Property="Visibility" Value="Visible"/>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Green}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -584,18 +581,18 @@ $xaml = @'
     <!-- 官网次级动作样式：绿色细描边 + 绿色文字 + 内容居中 -->
     <Style x:Key="Ghost" TargetType="Button">
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Foreground" Value="#FF00E884"/>
+      <Setter Property="Foreground" Value="{DynamicResource Green}"/>
       <Setter Property="Height" Value="34"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -603,11 +600,10 @@ $xaml = @'
       </Setter>
     </Style>
 
-    <!-- 官网主 CTA：斜切角 + 等高线纹理 + 深色字；hover 用白色薄罩提亮而不是换色，
-         保住纹理层不被覆盖 -->
+    <!-- 官网主 CTA：斜切角 + 纯绿色实底 + 深色字；hover 用白色薄罩提亮而不换色。 -->
     <Style x:Key="Primary" TargetType="Button">
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Foreground" Value="#FF04241B"/>
+      <Setter Property="Foreground" Value="{DynamicResource GreenDark}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="FontWeight" Value="Bold"/>
       <Setter Property="Height" Value="38"/>
@@ -616,7 +612,7 @@ $xaml = @'
           <ControlTemplate TargetType="Button">
             <Grid>
               <!-- 几何用 0–1 归一化坐标：Path 的期望尺寸即为 1x1，不会把按钮撑大，Stretch 再拉满 -->
-              <Path x:Name="Bg" Stretch="Fill" Fill="{StaticResource CtaFill}"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.05,0 L 1,0 L 1,0.8 L 0.95,1 L 0,1 L 0,0.2 Z"/>
               <Path x:Name="Hover" Stretch="Fill" Fill="#FFFFFFFF" Opacity="0"
                     Data="M 0.05,0 L 1,0 L 1,0.8 L 0.95,1 L 0,1 L 0,0.2 Z"/>
@@ -634,7 +630,7 @@ $xaml = @'
 
     <Style x:Key="WinBtn" TargetType="Button">
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Foreground" Value="#FF9AA5A0"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextSec}"/>
       <Setter Property="Width" Value="34"/>
       <Setter Property="FontSize" Value="14"/>
       <Setter Property="Template">
@@ -645,7 +641,7 @@ $xaml = @'
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF14241F"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource WindowHover}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -653,14 +649,14 @@ $xaml = @'
       </Setter>
     </Style>
 
-    <!-- 官网行首分类标签同款：金色实底 + 深色粗体字（官网用于「赛事」「公告」） -->
+    <!-- 行首分类标签：深色主题用亮黄，浅色主题用冷蓝，与绿色主操作形成清晰层级。 -->
     <Style x:Key="Chip" TargetType="Border">
-      <Setter Property="Background" Value="{StaticResource Gold}"/>
+      <Setter Property="Background" Value="{DynamicResource Gold}"/>
       <Setter Property="Padding" Value="7,1"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
     <Style x:Key="ChipText" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="{StaticResource GoldDark}"/>
+      <Setter Property="Foreground" Value="{DynamicResource GoldDark}"/>
       <Setter Property="FontSize" Value="11"/>
       <Setter Property="FontWeight" Value="Bold"/>
     </Style>
@@ -668,20 +664,20 @@ $xaml = @'
     <!-- 中英上下叠排分区标题：中文白粗体在上、小号大写英文在下、绿色短下划线
          （官网标签页选中态：绿色文字 + 底部绿色下划线，这里移植为分区标识） -->
     <Style x:Key="HeadCn" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="{StaticResource TextPri}"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextPri}"/>
       <Setter Property="FontSize" Value="14"/>
       <Setter Property="FontWeight" Value="Bold"/>
     </Style>
     <Style x:Key="HeadEn" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="Consolas"/>
       <Setter Property="FontSize" Value="8"/>
-      <Setter Property="Foreground" Value="{StaticResource TextMut}"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextMut}"/>
       <Setter Property="Margin" Value="1,1,0,0"/>
     </Style>
     <Style x:Key="HeadBar" TargetType="Border">
       <Setter Property="Height" Value="2"/>
       <Setter Property="Width" Value="28"/>
-      <Setter Property="Background" Value="{StaticResource Green}"/>
+      <Setter Property="Background" Value="{DynamicResource Green}"/>
       <Setter Property="HorizontalAlignment" Value="Left"/>
       <Setter Property="Margin" Value="0,4,0,0"/>
     </Style>
@@ -689,7 +685,7 @@ $xaml = @'
     <Style x:Key="Mono" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="Consolas"/>
       <Setter Property="FontSize" Value="11"/>
-      <Setter Property="Foreground" Value="{StaticResource TextMut}"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextMut}"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
@@ -697,27 +693,27 @@ $xaml = @'
          不用 WPF TabControl：其默认模板白底黑字，整套重模板不如自绘两个按钮可控 -->
     <Style x:Key="TabBtn" TargetType="Button">
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Foreground" Value="{StaticResource TextSec}"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextSec}"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
             <Grid Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="16,9,16,11"/>
-              <Border x:Name="UL" Height="2" Background="{StaticResource Green}" VerticalAlignment="Bottom"
+              <Border x:Name="UL" Height="2" Background="{DynamicResource Green}" VerticalAlignment="Bottom"
                       Margin="12,0" Visibility="Collapsed"/>
             </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="Tag" Value="on">
                 <Setter TargetName="UL" Property="Visibility" Value="Visible"/>
-                <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Green}"/>
                 <Setter Property="FontWeight" Value="Bold"/>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Green}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="#FF56615C"/>
+                <Setter Property="Foreground" Value="{DynamicResource DisabledText}"/>
                 <Setter Property="Opacity" Value="0.62"/>
                 <Setter Property="FontWeight" Value="Normal"/>
               </Trigger>
@@ -731,20 +727,20 @@ $xaml = @'
     <Style x:Key="RulerNum" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="Consolas"/>
       <Setter Property="FontSize" Value="8"/>
-      <Setter Property="Foreground" Value="{StaticResource TextMut}"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextMut}"/>
       <Setter Property="HorizontalAlignment" Value="Center"/>
     </Style>
     <Style x:Key="TickMajor" TargetType="Border">
       <Setter Property="Width" Value="8"/>
       <Setter Property="Height" Value="1"/>
-      <Setter Property="Background" Value="{StaticResource LineHi}"/>
+      <Setter Property="Background" Value="{DynamicResource LineHi}"/>
       <Setter Property="HorizontalAlignment" Value="Center"/>
       <Setter Property="Margin" Value="0,5"/>
     </Style>
     <Style x:Key="TickMinor" TargetType="Border">
       <Setter Property="Width" Value="4"/>
       <Setter Property="Height" Value="1"/>
-      <Setter Property="Background" Value="{StaticResource LineSoft}"/>
+      <Setter Property="Background" Value="{DynamicResource LineSoft}"/>
       <Setter Property="HorizontalAlignment" Value="Center"/>
       <Setter Property="Margin" Value="0,5"/>
     </Style>
@@ -752,7 +748,7 @@ $xaml = @'
     <Style x:Key="Dash" TargetType="Border">
       <Setter Property="Width" Value="14"/>
       <Setter Property="Height" Value="1"/>
-      <Setter Property="Background" Value="{StaticResource LineHi}"/>
+      <Setter Property="Background" Value="{DynamicResource LineHi}"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
       <Setter Property="Margin" Value="4,0"/>
     </Style>
@@ -764,7 +760,7 @@ $xaml = @'
     <!-- 深色主题 ComboBox：默认白底模板在本主题下刺眼，整体重做。
          选中项文字用品牌绿——官网列表强调项就是整行绿色 -->
     <Style x:Key="TacComboItem" TargetType="ComboBoxItem">
-      <Setter Property="Foreground" Value="#FF9AA5A0"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextSec}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBoxItem">
@@ -773,12 +769,12 @@ $xaml = @'
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsHighlighted" Value="True">
-                <Setter TargetName="BD" Property="Background" Value="#FF12291F"/>
-                <Setter Property="Foreground" Value="#FF00E884"/>
+                <Setter TargetName="BD" Property="Background" Value="{DynamicResource HoverPanel}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Green}"/>
               </Trigger>
               <Trigger Property="IsSelected" Value="True">
-                <Setter TargetName="BD" Property="Background" Value="#FF0F2118"/>
-                <Setter Property="Foreground" Value="#FF00E884"/>
+                <Setter TargetName="BD" Property="Background" Value="{DynamicResource SelectedPanel}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Green}"/>
                 <Setter Property="FontWeight" Value="Bold"/>
               </Trigger>
             </ControlTemplate.Triggers>
@@ -787,7 +783,7 @@ $xaml = @'
       </Setter>
     </Style>
     <Style x:Key="TacCombo" TargetType="ComboBox">
-      <Setter Property="Foreground" Value="#FF00E884"/>
+      <Setter Property="Foreground" Value="{DynamicResource Green}"/>
       <Setter Property="Height" Value="26"/>
       <Setter Property="ItemContainerStyle" Value="{StaticResource TacComboItem}"/>
       <Setter Property="Template">
@@ -798,13 +794,13 @@ $xaml = @'
                             Focusable="False" ClickMode="Press">
                 <ToggleButton.Template>
                   <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="BD" Background="#FF0B1712" BorderBrush="#FF2C443B" BorderThickness="1">
-                      <Path Data="M 0,0 L 8,0 L 4,5 Z" Fill="#FF00E884"
+                    <Border x:Name="BD" Background="{DynamicResource ComboSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1">
+                      <Path Data="M 0,0 L 8,0 L 4,5 Z" Fill="{DynamicResource Green}"
                             HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,9,0"/>
                     </Border>
                     <ControlTemplate.Triggers>
                       <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="BD" Property="BorderBrush" Value="#FF00E884"/>
+                        <Setter TargetName="BD" Property="BorderBrush" Value="{DynamicResource Green}"/>
                       </Trigger>
                     </ControlTemplate.Triggers>
                   </ControlTemplate>
@@ -816,7 +812,7 @@ $xaml = @'
                                 TextBlock.Foreground="{TemplateBinding Foreground}"/>
               <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
                      AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
-                <Border Background="#FF0E1B17" BorderBrush="#FF2C443B" BorderThickness="1"
+                <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
                         MinWidth="{TemplateBinding ActualWidth}" MaxHeight="220">
                   <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <ItemsPresenter/>
@@ -840,18 +836,18 @@ $xaml = @'
     </Grid.RowDefinitions>
 
     <!-- 顶栏：官网近黑微青 #0D1417 -->
-    <Border x:Name="TitleBar" Grid.Row="0" Background="{StaticResource TopBar}"
-            BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+    <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource TopBar}"
+            BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
       <Grid>
         <StackPanel Orientation="Horizontal" Margin="14,10">
-          <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF00E884" VerticalAlignment="Center"/>
-          <TextBlock Text="DELTA FORCE" Foreground="{StaticResource TextPri}" FontSize="13"
+          <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="{DynamicResource Green}" VerticalAlignment="Center"/>
+          <TextBlock Text="DELTA FORCE" Foreground="{DynamicResource TextPri}" FontSize="13"
                      FontWeight="Bold" Margin="10,0,0,0" VerticalAlignment="Center">
             <TextBlock.LayoutTransform><ScaleTransform ScaleX="1.05"/></TextBlock.LayoutTransform>
           </TextBlock>
-          <Border Width="1" Height="13" Background="#FF2C443B" Margin="11,0"/>
-          <TextBlock Text="画面优化助手" Foreground="{StaticResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.22.8 ]" Style="{StaticResource Mono}" Foreground="{StaticResource Green}" Margin="9,0,0,0"/>
+          <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
+          <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
+          <TextBlock Text="[ v0.23.0.0 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -859,13 +855,16 @@ $xaml = @'
                   ToolTip="查看通知与历史消息">
             <StackPanel Orientation="Horizontal">
               <TextBlock x:Name="NoticeText" Text="通知" VerticalAlignment="Center"/>
-              <Border x:Name="NoticeBadge" Visibility="Collapsed" Background="{StaticResource Danger}"
+              <Border x:Name="NoticeBadge" Visibility="Collapsed" Background="{DynamicResource Green}"
                       CornerRadius="7" MinWidth="15" Height="15" Margin="6,0,0,0" VerticalAlignment="Center">
                 <TextBlock x:Name="NoticeBadgeTxt" Text="" Foreground="#FFFFFFFF" FontSize="9" FontWeight="Bold"
                            Margin="5,0,5,0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
             </StackPanel>
           </Button>
+          <Button x:Name="ThemeBtn" Content="☀ 浅色" Style="{StaticResource Ghost}" Visibility="Collapsed"
+                  Height="24" MinWidth="66" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                  ToolTip="切换浅色模式"/>
           <!-- 手动检查更新：用户要求放在最上方。与右侧「有新版本」胶囊分工不同——
                胶囊只在已发现新版时出现，这个按钮任何时候都能主动查一次 -->
           <Button x:Name="CheckUpdBtn" Content="检查更新" Style="{StaticResource Ghost}"
@@ -873,14 +872,14 @@ $xaml = @'
           <!-- Discord 式更新入口：检测到新版本才出现的小绿胶囊，点击弹更新详情。
                图标用固定坐标小 Path（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
           <Button x:Name="UpdateBtn" Visibility="Collapsed" VerticalAlignment="Center" Margin="0,0,10,0"
-                  Foreground="#FF04241B" Cursor="Hand">
+                  Foreground="{DynamicResource GreenDark}" Cursor="Hand">
             <Button.Template>
               <ControlTemplate TargetType="Button">
-                <Border x:Name="B" Background="#FF00E884" CornerRadius="10" Padding="9,3">
+                <Border x:Name="B" Background="{DynamicResource Green}" CornerRadius="10" Padding="9,3">
                   <StackPanel Orientation="Horizontal">
                     <Path Data="M 3,0 L 6,0 L 6,4 L 9,4 L 4.5,9 L 0,4 L 3,4 Z M 0,11 L 9,11 L 9,12.5 L 0,12.5 Z"
-                          Fill="#FF04241B" Width="9" Height="13" VerticalAlignment="Center"/>
-                    <TextBlock Text="有新版本" FontSize="11" FontWeight="Bold" Foreground="#FF04241B"
+                          Fill="{DynamicResource GreenDark}" Width="9" Height="13" VerticalAlignment="Center"/>
+                    <TextBlock Text="有新版本" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource GreenDark}"
                                VerticalAlignment="Center" Margin="6,0,0,0"/>
                   </StackPanel>
                 </Border>
@@ -899,14 +898,14 @@ $xaml = @'
     </Border>
 
     <!-- 标签页导航：优化 / 自动调优 / 掉帧修复 / 游戏内设置参考 / 运行日志 -->
-    <Border Grid.Row="1" Background="{StaticResource TopBar}" BorderBrush="{StaticResource Line}"
+    <Border Grid.Row="1" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}"
             BorderThickness="0,0,0,1">
       <StackPanel Orientation="Horizontal" Margin="15,0,0,0">
         <Button x:Name="TabOptBtn" Content="优化" Style="{StaticResource TabBtn}" Tag="on"/>
         <Button x:Name="TabTuneBtn" Style="{StaticResource TabBtn}" Tag="" IsEnabled="False" Opacity="1">
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="AI定制优化" VerticalAlignment="Center"/>
-            <TextBlock Text="（敬请期待）" Foreground="{StaticResource Gold}" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Text="（敬请期待）" Foreground="{DynamicResource Gold}" FontWeight="Bold" VerticalAlignment="Center"/>
           </StackPanel>
         </Button>
         <Button x:Name="TabFrameFixBtn" Content="掉帧修复" Style="{StaticResource TabBtn}" Tag=""/>
@@ -916,7 +915,7 @@ $xaml = @'
             <TextBlock Text="运行日志" VerticalAlignment="Center"/>
             <!-- 角标：日志挪到独立页后，出了失败/体检问题得有个「这里有东西该看」的信号。
                  前景色写死，免得被标签页选中态的 Foreground 触发器染成绿色 -->
-            <Border x:Name="LogBadge" Visibility="Collapsed" Background="{StaticResource Danger}"
+            <Border x:Name="LogBadge" Visibility="Collapsed" Background="{DynamicResource Danger}"
                     CornerRadius="7" MinWidth="15" Height="15" Margin="7,0,0,0" VerticalAlignment="Center">
               <TextBlock x:Name="LogBadgeTxt" Text="" Foreground="#FFFFFFFF" FontSize="9" FontWeight="Bold"
                          Margin="5,0,5,0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -934,7 +933,7 @@ $xaml = @'
       </Grid.ColumnDefinitions>
 
       <!-- 大号淡化 Logo 水印：官网 hero 区同手法 -->
-      <Path Grid.Column="1" Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF00E884" Opacity="0.03"
+      <Path Grid.Column="1" Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="{DynamicResource Green}" Opacity="0.03"
             Stretch="Uniform" Width="420" Height="350" HorizontalAlignment="Right"
             VerticalAlignment="Top" Margin="0,-60,-80,0"/>
 
@@ -995,26 +994,34 @@ $xaml = @'
               <TextBlock Text="SYSTEM INFO" Style="{StaticResource HeadEn}"/>
               <Border Style="{StaticResource HeadBar}"/>
             </StackPanel>
-            <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
+            <Border Grid.Column="1" Height="1" Background="{DynamicResource LineSoft}"
                     VerticalAlignment="Bottom" Margin="12,0,12,4"/>
             <TextBlock Grid.Column="2" x:Name="ScanState" Text="检测中…" Style="{StaticResource Mono}"
-                       Foreground="{StaticResource Green}" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
+                       Foreground="{DynamicResource Green}" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
           </Grid>
 
-          <UniformGrid x:Name="HwGrid" Columns="3" Margin="0,0,0,7"/>
+          <!-- CPU/GPU 等硬件信息与温度先展示；FPS 和占用指标紧随其后。 -->
+          <UniformGrid x:Name="HwGrid" Columns="4" Margin="0,0,0,8"/>
 
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
+          <Grid x:Name="MetricsGrid" Margin="0,0,0,7"/>
+
+          <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}"
                   BorderThickness="1" Padding="8,4" Margin="0,0,0,11">
-            <StackPanel Orientation="Horizontal">
-              <Border Style="{StaticResource Chip}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <Border Grid.Column="0" Style="{StaticResource Chip}">
                 <TextBlock Text="目标程序" Style="{StaticResource ChipText}"/>
               </Border>
-              <TextBlock x:Name="GameText" Text="定位中…" Style="{StaticResource Mono}"
-                         Foreground="{StaticResource TextPri}" Margin="10,0,0,0"
-                         TextTrimming="CharacterEllipsis" MaxWidth="470"/>
-              <Button x:Name="BrowseBtn" Content="重新定位" Style="{StaticResource Ghost}"
-                      Margin="12,0,0,0" FontSize="11" Height="24"/>
-            </StackPanel>
+              <TextBlock x:Name="GameText" Grid.Column="1" Text="定位中…" Style="{StaticResource Mono}"
+                         Foreground="{DynamicResource TextPri}" Margin="10,0,12,0"
+                         TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+              <Button x:Name="BrowseBtn" Grid.Column="2" Content="重新定位" Style="{StaticResource Ghost}"
+                      FontSize="11" Height="24"/>
+            </Grid>
           </Border>
 
           <Grid Margin="0,0,0,8">
@@ -1028,13 +1035,13 @@ $xaml = @'
               <TextBlock Text="OPTIMIZATION ITEMS" Style="{StaticResource HeadEn}"/>
               <Border Style="{StaticResource HeadBar}"/>
             </StackPanel>
-            <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
+            <Border Grid.Column="1" Height="1" Background="{DynamicResource LineSoft}"
                     VerticalAlignment="Bottom" Margin="12,0,12,4"/>
             <TextBlock Grid.Column="2" x:Name="CountText" Text="" Style="{StaticResource Mono}"
-                       Foreground="{StaticResource TextSec}" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
+                       Foreground="{DynamicResource TextSec}" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
           </Grid>
 
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
+          <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}"
                   BorderThickness="1" Padding="8,4" Margin="0,0,0,4">
             <Grid>
               <Grid.ColumnDefinitions>
@@ -1057,18 +1064,18 @@ $xaml = @'
           <TextBlock x:Name="PresetNote" Text="" Style="{StaticResource Mono}"
                      TextTrimming="CharacterEllipsis" Margin="2,0,0,4"/>
 
-          <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource PanelDeep}">
+          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1" Background="{DynamicResource PanelDeep}">
             <StackPanel>
               <!-- 全选行（实机诉求）：三态仅作展示——部分选中显示第三态，点击只在
                    全选/全不选之间切换；包含单独分组的显卡型号伪装，执行前仍保留二次确认 -->
-              <Border Background="#FF0C1915" BorderBrush="{StaticResource LineSoft}"
+              <Border Background="{DynamicResource TableHeader}" BorderBrush="{DynamicResource LineSoft}"
                       BorderThickness="0,0,0,1" Padding="10,3">
                 <Grid>
                   <CheckBox x:Name="SelAllChk" Style="{StaticResource TacCheck}" VerticalAlignment="Center">
-                    <TextBlock Text="全选" Foreground="#FFFFFFFF" FontSize="12" FontWeight="Bold"/>
+                    <TextBlock Text="全选" Foreground="{DynamicResource TextPri}" FontSize="12" FontWeight="Bold"/>
                   </CheckBox>
                   <TextBlock Text="包含 ★ 显卡型号伪装 · 执行前二次确认" FontFamily="Consolas" FontSize="10"
-                             Foreground="{StaticResource TextMut}" HorizontalAlignment="Right"
+                             Foreground="{DynamicResource TextMut}" HorizontalAlignment="Right"
                              VerticalAlignment="Center"/>
                 </Grid>
               </Border>
@@ -1076,14 +1083,14 @@ $xaml = @'
             </StackPanel>
           </Border>
 
-          <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" IsExpanded="True" Foreground="{StaticResource TextPri}">
+          <Expander x:Name="RiskyGroup" Margin="0,10,0,0" Visibility="Collapsed" IsExpanded="True" Foreground="{DynamicResource TextPri}">
             <Expander.Header>
               <StackPanel Orientation="Horizontal">
-                  <TextBlock Text="★ 显卡型号伪装" Foreground="{StaticResource TextPri}" FontSize="12"/>
+                  <TextBlock Text="★ 显卡型号伪装" Foreground="{DynamicResource TextPri}" FontSize="12"/>
                 <TextBlock Text="按显卡代际推荐 · 可手动选择目标型号" Style="{StaticResource Mono}" Margin="10,0,0,0"/>
               </StackPanel>
             </Expander.Header>
-            <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource PanelDeep}" Margin="0,6,0,0">
+            <Border BorderBrush="{DynamicResource Line}" BorderThickness="1" Background="{DynamicResource PanelDeep}" Margin="0,6,0,0">
               <StackPanel x:Name="RiskyPanel"/>
             </Border>
           </Expander>
@@ -1091,29 +1098,29 @@ $xaml = @'
           <!-- 复原直接留在优化页内完成，不再打开第二层窗口。优化勾选与复原勾选分开，
                避免内置方案默认勾选的优化项被误当成要复原的项目。 -->
           <Border x:Name="InlineRestorePanel" Visibility="Collapsed" Margin="0,10,0,0"
-                  Background="{StaticResource Panel}" BorderBrush="{StaticResource GreenLine}"
+                  Background="{DynamicResource Panel}" BorderBrush="{DynamicResource GreenLine}"
                   BorderThickness="1" Padding="12,10">
             <StackPanel>
               <Grid Margin="0,0,0,7">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
-                  <TextBlock Text="按项目复原" Foreground="{StaticResource Green}" FontSize="15" FontWeight="Bold"/>
+                  <TextBlock Text="按项目复原" Foreground="{DynamicResource Green}" FontSize="15" FontWeight="Bold"/>
                   <TextBlock Text="RESTORE MANAGER" Style="{StaticResource Mono}" Margin="10,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
                 <Button x:Name="InlineRestoreCloseBtn" Grid.Column="1" Content="收起" Style="{StaticResource Ghost}"
                         Width="70" Height="24" FontSize="10"/>
               </Grid>
               <TextBlock Text="直接勾选要复原的项目，可单选、多选或全选；其他项目保持不变。"
-                         Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,0,0,8"/>
-              <Border x:Name="InlineRestoreLegacyNotice" Visibility="Collapsed" Background="{StaticResource GoldDark}"
-                      BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="9,6" Margin="0,0,0,8">
-                <TextBlock x:Name="InlineRestoreLegacyText" Foreground="{StaticResource Gold}" TextWrapping="Wrap"/>
+                         Foreground="{DynamicResource TextSec}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+              <Border x:Name="InlineRestoreLegacyNotice" Visibility="Collapsed" Background="{DynamicResource GoldDark}"
+                      BorderBrush="{DynamicResource Gold}" BorderThickness="1" Padding="9,6" Margin="0,0,0,8">
+                <TextBlock x:Name="InlineRestoreLegacyText" Foreground="{DynamicResource Gold}" TextWrapping="Wrap"/>
               </Border>
-              <Border Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+              <Border Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource Line}" BorderThickness="1">
                 <StackPanel>
                   <DockPanel Margin="9,7">
                     <TextBlock x:Name="InlineRestoreSelectedText" DockPanel.Dock="Right" Text="已选择 0 项"
-                               Foreground="{StaticResource Gold}" VerticalAlignment="Center"/>
+                               Foreground="{DynamicResource Gold}" VerticalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                       <Button x:Name="InlineRestoreSelectAllBtn" Content="全选可复原项目" Style="{StaticResource Ghost}"
                               Height="25" FontSize="10"/>
@@ -1121,22 +1128,22 @@ $xaml = @'
                               Width="64" Height="25" FontSize="10" Margin="7,0,0,0"/>
                     </StackPanel>
                   </DockPanel>
-                  <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0"/>
+                  <Border BorderBrush="{DynamicResource LineSoft}" BorderThickness="0,1,0,0"/>
                   <ScrollViewer MaxHeight="230" VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="InlineRestoreItemsPanel" Margin="9,3,9,7"/>
                   </ScrollViewer>
                   <TextBlock x:Name="InlineRestoreEmptyText" Visibility="Collapsed"
-                             Text="当前没有支持按项目精确复原的记录。" Foreground="{StaticResource TextMut}" Margin="11,9"/>
+                             Text="当前没有支持按项目精确复原的记录。" Foreground="{DynamicResource TextMut}" Margin="11,9"/>
                 </StackPanel>
               </Border>
               <Button x:Name="InlineRestoreSelectedBtn" Content="复原所选项目" Style="{StaticResource Primary}"
                       IsEnabled="False" Height="34" Margin="0,9,0,0"/>
-              <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,13,0,10"/>
+              <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Margin="0,13,0,10"/>
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                  <TextBlock Text="全部复原" Foreground="{StaticResource Gold}" FontSize="13" FontWeight="Bold"/>
-                  <TextBlock x:Name="InlineRestoreAllSummary" Foreground="{StaticResource TextSec}"
+                  <TextBlock Text="全部复原" Foreground="{DynamicResource Gold}" FontSize="13" FontWeight="Bold"/>
+                  <TextBlock x:Name="InlineRestoreAllSummary" Foreground="{DynamicResource TextSec}"
                              TextWrapping="Wrap" Margin="0,3,0,0"/>
                 </StackPanel>
                 <Button x:Name="InlineRestoreAllBtn" Grid.Column="1" Content="确认全部复原"
@@ -1152,7 +1159,7 @@ $xaml = @'
             <Border Style="{StaticResource Dash}"/>
             <Border Style="{StaticResource Dash}"/>
             <Border Style="{StaticResource Dash}"/>
-            <TextBlock Text="系 统 优 化 · 改 前 备 份 · 一 键 还 原" Foreground="{StaticResource TextMut}"
+            <TextBlock Text="系 统 优 化 · 改 前 备 份 · 一 键 还 原" Foreground="{DynamicResource TextMut}"
                        FontSize="10" Margin="10,0" VerticalAlignment="Center"/>
             <Border Style="{StaticResource Dash}"/>
             <Border Style="{StaticResource Dash}"/>
@@ -1174,64 +1181,64 @@ $xaml = @'
               <TextBlock Text="DETERMINISTIC TUNING BETA" Style="{StaticResource HeadEn}"/>
               <Border Style="{StaticResource HeadBar}"/>
             </StackPanel>
-            <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Bottom" Margin="12,0,12,4"/>
-            <Border Grid.Column="2" Background="{StaticResource GoldDark}" BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="7,2" VerticalAlignment="Bottom">
-              <TextBlock Text="RULES / BETA" Foreground="{StaticResource Gold}" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+            <Border Grid.Column="1" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Bottom" Margin="12,0,12,4"/>
+            <Border Grid.Column="2" Background="{DynamicResource GoldDark}" BorderBrush="{DynamicResource Gold}" BorderThickness="1" Padding="7,2" VerticalAlignment="Bottom">
+              <TextBlock Text="RULES / BETA" Foreground="{DynamicResource Gold}" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
             </Border>
           </Grid>
 
-          <Border Background="#FF0E2A21" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="11,8" Margin="0,0,0,9">
+          <Border Background="{DynamicResource AccentPanel}" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Padding="11,8" Margin="0,0,0,9">
             <StackPanel>
-              <TextBlock Text="固定目标：提高 1% 低帧率和流畅度" Foreground="{StaticResource Green}" FontSize="13" FontWeight="Bold"/>
-              <TextBlock Text="这是确定性规则实验，不是 AI。候选仅来自内置低风险库，显卡型号伪装等 risky 项永不会自动加入。" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
-              <TextBlock Text="个体内规则实验，不代表全局最优。" Foreground="{StaticResource Gold}" FontWeight="Bold" Margin="0,3,0,0"/>
+              <TextBlock Text="固定目标：提高 1% 低帧率和流畅度" Foreground="{DynamicResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="这是确定性规则实验，不是 AI。候选仅来自内置低风险库，显卡型号伪装等 risky 项永不会自动加入。" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <TextBlock Text="个体内规则实验，不代表全局最优。" Foreground="{DynamicResource Gold}" FontWeight="Bold" Margin="0,3,0,0"/>
             </StackPanel>
           </Border>
 
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="11,9" Margin="0,0,0,9">
+          <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="11,9" Margin="0,0,0,9">
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="108"/><ColumnDefinition Width="135"/><ColumnDefinition Width="112"/></Grid.ColumnDefinitions>
               <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                <TextBlock Text="固定场景标识（2–80字）" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBlock Text="固定场景标识（2–80字）" Foreground="{DynamicResource TextSec}" FontSize="10"/>
                 <TextBox x:Name="TuneSceneBox" Height="27" Margin="0,4,0,0" Padding="7,4" MaxLength="80"
-                         Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource LineHi}" BorderThickness="1" Foreground="{StaticResource TextPri}"/>
+                         Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1" Foreground="{DynamicResource TextPri}"/>
               </StackPanel>
               <StackPanel Grid.Column="1" Margin="0,0,10,0">
-                <TextBlock Text="最大温升（0–7°C）" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBlock Text="最大温升（0–7°C）" Foreground="{DynamicResource TextSec}" FontSize="10"/>
                 <TextBox x:Name="TuneTempBox" Text="3" Height="27" Margin="0,4,0,0" Padding="7,4" MaxLength="3"
-                         Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource LineHi}" BorderThickness="1" Foreground="{StaticResource TextPri}"/>
+                         Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1" Foreground="{DynamicResource TextPri}"/>
               </StackPanel>
               <StackPanel Grid.Column="2" Margin="0,0,10,0">
-                <TextBlock Text="功耗策略" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBlock Text="功耗策略" Foreground="{DynamicResource TextSec}" FontSize="10"/>
                 <CheckBox x:Name="TunePowerChk" Style="{StaticResource TacCheck}" Margin="0,6,0,0">
-                  <TextBlock Text="允许更高功耗" Foreground="{StaticResource TextPri}"/>
+                  <TextBlock Text="允许更高功耗" Foreground="{DynamicResource TextPri}"/>
                 </CheckBox>
               </StackPanel>
               <StackPanel Grid.Column="3">
-                <TextBlock Text="最大增幅（0–20%）" Foreground="{StaticResource TextSec}" FontSize="10"/>
+                <TextBlock Text="最大增幅（0–20%）" Foreground="{DynamicResource TextSec}" FontSize="10"/>
                 <TextBox x:Name="TunePowerBox" Text="0" Height="27" Margin="0,4,0,0" Padding="7,4" MaxLength="4" IsEnabled="False"
-                         Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource LineHi}" BorderThickness="1" Foreground="{StaticResource TextPri}"/>
+                         Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1" Foreground="{DynamicResource TextPri}"/>
               </StackPanel>
             </Grid>
           </Border>
 
           <UniformGrid Columns="4" Margin="0,0,0,9">
-            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="实验状态" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneStatusText" Text="未创建" Foreground="{StaticResource Green}" FontWeight="Bold" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
-            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="当前方案 / 轮次" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneRoundText" Text="-" Foreground="{StaticResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
-            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="基线稳定性" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneBaselineText" Text="待采样" Foreground="{StaticResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
-            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,7"><StackPanel><TextBlock Text="当前保留组合" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneCurrentText" Text="基线" Foreground="{StaticResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="实验状态" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneStatusText" Text="未创建" Foreground="{DynamicResource Green}" FontWeight="Bold" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="当前方案 / 轮次" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneRoundText" Text="-" Foreground="{DynamicResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,7" Margin="0,0,5,0"><StackPanel><TextBlock Text="基线稳定性" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneBaselineText" Text="待采样" Foreground="{DynamicResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,7"><StackPanel><TextBlock Text="当前保留组合" Style="{StaticResource Mono}"/><TextBlock x:Name="TuneCurrentText" Text="基线" Foreground="{DynamicResource TextPri}" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel></Border>
           </UniformGrid>
 
           <Grid Margin="0,0,0,9">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border Grid.Column="0" Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,6" Margin="0,0,5,0"><TextBlock x:Name="TuneG1Text" Text="G1 后台与游戏模式：待实验" Foreground="{StaticResource TextSec}" TextWrapping="Wrap"/></Border>
-            <Border Grid.Column="1" Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,6" Margin="0,0,5,0"><TextBlock x:Name="TuneG2Text" Text="G2 前台调度：待实验" Foreground="{StaticResource TextSec}" TextWrapping="Wrap"/></Border>
-            <Border Grid.Column="2" Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="9,6"><TextBlock x:Name="TuneG3Text" Text="G3 显示与 GPU 选择：待实验" Foreground="{StaticResource TextSec}" TextWrapping="Wrap"/></Border>
+            <Border Grid.Column="0" Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,6" Margin="0,0,5,0"><TextBlock x:Name="TuneG1Text" Text="G1 后台与游戏模式：待实验" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap"/></Border>
+            <Border Grid.Column="1" Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,6" Margin="0,0,5,0"><TextBlock x:Name="TuneG2Text" Text="G2 前台调度：待实验" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap"/></Border>
+            <Border Grid.Column="2" Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="9,6"><TextBlock x:Name="TuneG3Text" Text="G3 显示与 GPU 选择：待实验" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap"/></Border>
           </Grid>
 
-          <Border Background="{StaticResource PanelDeep}" BorderBrush="{StaticResource Line}" BorderThickness="1" Margin="0,0,0,9">
+          <Border Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="0,0,0,9">
             <StackPanel>
-              <Grid Background="#FF0C1915" Margin="0" Height="25">
+              <Grid Background="{DynamicResource TableHeader}" Margin="0" Height="25">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition Width="100"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/><ColumnDefinition Width="70"/><ColumnDefinition Width="58"/><ColumnDefinition Width="58"/><ColumnDefinition Width="58"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="#" Style="{StaticResource Mono}" Margin="8,5"/><TextBlock Grid.Column="1" Text="方案" Style="{StaticResource Mono}" Margin="5"/>
                 <TextBlock Grid.Column="2" Text="平均帧率" Style="{StaticResource Mono}" Margin="5"/><TextBlock Grid.Column="3" Text="1% 低" Style="{StaticResource Mono}" Margin="5"/>
@@ -1243,7 +1250,7 @@ $xaml = @'
             </StackPanel>
           </Border>
 
-          <TextBlock x:Name="TuneHintText" Text="创建实验后，每次按「执行下一步」完成 120 秒同场景采样。实验可稍后继续。" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="1,0,1,8"/>
+          <TextBlock x:Name="TuneHintText" Text="创建实验后，每次按「执行下一步」完成 120 秒同场景采样。实验可稍后继续。" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap" Margin="1,0,1,8"/>
           <StackPanel Orientation="Horizontal">
             <Button x:Name="TuneCreateBtn" Content="创建 / 继续实验" Style="{StaticResource Primary}" Width="210"/>
             <Button x:Name="TuneNextBtn" Content="执行下一步" Style="{StaticResource Ghost}" Width="145" Margin="9,0,0,0"/>
@@ -1264,31 +1271,31 @@ $xaml = @'
               <TextBlock Text="FRAME DROP REPAIR" Style="{StaticResource HeadEn}"/>
               <Border Style="{StaticResource HeadBar}"/>
             </StackPanel>
-            <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Bottom" Margin="12,0,12,4"/>
-            <Border Grid.Column="2" Background="{StaticResource GoldDark}" BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="7,2" VerticalAlignment="Bottom">
-              <TextBlock Text="POSSIBLE FIXES" Foreground="{StaticResource Gold}" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+            <Border Grid.Column="1" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Bottom" Margin="12,0,12,4"/>
+            <Border Grid.Column="2" Background="{DynamicResource GoldDark}" BorderBrush="{DynamicResource Gold}" BorderThickness="1" Padding="7,2" VerticalAlignment="Bottom">
+              <TextBlock Text="POSSIBLE FIXES" Foreground="{DynamicResource Gold}" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
             </Border>
           </Grid>
 
-          <Border Background="#FF0E2A21" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="11,9" Margin="0,0,0,9">
+          <Border Background="{DynamicResource AccentPanel}" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Padding="11,9" Margin="0,0,0,9">
             <StackPanel>
-              <TextBlock x:Name="FrameFixGpuText" Text="正在识别主力显卡…" Foreground="{StaticResource Green}" FontSize="14" FontWeight="Bold" TextWrapping="Wrap"/>
-              <TextBlock x:Name="FrameFixSummaryText" Text="" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <TextBlock x:Name="FrameFixGpuText" Text="正在识别主力显卡…" Foreground="{DynamicResource Green}" FontSize="14" FontWeight="Bold" TextWrapping="Wrap"/>
+              <TextBlock x:Name="FrameFixSummaryText" Text="" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
             </StackPanel>
           </Border>
 
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
+          <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
             <StackPanel>
-              <TextBlock Text="先做这些 · 全显卡通用" Foreground="{StaticResource TextPri}" FontSize="13" FontWeight="Bold"/>
-              <TextBlock x:Name="FrameFixCommonText" Text="" Foreground="{StaticResource TextSec}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              <TextBlock Text="先做这些 · 全显卡通用" Foreground="{DynamicResource TextPri}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock x:Name="FrameFixCommonText" Text="" Foreground="{DynamicResource TextSec}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,0"/>
             </StackPanel>
           </Border>
 
-          <Border Background="#FF0E2A21" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
+          <Border Background="{DynamicResource AccentPanel}" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
             <StackPanel>
-              <TextBlock Text="工具可直接执行" Foreground="{StaticResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="工具可直接执行" Foreground="{DynamicResource Green}" FontSize="13" FontWeight="Bold"/>
               <TextBlock Text="下面三项会直接调用软件现有的受保护操作；涉及修改的项目仍会先写入可还原备份。"
-                         Foreground="{StaticResource TextSec}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                         Foreground="{DynamicResource TextSec}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,8"/>
               <WrapPanel>
                 <Button x:Name="FrameFixCacheBtn" Content="清理着色器缓存" Style="{StaticResource Primary}" Width="170"/>
                 <Button x:Name="FrameFixGpuPrefBtn" Content="设置高性能 GPU" Style="{StaticResource Ghost}" Width="160" Margin="9,0,0,0"/>
@@ -1296,27 +1303,27 @@ $xaml = @'
               </WrapPanel>
               <StackPanel x:Name="FrameFixProgressPanel" Visibility="Collapsed" Margin="0,8,0,0">
                 <ProgressBar x:Name="FrameFixProgressBar" Height="6" Minimum="0" Maximum="100" Value="0"
-                             Foreground="{StaticResource Green}" Background="{StaticResource PanelDeep}"
-                             BorderBrush="{StaticResource Line}" BorderThickness="1"/>
+                             Foreground="{DynamicResource Green}" Background="{DynamicResource PanelDeep}"
+                             BorderBrush="{DynamicResource Line}" BorderThickness="1"/>
                 <TextBlock x:Name="FrameFixProgressText" Text="" Style="{StaticResource Mono}"
-                           Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                           Foreground="{DynamicResource TextSec}" TextWrapping="Wrap" Margin="0,5,0,0"/>
               </StackPanel>
-              <TextBlock x:Name="FrameFixActionStatus" Text="请选择一项操作。" Foreground="{StaticResource TextSec}"
+              <TextBlock x:Name="FrameFixActionStatus" Text="请选择一项操作。" Foreground="{DynamicResource TextSec}"
                          FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </StackPanel>
           </Border>
 
-          <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource GreenLine}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
+          <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Padding="12,9" Margin="0,0,0,9">
             <StackPanel>
-              <TextBlock x:Name="FrameFixVendorTitle" Text="显卡专项排查" Foreground="{StaticResource Green}" FontSize="13" FontWeight="Bold"/>
-              <TextBlock x:Name="FrameFixVendorText" Text="" Foreground="{StaticResource TextSec}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              <TextBlock x:Name="FrameFixVendorTitle" Text="显卡专项排查" Foreground="{DynamicResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock x:Name="FrameFixVendorText" Text="" Foreground="{DynamicResource TextSec}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,0"/>
             </StackPanel>
           </Border>
 
-          <Border Background="#FF2A2008" BorderBrush="{StaticResource Gold}" BorderThickness="1" Padding="11,8" Margin="0,0,0,9">
+          <Border Background="{DynamicResource WarningPanel}" BorderBrush="{DynamicResource Gold}" BorderThickness="1" Padding="11,8" Margin="0,0,0,9">
             <StackPanel>
-              <TextBlock Text="最后再尝试" Foreground="{StaticResource Gold}" FontSize="12" FontWeight="Bold"/>
-              <TextBlock x:Name="FrameFixCautionText" Text="" Foreground="{StaticResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <TextBlock Text="最后再尝试" Foreground="{DynamicResource Gold}" FontSize="12" FontWeight="Bold"/>
+              <TextBlock x:Name="FrameFixCautionText" Text="" Foreground="{DynamicResource TextSec}" TextWrapping="Wrap" Margin="0,4,0,0"/>
             </StackPanel>
           </Border>
 
@@ -1355,23 +1362,23 @@ $xaml = @'
           <TextBlock Text="RUN LOG" Style="{StaticResource HeadEn}"/>
           <Border Style="{StaticResource HeadBar}"/>
         </StackPanel>
-        <Border Grid.Column="1" Height="1" Background="{StaticResource LineSoft}"
+        <Border Grid.Column="1" Height="1" Background="{DynamicResource LineSoft}"
                 VerticalAlignment="Bottom" Margin="12,0,12,4"/>
         <!-- 一键复制：反馈问题时直接整段拷走，不用在小窗里手动拖选。
              图标 Path 用固定坐标（不加 Stretch）：归一化坐标 + Stretch 会被撑大（教训 #3） -->
         <Button x:Name="CopyLogBtn" Grid.Column="2" Style="{StaticResource Ghost}" Height="24"
                 FontSize="11" VerticalAlignment="Bottom" ToolTip="复制全部日志到剪贴板">
           <StackPanel Orientation="Horizontal">
-            <Path Data="M 0,3 L 0,11 L 6,11 L 6,3 Z M 3,0 L 9,0 L 9,8 L 6,8" Stroke="#FF00E884"
+            <Path Data="M 0,3 L 0,11 L 6,11 L 6,3 Z M 3,0 L 9,0 L 9,8 L 6,8" Stroke="{DynamicResource Green}"
                   StrokeThickness="1" Fill="Transparent" VerticalAlignment="Center"/>
             <TextBlock x:Name="CopyLogTxt" Text="复制" Margin="5,0,0,0" VerticalAlignment="Center"/>
           </StackPanel>
         </Button>
       </Grid>
-      <Border Grid.Row="1" Background="{StaticResource LogBg}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+      <Border Grid.Row="1" Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1">
         <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap"
                  VerticalScrollBarVisibility="Auto" BorderThickness="0" Background="Transparent"
-                 Foreground="#FF9AA5A0" FontFamily="Consolas" FontSize="11" Padding="10,7"/>
+                 Foreground="{DynamicResource TextSec}" FontFamily="Consolas" FontSize="11" Padding="10,7"/>
       </Border>
       <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,9,0,0">
         <!-- 把诊断信息打包发给作者排查；上传前列清单请用户确认，不会静默发送 -->
@@ -1386,7 +1393,7 @@ $xaml = @'
         <!-- 主 CTA：绿色实底 + 深色字 + 左侧图标（官网下载按钮三要素） -->
         <Button x:Name="ApplyBtn" Style="{StaticResource Primary}" Width="230">
           <StackPanel Orientation="Horizontal">
-            <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF04241B"
+            <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="{DynamicResource GreenDark}"
                   Width="18" Height="15" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
             <TextBlock Text="执行优化" VerticalAlignment="Center"/>
           </StackPanel>
@@ -1397,15 +1404,15 @@ $xaml = @'
       </StackPanel>
       <!-- 执行进度留在优化页：日志挪走后，这里是执行期间唯一的实时反馈 -->
       <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Margin="0,9,0,0">
-        <Border x:Name="ProgTrack" Height="6" Background="{StaticResource PanelDeep}"
-                BorderBrush="{StaticResource Line}" BorderThickness="1">
-          <Border x:Name="ProgFill" Background="{StaticResource Green}" HorizontalAlignment="Left" Width="0"/>
+        <Border x:Name="ProgTrack" Height="6" Background="{DynamicResource PanelDeep}"
+                BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border x:Name="ProgFill" Background="{DynamicResource Green}" HorizontalAlignment="Left" Width="0"/>
         </Border>
         <Grid Margin="0,5,0,0">
           <!-- 换行而不是截断：执行完成后这里要放下汇总 + 失败项名，截掉就等于没说 -->
-          <TextBlock x:Name="ProgText" Style="{StaticResource Mono}" Foreground="{StaticResource TextSec}"
+          <TextBlock x:Name="ProgText" Style="{StaticResource Mono}" Foreground="{DynamicResource TextSec}"
                      Text="" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,120,0"/>
-          <TextBlock x:Name="ProgCount" Style="{StaticResource Mono}" Foreground="{StaticResource Green}"
+          <TextBlock x:Name="ProgCount" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}"
                      Text="" HorizontalAlignment="Right"/>
         </Grid>
       </StackPanel>
@@ -1422,11 +1429,11 @@ $xaml = @'
       </Grid.ColumnDefinitions>
       <!-- 非官方声明常驻页脚：NOTICE.md 的核心一句，用户不会主动去翻文件 -->
       <TextBlock Grid.Column="0" Text="非官方工具 · 与腾讯及《三角洲行动》官方无关" Style="{StaticResource Mono}" FontSize="9"/>
-      <Border Grid.Column="1" Width="26" Height="2" Background="{StaticResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
-      <Border Grid.Column="2" Height="1" Background="{StaticResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
-      <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{StaticResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
+      <Border Grid.Column="1" Width="26" Height="2" Background="{DynamicResource Gold}" VerticalAlignment="Center" Margin="9,0,0,0"/>
+      <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
+      <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.22.8 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.0 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1437,6 +1444,12 @@ $xaml = @'
 '@
 
 $window = [Windows.Markup.XamlReader]::Parse($xaml)
+$script:DefaultAppWindowHeight = 1200.0
+# 默认高度拉长到用户实机调整后的高度；小屏机器仍按工作区留出边缘。
+$workAreaHeight = [double][Windows.SystemParameters]::WorkArea.Height
+if ($workAreaHeight -gt 0) {
+  $window.Height = [math]::Min($script:DefaultAppWindowHeight,[math]::Max(640.0,$workAreaHeight-32.0))
+}
 # 不设 Icon 时任务栏/Alt-Tab 显示宿主 powershell.exe 的图标（实机反馈）。
 # app.ico 由 build\make-launcher.ps1 生成、随包分发；缺失（手动拷贝的残缺包）时
 # 静默跳过——图标问题绝不能挡启动
@@ -1465,6 +1478,33 @@ try {
 $script:ThemeResXaml = @'
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- 独立对话框不会继承主窗口资源；这里同时提供可切换的调色板。 -->
+  <SolidColorBrush x:Key="TopBar"       Color="#FF0D1417"/>
+  <SolidColorBrush x:Key="Panel"        Color="#FF0E1B17"/>
+  <SolidColorBrush x:Key="PanelDeep"    Color="#FF0B1713"/>
+  <SolidColorBrush x:Key="LogBg"        Color="#FF081310"/>
+  <SolidColorBrush x:Key="Line"         Color="#FF1B2E28"/>
+  <SolidColorBrush x:Key="LineSoft"     Color="#FF16241F"/>
+  <SolidColorBrush x:Key="LineHi"       Color="#FF2C443B"/>
+  <SolidColorBrush x:Key="TextPri"      Color="#FFFFFFFF"/>
+  <SolidColorBrush x:Key="TextSec"      Color="#FF9AA5A0"/>
+  <SolidColorBrush x:Key="TextMut"      Color="#FF7A8580"/>
+  <SolidColorBrush x:Key="Green"        Color="#FF00E884"/>
+  <SolidColorBrush x:Key="GreenDark"    Color="#FF04241B"/>
+  <SolidColorBrush x:Key="GreenLine"    Color="#FF00E884"/>
+  <SolidColorBrush x:Key="Gold"         Color="#FFE5C46A"/>
+  <SolidColorBrush x:Key="GoldDark"     Color="#FF3A2C0C"/>
+  <SolidColorBrush x:Key="Danger"       Color="#FFE5484D"/>
+  <SolidColorBrush x:Key="AccentPanel"  Color="#FF0E2A21"/>
+  <SolidColorBrush x:Key="TableHeader"  Color="#FF0C1915"/>
+  <SolidColorBrush x:Key="ComboSurface" Color="#FF0B1712"/>
+  <SolidColorBrush x:Key="HoverPanel"   Color="#FF12291F"/>
+  <SolidColorBrush x:Key="SelectedPanel" Color="#FF0F2118"/>
+  <SolidColorBrush x:Key="WindowHover"  Color="#FF14241F"/>
+  <SolidColorBrush x:Key="DisabledText" Color="#FF56615C"/>
+  <SolidColorBrush x:Key="WarningPanel" Color="#FF2A2008"/>
+  <SolidColorBrush x:Key="DangerPanel"  Color="#FF1A0E10"/>
+  <SolidColorBrush x:Key="InputSurface" Color="#FF0C1814"/>
   <Style TargetType="ScrollBar">
     <Setter Property="Width" Value="6"/>
     <!-- Min/Max 必须一起钉死：主题默认样式仍会给 ScrollBar 兜一个 MinWidth≈17，
@@ -1487,7 +1527,7 @@ $script:ThemeResXaml = @'
                 <Thumb>
                   <Thumb.Template>
                     <ControlTemplate TargetType="Thumb">
-                      <Border Background="#FF2C443B" CornerRadius="3"/>
+                      <Border Background="{DynamicResource LineHi}" CornerRadius="3"/>
                     </ControlTemplate>
                   </Thumb.Template>
                 </Thumb>
@@ -1521,7 +1561,7 @@ $script:ThemeResXaml = @'
                     <Thumb>
                       <Thumb.Template>
                         <ControlTemplate TargetType="Thumb">
-                          <Border Background="#FF2C443B" CornerRadius="3"/>
+                          <Border Background="{DynamicResource LineHi}" CornerRadius="3"/>
                         </ControlTemplate>
                       </Thumb.Template>
                     </Thumb>
@@ -1536,9 +1576,9 @@ $script:ThemeResXaml = @'
   </Style>
   <!-- ToolTip：默认是白底系统气泡 -->
   <Style TargetType="ToolTip">
-    <Setter Property="Background" Value="#FF0E1B17"/>
-    <Setter Property="BorderBrush" Value="#FF2C443B"/>
-    <Setter Property="Foreground" Value="#FF9AA5A0"/>
+    <Setter Property="Background" Value="{DynamicResource Panel}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource LineHi}"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextSec}"/>
     <Setter Property="Padding" Value="9,5"/>
     <Setter Property="Template">
       <Setter.Value>
@@ -1553,9 +1593,9 @@ $script:ThemeResXaml = @'
   </Style>
   <!-- TextBox 右键菜单（复制/粘贴）：默认白底。项目里没有子菜单，简化模板即可 -->
   <Style TargetType="ContextMenu">
-    <Setter Property="Background" Value="#FF0E1B17"/>
-    <Setter Property="BorderBrush" Value="#FF2C443B"/>
-    <Setter Property="Foreground" Value="#FF9AA5A0"/>
+    <Setter Property="Background" Value="{DynamicResource Panel}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource LineHi}"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextSec}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="ContextMenu">
@@ -1568,7 +1608,7 @@ $script:ThemeResXaml = @'
     </Setter>
   </Style>
   <Style TargetType="MenuItem">
-    <Setter Property="Foreground" Value="#FF9AA5A0"/>
+    <Setter Property="Foreground" Value="{DynamicResource TextSec}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="MenuItem">
@@ -1577,11 +1617,11 @@ $script:ThemeResXaml = @'
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsHighlighted" Value="True">
-              <Setter TargetName="BD" Property="Background" Value="#FF12291F"/>
-              <Setter Property="Foreground" Value="#FF00E884"/>
+              <Setter TargetName="BD" Property="Background" Value="{DynamicResource HoverPanel}"/>
+              <Setter Property="Foreground" Value="{DynamicResource Green}"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter Property="Foreground" Value="#FF4A554F"/>
+              <Setter Property="Foreground" Value="{DynamicResource DisabledText}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -1589,7 +1629,7 @@ $script:ThemeResXaml = @'
     </Setter>
   </Style>
   <Style TargetType="Separator">
-    <Setter Property="Background" Value="#FF1B2E28"/>
+    <Setter Property="Background" Value="{DynamicResource Line}"/>
     <Setter Property="Height" Value="1"/>
     <Setter Property="Margin" Value="4,2"/>
   </Style>
@@ -1597,6 +1637,30 @@ $script:ThemeResXaml = @'
   <Style TargetType="TextBox">
     <Setter Property="SelectionBrush" Value="#8000E884"/>
     <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+  </Style>
+  <Style x:Key="MetricHistoryButton" TargetType="Button">
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Green}"/>
+    <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+    <Setter Property="FontSize" Value="8"/>
+    <Setter Property="Width" Value="32"/>
+    <Setter Property="Height" Value="17"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+              <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
   </Style>
   <!-- 对话框里的按钮/勾选框都是行内模板、没挂命名样式，隐式样式只补焦点虚线框，
        不设 Template 不会覆盖行内模板 -->
@@ -1612,7 +1676,7 @@ $script:ThemeRes = [Windows.Markup.XamlReader]::Parse($script:ThemeResXaml)
 $window.Resources.MergedDictionaries.Add($script:ThemeRes)
 
 $ui = @{}
-foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','NoticeBtn','NoticeText','NoticeBadge','NoticeBadgeTxt','ScanState','HwGrid','GameText','BrowseBtn','CountText',
+foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','NoticeBtn','NoticeText','NoticeBadge','NoticeBadgeTxt','ThemeBtn','ScanState','MetricsGrid','HwGrid','GameText','BrowseBtn','CountText',
                'SelAllChk',
                'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn',
                'InlineRestorePanel','InlineRestoreItemsPanel','InlineRestoreEmptyText',
@@ -1634,15 +1698,165 @@ foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','NoticeBtn','NoticeTex
   $ui[$n] = $window.FindName($n)
 }
 
-# ---------- 主题化小部件构造（配色同 XAML：国服官网青绿渐变底 + 正绿 #00E884 + 金标签） ----------
+# ---------- 深浅主题 + 主题化小部件构造 ----------
 
-$script:C = @{
-  Panel = '#FF0E1B17'; Line = '#FF1B2E28'; LineSoft = '#FF16241F'
-  TextPri = '#FFFFFFFF'; TextSec = '#FF9AA5A0'; TextMut = '#FF7A8580'
-  Green = '#FF00E884'; GreenDark = '#FF04241B'; Gold = '#FFE5C46A'; GoldDark = '#FF3A2C0C'
-  Gray = '#FF7A8580'; Danger = '#FFFF6B6B'
+$script:ThemePalettes = @{
+  dark = [ordered]@{
+    WindowTop='#FF0A1512';WindowBottom='#FF10201C';TopBar='#FF0D1417';Panel='#FF0E1B17'
+    PanelDeep='#FF0B1713';LogBg='#FF081310';Line='#FF1B2E28';LineSoft='#FF16241F';LineHi='#FF2C443B'
+    TextPri='#FFFFFFFF';TextSec='#FF9AA5A0';TextMut='#FF7A8580';Green='#FF00E884';GreenDark='#FF04241B'
+    GreenLine='#FF00E884';Gold='#FFE5C46A';GoldDark='#FF3A2C0C';Danger='#FFE5484D';DangerText='#FFFF6B6B'
+    AccentPanel='#FF0E2A21';TableHeader='#FF0C1915';ComboSurface='#FF0B1712';HoverPanel='#FF12291F'
+    SelectedPanel='#FF0F2118';WindowHover='#FF14241F';DisabledText='#FF56615C';WarningPanel='#FF2A2008'
+    DangerPanel='#FF1A0E10';InputSurface='#FF0C1814';SubtlePanel='#FF10201A'
+  }
+  light = [ordered]@{
+    WindowTop='#FFF6F7F4';WindowBottom='#FFE8EFEB';TopBar='#FFF0F4F1';Panel='#FFFFFFFF'
+    PanelDeep='#FFF4F6F3';LogBg='#FFEEF2EF';Line='#FFCBD4CE';LineSoft='#FFDCE3DE';LineHi='#FFAEBAB3'
+    TextPri='#FF121815';TextSec='#FF45524C';TextMut='#FF68736E';Green='#FF00E884';GreenDark='#FF04241B'
+    GreenLine='#FF00E884';Gold='#FF1677B8';GoldDark='#FFF4FBFF';Danger='#FFD83F47';DangerText='#FFD83F47'
+    AccentPanel='#FFE4F5ED';TableHeader='#FFE9EFEB';ComboSurface='#FFFFFFFF';HoverPanel='#FFE3EEE8'
+    SelectedPanel='#FFD5EADF';WindowHover='#FFDDE7E1';DisabledText='#FF96A19B';WarningPanel='#FFE8F5FB'
+    DangerPanel='#FFFFECEE';InputSurface='#FFFAFCFB';SubtlePanel='#FFEAF0EC'
+  }
 }
-function New-Brush([string]$Hex) { (New-Object Windows.Media.BrushConverter).ConvertFromString($Hex) }
+$script:CurrentTheme = 'dark'
+$script:C = @{}
+$script:ThemeBrushCache = @{}
+$script:ThemeColorAliases = @{
+  '#FF0B1713'='PanelDeep';'#FF10201A'='SubtlePanel'
+  '#FFE5484D'='Danger';'#FFFF6B6B'='DangerText';'#FF7A8580'='TextMut'
+}
+
+function Set-ThemeColorTable([string]$Theme) {
+  $palette = $script:ThemePalettes[$Theme]
+  foreach ($key in $palette.Keys) { $script:C[$key] = "$($palette[$key])" }
+  $script:C.Gray = "$($palette.TextMut)"
+  $script:C.Danger = "$($palette.DangerText)"
+}
+Set-ThemeColorTable 'dark'
+
+function Resolve-ThemeColorKey([string]$Hex) {
+  $value = "$Hex".ToUpperInvariant()
+  foreach ($theme in 'dark','light') {
+    foreach ($entry in $script:ThemePalettes[$theme].GetEnumerator()) {
+      if ("$($entry.Value)".ToUpperInvariant() -eq $value) { return "$($entry.Key)" }
+    }
+  }
+  if ($script:ThemeColorAliases.ContainsKey($value)) { return "$($script:ThemeColorAliases[$value])" }
+  $null
+}
+
+function New-Brush([string]$Hex) {
+  $key = Resolve-ThemeColorKey $Hex
+  if ($key) {
+    if (-not $script:ThemeBrushCache.ContainsKey($key)) {
+      $script:ThemeBrushCache[$key] = (New-Object Windows.Media.BrushConverter).ConvertFromString(
+        "$($script:ThemePalettes[$script:CurrentTheme][$key])")
+    }
+    return $script:ThemeBrushCache[$key]
+  }
+  (New-Object Windows.Media.BrushConverter).ConvertFromString($Hex)
+}
+
+$script:UiPreferencesPath = Join-Path $script:UserConfigDir 'ui-preferences.json'
+function Get-SavedUiPreferences {
+  try {
+    if (-not (Test-Path -LiteralPath $script:UiPreferencesPath -PathType Leaf)) { return $null }
+    $file = Get-Item -LiteralPath $script:UiPreferencesPath -Force
+    if ($file.Length -le 0 -or $file.Length -gt 4096) { return $null }
+    $value = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json -ErrorAction Stop
+    if ([int]$value.schemaVersion -eq 1) { return $value }
+  } catch {}
+  $null
+}
+
+function Get-SavedAppTheme {
+  if (-not $script:LightThemeEnabled) { return 'dark' }
+  $value = Get-SavedUiPreferences
+  if ($value -and "$($value.theme)" -in 'dark','light') { return "$($value.theme)" }
+  'dark'
+}
+
+function Get-SavedAppWindowHeight {
+  $value = Get-SavedUiPreferences
+  try {
+    if ($value -and $value.PSObject.Properties['windowHeight']) {
+      $height = [double]$value.windowHeight
+      if (-not [double]::IsNaN($height) -and -not [double]::IsInfinity($height) -and $height -ge 640 -and $height -le 10000) {
+        return $height
+      }
+    }
+  } catch {}
+  [double]$script:DefaultAppWindowHeight
+}
+
+function Get-PersistableAppWindowHeight {
+  $height = $(if ($window.WindowState -eq [Windows.WindowState]::Normal) { [double]$window.Height } else { [double]$window.RestoreBounds.Height })
+  if ([double]::IsNaN($height) -or [double]::IsInfinity($height) -or $height -lt 640) {
+    $height = [double]$script:DefaultAppWindowHeight
+  }
+  [math]::Round($height,0)
+}
+
+function Set-SavedAppWindowHeight {
+  $workHeight = [double][Windows.SystemParameters]::WorkArea.Height
+  $maximum = $(if ($workHeight -gt 0) { [math]::Max(640.0,$workHeight-32.0) } else { [double]$script:DefaultAppWindowHeight })
+  $window.Height = [math]::Min($maximum,[math]::Max(640.0,(Get-SavedAppWindowHeight)))
+}
+
+function Save-AppUiPreferences([string]$Theme, [double]$WindowHeight) {
+  if (-not $script:LightThemeEnabled) { $Theme = 'dark' }
+  if ($Theme -notin 'dark','light') { $Theme = 'dark' }
+  if ([double]::IsNaN($WindowHeight) -or [double]::IsInfinity($WindowHeight) -or $WindowHeight -lt 640) {
+    $WindowHeight = [double]$script:DefaultAppWindowHeight
+  }
+  $payload = [pscustomobject][ordered]@{
+    schemaVersion=1
+    theme=$Theme
+    windowHeight=[math]::Round($WindowHeight,0)
+  }
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($payload | ConvertTo-Json -Compress))
+  Write-BytesAtomic $script:UiPreferencesPath $bytes
+}
+
+function Save-AppTheme([string]$Theme) {
+  Save-AppUiPreferences $Theme (Get-PersistableAppWindowHeight)
+}
+
+function Set-AppTheme([ValidateSet('dark','light')][string]$Theme, [switch]$Persist) {
+  if (-not $script:LightThemeEnabled) { $Theme = 'dark' }
+  $script:CurrentTheme = $Theme
+  $palette = $script:ThemePalettes[$Theme]
+  foreach ($key in $palette.Keys) {
+    if ($key -in 'WindowTop','WindowBottom','DangerText','SubtlePanel') { continue }
+    foreach ($dictionary in @($window.Resources,$script:ThemeRes)) {
+      if ($dictionary.Contains($key)) {
+        $dictionary[$key] = (New-Object Windows.Media.BrushConverter).ConvertFromString("$($palette[$key])")
+      }
+    }
+  }
+  $gradient = New-Object Windows.Media.LinearGradientBrush
+  $gradient.StartPoint = New-Object Windows.Point 0,0
+  $gradient.EndPoint = New-Object Windows.Point 0,1
+  $gradient.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList @(
+    [Windows.Media.ColorConverter]::ConvertFromString("$($palette.WindowTop)"),0.0))) | Out-Null
+  $gradient.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList @(
+    [Windows.Media.ColorConverter]::ConvertFromString("$($palette.WindowBottom)"),1.0))) | Out-Null
+  $window.Background = $gradient
+  Set-ThemeColorTable $Theme
+  foreach ($entry in @($script:ThemeBrushCache.GetEnumerator())) {
+    $color = $(if ($palette.Contains($entry.Key)) { "$($palette[$entry.Key])" } else { "$($script:C[$entry.Key])" })
+    if ($color -and $entry.Value -is [Windows.Media.SolidColorBrush]) {
+      $entry.Value.Color = [Windows.Media.ColorConverter]::ConvertFromString($color)
+    }
+  }
+  if ($ui.ThemeBtn) {
+    $ui.ThemeBtn.Content = $(if ($Theme -eq 'dark') { '☀ 浅色' } else { '☾ 深色' })
+    $ui.ThemeBtn.ToolTip = $(if ($Theme -eq 'dark') { '切换浅色模式' } else { '切换深色模式' })
+  }
+  if ($Persist) { Save-AppTheme $Theme }
+}
 
 function New-Text([string]$Content, [string]$Color, [int]$Size, [switch]$Mono) {
   $t = New-Object Windows.Controls.TextBlock
@@ -1654,7 +1868,7 @@ function New-Text([string]$Content, [string]$Color, [int]$Size, [switch]$Mono) {
   $t
 }
 
-function New-HwCard([string]$Label, [string]$Value, [string]$Sub, [switch]$Ribbon) {
+function New-HwCard([string]$Label, [string]$Value, [string]$Sub, [switch]$Ribbon, [string]$TemperatureKey = '') {
   $b = New-Object Windows.Controls.Border
   $b.Background = New-Brush $script:C.Panel
   $b.BorderBrush = New-Brush $script:C.Line
@@ -1672,13 +1886,38 @@ function New-HwCard([string]$Label, [string]$Value, [string]$Sub, [switch]$Ribbo
   $sq.Margin = New-Object Windows.Thickness 0, 0, 6, 0
   $head.Children.Add($sq) | Out-Null
   $head.Children.Add((New-Text $Label $script:C.TextMut 10 -Mono)) | Out-Null
-  $sp.Children.Add($head) | Out-Null
+  if ($TemperatureKey) {
+    $temperature = New-Object Windows.Controls.StackPanel
+    $temperature.Orientation = 'Horizontal'
+    $temperature.HorizontalAlignment = 'Right'
+    $temperature.Margin = New-Object Windows.Thickness 8,0,0,0
+    $temperatureValue = New-Text '--' $script:C.TextPri 15 -Mono
+    $temperatureValue.FontWeight = 'Bold'
+    $temperatureUnit = New-Text '°C' $script:C.TextPri 15 -Mono
+    $temperatureUnit.FontWeight = 'Bold'
+    $temperatureUnit.Margin = New-Object Windows.Thickness 1,0,0,0
+    [void]$temperature.Children.Add($temperatureValue); [void]$temperature.Children.Add($temperatureUnit)
+    $temperature.SetValue([Windows.Controls.DockPanel]::DockProperty,[Windows.Controls.Dock]::Right)
+    $headerDock = New-Object Windows.Controls.DockPanel
+    $headerDock.LastChildFill = $true
+    [void]$headerDock.Children.Add($temperature)
+    [void]$headerDock.Children.Add($head)
+    $sp.Children.Add($headerDock) | Out-Null
+    $script:HardwareTemperatureReadouts[$TemperatureKey] = [pscustomobject]@{
+      ValueText=$temperatureValue;UnitText=$temperatureUnit
+    }
+  } else {
+    $sp.Children.Add($head) | Out-Null
+  }
+  # 四张硬件卡统一完整显示：短名称保持单行，长名称自动换行。
   $v = New-Text $Value $script:C.TextPri 12
-  $v.TextTrimming = 'CharacterEllipsis'
+  $v.TextWrapping = 'Wrap'
+  $v.TextTrimming = 'None'
+  $v.ToolTip = $Value
   $sp.Children.Add($v) | Out-Null
   $sp.Children.Add((New-Text $Sub $script:C.TextSec 10 -Mono)) | Out-Null
   $b.Child = $sp
-  # 官网小卡片右上角的金色三角角标：这里用来标记主力硬件（如主显卡）
+  # 小卡片右上角的主题强调色角标：这里用来标记主力硬件（如主显卡）
   $g = New-Object Windows.Controls.Grid
   $g.Margin = New-Object Windows.Thickness 0, 0, 8, 0
   $g.Children.Add($b) | Out-Null
@@ -1707,6 +1946,640 @@ function New-Pill([string]$Text, [string]$Fg, [string]$Bg, [string]$Bd) {
   $t.FontWeight = 'Bold'
   $b.Child = $t
   $b
+}
+
+$script:MetricGauges = @{}
+$script:HardwareTemperatureReadouts = @{}
+
+function New-MetricHistoryButton([string]$Key, [string]$Label) {
+  $button = New-Object Windows.Controls.Button
+  $button.Content = '记录'
+  $button.Tag = $Key
+  $button.Width = 32; $button.Height = 17; $button.FontSize = 8
+  $button.HorizontalAlignment = 'Right'; $button.VerticalAlignment = 'Top'
+  $button.ToolTip = "查看 $Label 历史记录"
+  try {
+    if ($script:ThemeRes -and $script:ThemeRes.Contains('MetricHistoryButton')) {
+      $button.Style = $script:ThemeRes['MetricHistoryButton']
+    }
+  } catch {}
+  $button.Add_Click({ Show-PerformanceMetricHistory "$($this.Tag)" })
+  $button
+}
+
+function New-FpsMetricCard {
+  $card = New-Object Windows.Controls.Border
+  $card.Background = New-Brush $script:C.Panel
+  $card.BorderBrush = New-Brush $script:C.Line
+  $card.BorderThickness = New-Object Windows.Thickness 1
+  $card.Padding = New-Object Windows.Thickness 12,7,12,7
+  $card.Margin = New-Object Windows.Thickness 0,0,8,0
+  $stack = New-Object Windows.Controls.StackPanel
+  $stack.HorizontalAlignment = 'Stretch'
+  $header = New-Object Windows.Controls.Grid
+  $header.Height = 18
+  $title = New-Text 'FPS' $script:C.TextMut 10 -Mono
+  $title.FontWeight = 'Bold'
+  $title.HorizontalAlignment = 'Center'
+  $historyButton = New-MetricHistoryButton 'fps' 'FPS'
+  [void]$header.Children.Add($title); [void]$header.Children.Add($historyButton)
+  [void]$stack.Children.Add($header)
+  $readout = New-Object Windows.Controls.StackPanel
+  $readout.Orientation = 'Horizontal'; $readout.Margin = New-Object Windows.Thickness 0,1,0,0
+  $readout.HorizontalAlignment = 'Center'
+  $valueText = New-Text '--' $script:C.Green 25 -Mono
+  $valueText.FontWeight = 'Bold'
+  $unitText = New-Text '帧' $script:C.TextMut 9 -Mono
+  $unitText.Margin = New-Object Windows.Thickness 5,0,0,3
+  $unitText.VerticalAlignment = 'Bottom'
+  [void]$readout.Children.Add($valueText); [void]$readout.Children.Add($unitText)
+  [void]$stack.Children.Add($readout)
+  $subText = New-Text '游戏未运行' $script:C.TextMut 8 -Mono
+  $subText.HorizontalAlignment = 'Center'
+  [void]$stack.Children.Add($subText)
+  $compareText = New-Text '暂无可比记录' $script:C.TextMut 8 -Mono
+  $compareText.HorizontalAlignment = 'Center'
+  $compareText.Margin = New-Object Windows.Thickness 0,1,0,0
+  [void]$stack.Children.Add($compareText)
+  $card.Child = $stack
+  $script:MetricGauges['fps'] = [pscustomobject]@{
+    TitleText=$title;HistoryButton=$historyButton;ValueText=$valueText;SubText=$subText
+    CompareText=$compareText;Maximum=240.0;Kind='number'
+  }
+  $card
+}
+
+function New-LiveMetricGauge([string]$Key, [string]$Label, [string]$Unit, [double]$Maximum) {
+  $card = New-Object Windows.Controls.Border
+  $card.Background = New-Brush $script:C.Panel
+  $card.BorderBrush = New-Brush $script:C.Line
+  $card.BorderThickness = New-Object Windows.Thickness 1
+  $card.Padding = New-Object Windows.Thickness 5,6,5,5
+  $card.Margin = New-Object Windows.Thickness 0,0,6,0
+
+  $stack = New-Object Windows.Controls.StackPanel
+  $header = New-Object Windows.Controls.Grid
+  $header.Height = 18
+  $title = New-Text $Label $script:C.TextPri 10
+  $title.FontWeight = 'Bold'
+  $title.HorizontalAlignment = 'Center'
+  $historyButton = New-MetricHistoryButton $Key $Label
+  [void]$header.Children.Add($title); [void]$header.Children.Add($historyButton)
+  [void]$stack.Children.Add($header)
+
+  $ring = New-Object Windows.Controls.Grid
+  $ring.Width = 64; $ring.Height = 64
+  $ring.Margin = New-Object Windows.Thickness 0,4,0,2
+  $track = New-Object Windows.Shapes.Ellipse
+  $track.Width = 56; $track.Height = 56
+  $track.Stroke = New-Brush $script:C.LineHi
+  $track.StrokeThickness = 5
+  $track.HorizontalAlignment = 'Center'; $track.VerticalAlignment = 'Center'
+  [void]$ring.Children.Add($track)
+
+  $arc = New-Object Windows.Shapes.Path
+  $arc.Width = 64; $arc.Height = 64
+  $arc.Stroke = New-Brush $script:C.Green
+  $arc.StrokeThickness = 5
+  $arc.StrokeStartLineCap = 'Round'; $arc.StrokeEndLineCap = 'Round'
+  $arc.HorizontalAlignment = 'Center'; $arc.VerticalAlignment = 'Center'
+  [void]$ring.Children.Add($arc)
+
+  $readout = New-Object Windows.Controls.StackPanel
+  $readout.Orientation = 'Horizontal'
+  $readout.HorizontalAlignment = 'Center'; $readout.VerticalAlignment = 'Center'
+  $valueText = New-Text '--' $script:C.TextPri 14 -Mono
+  $valueText.FontWeight = 'Bold'; $valueText.HorizontalAlignment = 'Center'
+  $unitText = New-Text $Unit $script:C.TextPri 14 -Mono
+  $unitText.FontWeight = 'Bold'
+  $unitText.HorizontalAlignment = 'Center'; $unitText.Margin = New-Object Windows.Thickness 1,0,0,0
+  [void]$readout.Children.Add($valueText); [void]$readout.Children.Add($unitText)
+  [void]$ring.Children.Add($readout); [void]$stack.Children.Add($ring)
+
+  $subText = New-Text '等待采样' $script:C.TextMut 8 -Mono
+  $subText.HorizontalAlignment = 'Center'; $subText.TextTrimming = 'CharacterEllipsis'
+  [void]$stack.Children.Add($subText)
+  $compareText = New-Text '暂无可比记录' $script:C.TextMut 8 -Mono
+  $compareText.HorizontalAlignment = 'Center'; $compareText.TextTrimming = 'CharacterEllipsis'
+  $compareText.Margin = New-Object Windows.Thickness 0,1,0,0
+  [void]$stack.Children.Add($compareText)
+  $card.Child = $stack
+  $script:MetricGauges[$Key] = [pscustomobject]@{
+    TitleText=$title;HistoryButton=$historyButton;Arc=$arc;Track=$track;ValueText=$valueText;UnitText=$unitText
+    SubText=$subText;CompareText=$compareText;Maximum=$Maximum;Kind='ring'
+  }
+  $card
+}
+
+function Set-LiveMetricGauge([string]$Key, $Value, [string]$SubText, [string]$ColorHex) {
+  $gauge = $script:MetricGauges[$Key]
+  if (-not $gauge) { return }
+  $gauge.SubText.Text = $SubText
+  if ($gauge.Kind -eq 'number') {
+    $gauge.ValueText.Text = $(if ($null -eq $Value) { '--' } elseif ([math]::Abs([double]$Value-[math]::Round([double]$Value)) -lt 0.05) {
+      "{0:N0}" -f [double]$Value
+    } else { "{0:N1}" -f [double]$Value })
+    return
+  }
+  if ($null -eq $Value) {
+    $gauge.ValueText.Text = '--'
+    $gauge.Arc.Visibility = 'Collapsed'
+    return
+  }
+  $number = [math]::Max(0.0,[double]$Value)
+  $gauge.ValueText.Text = $(if ([math]::Abs($number-[math]::Round($number)) -lt 0.05) {
+    "{0:N0}" -f $number
+  } else { "{0:N1}" -f $number })
+  $gauge.Arc.Stroke = New-Brush $ColorHex
+  $gauge.Arc.Visibility = 'Visible'
+  $fraction = [math]::Min(0.99999,[math]::Max(0.002,$number/[math]::Max(1.0,[double]$gauge.Maximum)))
+  $angle = 360.0*$fraction; $radians = $angle*[math]::PI/180.0
+  $cx = 32.0; $cy = 32.0; $radius = 25.5
+  $figure = New-Object Windows.Media.PathFigure
+  $figure.StartPoint = New-Object Windows.Point $cx,($cy-$radius)
+  $segment = New-Object Windows.Media.ArcSegment
+  $segment.Point = New-Object Windows.Point ($cx+$radius*[math]::Sin($radians)),($cy-$radius*[math]::Cos($radians))
+  $segment.Size = New-Object Windows.Size $radius,$radius
+  $segment.IsLargeArc = ($angle -gt 180.0)
+  $segment.SweepDirection = 'Clockwise'
+  [void]$figure.Segments.Add($segment)
+  $geometry = New-Object Windows.Media.PathGeometry
+  [void]$geometry.Figures.Add($figure)
+  $gauge.Arc.Data = $geometry
+}
+
+function Set-LiveMetricComparison {
+  param(
+    [string]$Key,
+    $Before,
+    $After,
+    [ValidateSet('percent','points')][string]$Mode = 'points',
+    [string]$Prefix = '变化',
+    [string]$Tooltip = '',
+    [string]$EmptyText = '暂无可比记录'
+  )
+  $gauge = $script:MetricGauges[$Key]
+  if (-not $gauge -or -not $gauge.CompareText) { return }
+  $gauge.CompareText.ToolTip = $Tooltip
+  if ($null -eq $Before -or $null -eq $After) {
+    $gauge.CompareText.Text = $EmptyText
+    $gauge.CompareText.Foreground = New-Brush $script:C.TextMut
+    return
+  }
+  $beforeNumber = [double]$Before; $afterNumber = [double]$After
+  if ([double]::IsNaN($beforeNumber) -or [double]::IsInfinity($beforeNumber) -or
+      [double]::IsNaN($afterNumber) -or [double]::IsInfinity($afterNumber) -or
+      ($Mode -eq 'percent' -and $beforeNumber -le 0)) {
+    $gauge.CompareText.Text = $EmptyText
+    $gauge.CompareText.Foreground = New-Brush $script:C.TextMut
+    return
+  }
+  $delta = $(if ($Mode -eq 'percent') { ($afterNumber-$beforeNumber)*100.0/$beforeNumber } else { $afterNumber-$beforeNumber })
+  $sign = $(if ($delta -gt 0.05) { '+' } else { '' })
+  $unit = $(if ($Mode -eq 'percent') { '%' } else { '点' })
+  $gauge.CompareText.Text = "$Prefix $sign$('{0:N1}' -f $delta)$unit"
+  $gauge.CompareText.Foreground = $(if ($Key -eq 'fps' -and $delta -gt 0.05) { New-Brush $script:C.Green }
+    elseif ($Key -eq 'fps' -and $delta -lt -0.05) { New-Brush $script:C.Danger }
+    else { New-Brush $script:C.Gold })
+}
+
+function Set-HardwareTemperature([string]$Key, $Value) {
+  $readout = $script:HardwareTemperatureReadouts[$Key]
+  if (-not $readout) { return }
+  if ($null -eq $Value) {
+    $readout.ValueText.Text = '--'
+    $readout.ValueText.Foreground = New-Brush $script:C.TextMut
+    $readout.UnitText.Foreground = New-Brush $script:C.TextMut
+    return
+  }
+  $temperature = [double]$Value
+  $readout.ValueText.Text = $(if ([math]::Abs($temperature-[math]::Round($temperature)) -lt 0.05) {
+    "{0:N0}" -f $temperature
+  } else { "{0:N1}" -f $temperature })
+  $temperatureBrush = New-Brush (Get-TemperatureColor $temperature)
+  $readout.ValueText.Foreground = $temperatureBrush
+  $readout.UnitText.Foreground = $temperatureBrush
+}
+
+function Get-TemperatureColor([double]$Temperature) {
+  if ($Temperature -le 55) { return $script:C.Green }
+  if ($Temperature -le 75) {
+    $p = ($Temperature-55.0)/20.0
+    $r = [int][math]::Round(0+(229*$p)); $g = [int][math]::Round(200+(196-200)*$p); $b = [int][math]::Round(120+(106-120)*$p)
+    return ('#FF{0:X2}{1:X2}{2:X2}' -f $r,$g,$b)
+  }
+  $p = [math]::Min(1.0,($Temperature-75.0)/20.0)
+  $r = [int][math]::Round(229+(0*$p)); $g = [int][math]::Round(196+(72-196)*$p); $b = [int][math]::Round(106+(77-106)*$p)
+  ('#FF{0:X2}{1:X2}{2:X2}' -f $r,$g,$b)
+}
+
+function Initialize-LiveMetricsDashboard {
+  if (-not $ui.MetricsGrid -or $ui.MetricsGrid.Children.Count -gt 0) { return }
+  $ui.MetricsGrid.ColumnDefinitions.Clear()
+  $fpsColumn = New-Object Windows.Controls.ColumnDefinition
+  $fpsColumn.Width = New-Object Windows.GridLength 126
+  [void]$ui.MetricsGrid.ColumnDefinitions.Add($fpsColumn)
+  foreach ($index in 0..2) {
+    $column = New-Object Windows.Controls.ColumnDefinition
+    $column.Width = [Windows.GridLength]::new(1.0,[Windows.GridUnitType]::Star)
+    [void]$ui.MetricsGrid.ColumnDefinitions.Add($column)
+  }
+  $fpsCard = New-FpsMetricCard
+  [Windows.Controls.Grid]::SetColumn($fpsCard,0)
+  [void]$ui.MetricsGrid.Children.Add($fpsCard)
+  $columnIndex = 1
+  foreach ($definition in @(
+    @('cpu','CPU 占用','%',100),@('gpu','GPU 占用','%',100),@('memory','内存占用','%',100)
+  )) {
+    $gauge = New-LiveMetricGauge $definition[0] $definition[1] $definition[2] ([double]$definition[3])
+    [Windows.Controls.Grid]::SetColumn($gauge,$columnIndex++)
+    [void]$ui.MetricsGrid.Children.Add($gauge)
+  }
+}
+
+function Resolve-DisplayClassLabel([int]$Width, [int]$Height) {
+  $long = [math]::Max($Width,$Height); $short = [math]::Min($Width,$Height)
+  if ($long -eq 1920 -and $short -eq 1080) { return '1K' }
+  if ($long -eq 2560 -and $short -eq 1440) { return '2K' }
+  if ($long -eq 3840 -and $short -eq 2160) { return '4K' }
+  if ($Width -gt 0 -and $Height -gt 0) { return "$Width × $Height" }
+  '分辨率未知'
+}
+
+function Initialize-LiveMetricsTypes {
+  if ('DfbLivePresentMonSampler' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Runtime.InteropServices;
+
+public sealed class DfbLivePresentMonSampler : IDisposable {
+  private sealed class FramePoint { public long Ticks; public double Milliseconds; }
+  private readonly object gate = new object();
+  private readonly Queue<FramePoint> frames = new Queue<FramePoint>();
+  private Process process;
+  private int frameColumn = -1;
+
+  private static string[] SplitCsv(string line) {
+    var fields = new List<string>();
+    var value = new System.Text.StringBuilder();
+    bool quoted = false;
+    for (int i = 0; i < line.Length; i++) {
+      char c = line[i];
+      if (c == '"') {
+        if (quoted && i + 1 < line.Length && line[i + 1] == '"') { value.Append('"'); i++; }
+        else { quoted = !quoted; }
+      } else if (c == ',' && !quoted) { fields.Add(value.ToString()); value.Length = 0; }
+      else { value.Append(c); }
+    }
+    fields.Add(value.ToString());
+    return fields.ToArray();
+  }
+
+  private void OnOutput(object sender, DataReceivedEventArgs e) {
+    if (String.IsNullOrWhiteSpace(e.Data)) return;
+    string[] fields = SplitCsv(e.Data);
+    lock (gate) {
+      if (frameColumn < 0) {
+        for (int i = 0; i < fields.Length; i++) {
+          if (String.Equals(fields[i], "MsBetweenPresents", StringComparison.OrdinalIgnoreCase) ||
+              String.Equals(fields[i], "FrameTime", StringComparison.OrdinalIgnoreCase)) {
+            frameColumn = i;
+            return;
+          }
+        }
+        return;
+      }
+      if (frameColumn >= fields.Length) return;
+      double milliseconds;
+      if (!Double.TryParse(fields[frameColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out milliseconds) ||
+          milliseconds <= 0.0 || milliseconds > 1000.0) return;
+      frames.Enqueue(new FramePoint { Ticks = DateTime.UtcNow.Ticks, Milliseconds = milliseconds });
+      Trim(DateTime.UtcNow.AddSeconds(-3).Ticks);
+    }
+  }
+
+  private void Trim(long cutoff) {
+    while (frames.Count > 0 && frames.Peek().Ticks < cutoff) frames.Dequeue();
+  }
+
+  public bool Start(string executable, int processId, string sessionName) {
+    Stop();
+    try {
+      var info = new ProcessStartInfo();
+      info.FileName = executable;
+      info.WorkingDirectory = Environment.SystemDirectory;
+      info.Arguments = "--process_id " + processId.ToString(CultureInfo.InvariantCulture) +
+        " --output_stdout --no_console_stats --v2_metrics --terminate_on_proc_exit --session_name " + sessionName;
+      info.UseShellExecute = false;
+      info.CreateNoWindow = true;
+      info.RedirectStandardOutput = true;
+      info.RedirectStandardError = true;
+      process = new Process();
+      process.StartInfo = info;
+      process.OutputDataReceived += OnOutput;
+      process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args) { };
+      if (!process.Start()) { Stop(); return false; }
+      process.BeginOutputReadLine();
+      process.BeginErrorReadLine();
+      return true;
+    } catch { Stop(); return false; }
+  }
+
+  public bool IsRunning {
+    get {
+      try { return process != null && !process.HasExited; }
+      catch { return false; }
+    }
+  }
+
+  public double ReadFps() {
+    lock (gate) {
+      Trim(DateTime.UtcNow.AddSeconds(-2.5).Ticks);
+      if (frames.Count < 5) return Double.NaN;
+      double total = 0.0;
+      foreach (FramePoint frame in frames) total += frame.Milliseconds;
+      return total > 0.0 ? Math.Round(1000.0 / (total / frames.Count), 1) : Double.NaN;
+    }
+  }
+
+  public void Stop() {
+    Process old = process;
+    process = null;
+    lock (gate) { frames.Clear(); frameColumn = -1; }
+    if (old == null) return;
+    try { if (!old.HasExited) old.Kill(); } catch { }
+    try { old.WaitForExit(1500); } catch { }
+    try { old.Dispose(); } catch { }
+  }
+
+  public void Dispose() { Stop(); }
+}
+
+public sealed class DfbProcessorUtilitySampler : IDisposable {
+  private const uint PdhFmtDouble = 0x00000200;
+  private IntPtr query;
+  private IntPtr counter;
+  private IntPtr valueBuffer;
+  private bool primed;
+
+  [DllImport("pdh.dll")] private static extern uint PdhOpenQuery(IntPtr dataSource, IntPtr userData, out IntPtr query);
+  [DllImport("pdh.dll", CharSet=CharSet.Unicode, EntryPoint="PdhAddEnglishCounterW")]
+  private static extern uint PdhAddEnglishCounter(IntPtr query, string path, IntPtr userData, out IntPtr counter);
+  [DllImport("pdh.dll")] private static extern uint PdhCollectQueryData(IntPtr query);
+  [DllImport("pdh.dll")] private static extern uint PdhGetFormattedCounterValue(IntPtr counter, uint format, out uint type, IntPtr value);
+  [DllImport("pdh.dll")] private static extern uint PdhCloseQuery(IntPtr query);
+
+  public DfbProcessorUtilitySampler() {
+    try {
+      if (PdhOpenQuery(IntPtr.Zero, IntPtr.Zero, out query) != 0 || query == IntPtr.Zero) return;
+      if (PdhAddEnglishCounter(query, @"\Processor Information(_Total)\% Processor Utility", IntPtr.Zero, out counter) != 0 || counter == IntPtr.Zero) {
+        Dispose();
+        return;
+      }
+      valueBuffer = Marshal.AllocHGlobal(16);
+      primed = PdhCollectQueryData(query) == 0;
+    } catch { Dispose(); }
+  }
+
+  public double Read() {
+    if (!primed || query == IntPtr.Zero || counter == IntPtr.Zero || valueBuffer == IntPtr.Zero) return Double.NaN;
+    if (PdhCollectQueryData(query) != 0) return Double.NaN;
+    uint type;
+    if (PdhGetFormattedCounterValue(counter, PdhFmtDouble, out type, valueBuffer) != 0) return Double.NaN;
+    uint status = unchecked((uint)Marshal.ReadInt32(valueBuffer));
+    if (status != 0 && status != 1) return Double.NaN;
+    byte[] bytes = new byte[8];
+    Marshal.Copy(IntPtr.Add(valueBuffer, IntPtr.Size == 8 ? 8 : 4), bytes, 0, bytes.Length);
+    double value = BitConverter.ToDouble(bytes, 0);
+    if (Double.IsNaN(value) || Double.IsInfinity(value)) return Double.NaN;
+    return Math.Round(Math.Max(0.0, Math.Min(100.0, value)), 1);
+  }
+
+  public void Dispose() {
+    IntPtr oldBuffer = valueBuffer;
+    IntPtr oldQuery = query;
+    valueBuffer = IntPtr.Zero;
+    query = IntPtr.Zero;
+    counter = IntPtr.Zero;
+    primed = false;
+    if (oldBuffer != IntPtr.Zero) Marshal.FreeHGlobal(oldBuffer);
+    if (oldQuery != IntPtr.Zero) PdhCloseQuery(oldQuery);
+  }
+}
+
+public static class DfbLiveSystemMetrics {
+  [StructLayout(LayoutKind.Sequential)] private struct FILETIME { public uint Low; public uint High; }
+  [StructLayout(LayoutKind.Sequential)] private sealed class MEMORYSTATUSEX {
+    public uint Length = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
+    public uint MemoryLoad;
+    public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual;
+  }
+  [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetSystemTimes(out FILETIME idle, out FILETIME kernel, out FILETIME user);
+  [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX value);
+  private static readonly object Gate = new object();
+  private static ulong lastIdle, lastKernel, lastUser;
+  private static bool initialized;
+  private static ulong ToUInt64(FILETIME value) { return ((ulong)value.High << 32) | value.Low; }
+
+  public static double ReadCpuUsage() {
+    FILETIME idle, kernel, user;
+    if (!GetSystemTimes(out idle, out kernel, out user)) return Double.NaN;
+    ulong i = ToUInt64(idle), k = ToUInt64(kernel), u = ToUInt64(user);
+    lock (Gate) {
+      if (!initialized) { initialized = true; lastIdle = i; lastKernel = k; lastUser = u; return Double.NaN; }
+      ulong idleDelta = i - lastIdle, kernelDelta = k - lastKernel, userDelta = u - lastUser;
+      lastIdle = i; lastKernel = k; lastUser = u;
+      ulong total = kernelDelta + userDelta;
+      if (total == 0) return Double.NaN;
+      double usage = (double)(total - Math.Min(total, idleDelta)) * 100.0 / total;
+      return Math.Max(0.0, Math.Min(100.0, Math.Round(usage, 1)));
+    }
+  }
+
+  public static double ReadMemoryUsage() {
+    var value = new MEMORYSTATUSEX();
+    return GlobalMemoryStatusEx(value) ? (double)value.MemoryLoad : Double.NaN;
+  }
+}
+'@
+}
+
+$script:LiveMetricsWorker = {
+  param($State,[string]$PresentMon,[string]$NvidiaSmi,[string]$GpuVendor,[string]$GpuPciLocation)
+  $ErrorActionPreference = 'SilentlyContinue'
+
+  function Get-OptionalSensorTemperatures {
+    $cpu = $null; $gpu = $null; $source = ''
+    foreach ($namespace in 'root\LibreHardwareMonitor','root\OpenHardwareMonitor') {
+      try {
+        $sensors = @(Get-CimInstance -Namespace $namespace -ClassName Sensor -ErrorAction Stop |
+          Where-Object { "$($_.SensorType)" -eq 'Temperature' -and $null -ne $_.Value })
+        $cpuValues = @($sensors | Where-Object { "$($_.Name)" -match '(?i)CPU Package|CPU Core|Core Max|Tctl|Tdie' } |
+          ForEach-Object { [double]$_.Value } | Where-Object { $_ -ge 10 -and $_ -le 125 })
+        $gpuValues = @($sensors | Where-Object { "$($_.Name)" -match '(?i)GPU Core|GPU Temperature' } |
+          ForEach-Object { [double]$_.Value } | Where-Object { $_ -ge 10 -and $_ -le 125 })
+        if ($cpuValues.Count) { $cpu = [math]::Round(($cpuValues | Measure-Object -Maximum).Maximum,1) }
+        if ($gpuValues.Count) { $gpu = [math]::Round(($gpuValues | Measure-Object -Maximum).Maximum,1) }
+        if ($null -ne $cpu -or $null -ne $gpu) { $source = $(if ($namespace -match 'Libre') { 'LibreHardwareMonitor' } else { 'OpenHardwareMonitor' }); break }
+      } catch {}
+    }
+    [pscustomobject]@{Cpu=$cpu;Gpu=$gpu;Source=$source}
+  }
+
+  function Get-WindowsGpuUsage {
+    try {
+      $engines = @((Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples |
+        Where-Object { "$($_.InstanceName)" -match '(?i)engtype_3D' })
+      $totals = @{}
+      foreach ($sample in $engines) {
+        $instance = "$($sample.InstanceName)"
+        if ($instance -match '(?i)(luid_0x[0-9a-f]+_0x[0-9a-f]+).*?(eng_[0-9]+)_engtype_3D') {
+          $key = "$($Matches[1])|$($Matches[2])"
+          if (-not $totals.ContainsKey($key)) { $totals[$key] = 0.0 }
+          $totals[$key] += [double]$sample.CookedValue
+        }
+      }
+      if ($totals.Count) { return [math]::Round([math]::Min(100.0,($totals.Values | Measure-Object -Maximum).Maximum),1) }
+    } catch {}
+    $null
+  }
+
+  function Get-NvidiaSnapshot {
+    if (-not $NvidiaSmi -or -not (Test-Path -LiteralPath $NvidiaSmi -PathType Leaf)) { return $null }
+    try {
+      $raw = @(& $NvidiaSmi '--query-gpu=pci.bus_id,utilization.gpu,temperature.gpu' '--format=csv,noheader,nounits' 2>$null)
+      if ($LASTEXITCODE -ne 0 -or -not $raw.Count) { return $null }
+      $row = $null
+      foreach ($line in $raw) {
+        $parts = @("$line" -split ',' | ForEach-Object { $_.Trim() })
+        if ($parts.Count -lt 3 -or $parts[0] -notmatch '(?:[0-9A-Fa-f]{4,8}:)?([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-7])$') { continue }
+        $key = ('{0}:{1}:{2}' -f [Convert]::ToUInt32($Matches[1],16),[Convert]::ToUInt32($Matches[2],16),[Convert]::ToUInt32($Matches[3],16))
+        if ($GpuPciLocation -and $key -eq $GpuPciLocation) { $row = $parts; break }
+      }
+      if (-not $row -and -not $GpuPciLocation -and $raw.Count -eq 1) { $row = @("$($raw[0])" -split ',' | ForEach-Object { $_.Trim() }) }
+      if ($row -and $row.Count -ge 3) {
+        $util = 0.0; $temp = 0.0
+        $okUtil = [double]::TryParse("$($row[1])",[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$util)
+        $okTemp = [double]::TryParse("$($row[2])",[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$temp)
+        return [pscustomobject]@{Usage=$(if($okUtil){[math]::Min(100.0,[math]::Max(0.0,$util))}else{$null});Temperature=$(if($okTemp -and $temp -ge 10 -and $temp -le 125){$temp}else{$null})}
+      }
+    } catch {}
+    $null
+  }
+
+  $sampler = $null; $cpuSampler = $null; $gamePid = 0
+  $nextHardware = [DateTime]::MinValue; $nextProcess = [DateTime]::MinValue
+  try {
+    $sampler = New-Object DfbLivePresentMonSampler
+    $cpuSampler = New-Object DfbProcessorUtilitySampler
+    while (-not [bool]$State.Stop) {
+      $now = [DateTime]::UtcNow
+      if ($now -ge $nextHardware) {
+        $nextHardware = $now.AddSeconds(2)
+        $cpuUsage = $cpuSampler.Read()
+        if ([double]::IsNaN($cpuUsage)) { $cpuUsage = [DfbLiveSystemMetrics]::ReadCpuUsage() }
+        $memoryUsage = [DfbLiveSystemMetrics]::ReadMemoryUsage()
+        $optional = Get-OptionalSensorTemperatures
+        $cpuTemp = $optional.Cpu; $cpuSource = $optional.Source
+        $gpuUsage = $null; $gpuTemp = $optional.Gpu; $gpuSource = $(if ($null -ne $gpuTemp) { $optional.Source } else { '' })
+        if ($GpuVendor -eq 'NVIDIA') {
+          $nvidia = Get-NvidiaSnapshot
+          if ($nvidia) {
+            $gpuUsage = $nvidia.Usage
+            if ($null -ne $nvidia.Temperature) { $gpuTemp = $nvidia.Temperature; $gpuSource = 'NVIDIA 驱动' }
+          }
+        }
+        if ($null -eq $gpuUsage) { $gpuUsage = Get-WindowsGpuUsage }
+        $State.CpuUsage = $(if ([double]::IsNaN($cpuUsage)) { $null } else { [math]::Round($cpuUsage,1) })
+        $State.MemoryUsage = $(if ([double]::IsNaN($memoryUsage)) { $null } else { [math]::Round($memoryUsage,1) })
+        $State.CpuTemperature = $cpuTemp; $State.CpuTemperatureSource = $cpuSource
+        $State.GpuUsage = $gpuUsage; $State.GpuTemperature = $gpuTemp; $State.GpuTemperatureSource = $gpuSource
+        $State.SampledAt = $now
+      }
+
+      if ($now -ge $nextProcess) {
+        $nextProcess = $now.AddSeconds(1)
+        $games = @()
+        foreach ($name in 'DeltaForceClient-Win64-Shipping','DeltaForceClient','DeltaForce') {
+          $games += @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+        }
+        $game = @($games | Sort-Object Id -Descending | Select-Object -First 1)
+        $newPid = $(if ($game.Count) { [int]$game[0].Id } else { 0 })
+        if ($newPid -ne $gamePid) {
+          $sampler.Stop(); $gamePid = $newPid; $State.Fps = $null
+          if ($gamePid -gt 0 -and $PresentMon -and (Test-Path -LiteralPath $PresentMon -PathType Leaf)) {
+            $session = "DFB-LIVE-$gamePid-$([guid]::NewGuid().ToString('N'))"
+            $State.FpsStatus = $(if ($sampler.Start($PresentMon,$gamePid,$session)) { '采样中' } else { '采样不可用' })
+          } else { $State.FpsStatus = $(if ($gamePid -gt 0) { '组件缺失' } else { '游戏未运行' }) }
+        }
+        $State.GameRunning = [bool]($gamePid -gt 0)
+      }
+
+      if ($gamePid -gt 0 -and $sampler.IsRunning) {
+        $fps = $sampler.ReadFps()
+        if (-not [double]::IsNaN($fps) -and $fps -gt 0) { $State.Fps = $fps; $State.FpsStatus = '实时帧率' }
+      } elseif ($gamePid -gt 0) { $State.Fps = $null; $State.FpsStatus = '采样不可用' }
+      Start-Sleep -Milliseconds 400
+    }
+  } finally {
+    if ($sampler) { $sampler.Dispose() }
+    if ($cpuSampler) { $cpuSampler.Dispose() }
+  }
+}
+
+function Update-LiveMetricsDashboard {
+  if (-not $script:LiveMetricsState) { return }
+  $state = $script:LiveMetricsState
+  Set-LiveMetricGauge 'fps' $state.Fps "$($state.FpsStatus)" $script:C.Green
+  Set-LiveMetricGauge 'cpu' $state.CpuUsage '处理器效用' $script:C.Green
+  Set-HardwareTemperature 'cpu' $state.CpuTemperature
+  Set-LiveMetricGauge 'gpu' $state.GpuUsage '实时占用' $script:C.Green
+  Set-HardwareTemperature 'gpu' $state.GpuTemperature
+  Set-LiveMetricGauge 'memory' $state.MemoryUsage '实时占用' $script:C.Gold
+}
+
+function Start-LiveMetricsMonitor($Hw) {
+  Stop-LiveMetricsMonitor
+  Initialize-LiveMetricsDashboard
+  Initialize-LiveMetricsTypes
+  if ($script:MetricGauges['fps'] -and [int]$Hw.DisplayRefreshHz -ge 60) {
+    $script:MetricGauges['fps'].Maximum = [math]::Min(500,[math]::Max(120,[int]$Hw.DisplayRefreshHz))
+  }
+  $script:LiveMetricsState = [hashtable]::Synchronized(@{
+    Stop=$false;Fps=$null;FpsStatus='游戏未运行';GameRunning=$false;CpuUsage=$null;CpuTemperature=$null
+    CpuTemperatureSource='';GpuUsage=$null;GpuTemperature=$null;GpuTemperatureSource='';MemoryUsage=$null
+  })
+  $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
+  $nvidiaSmi = $(if (Get-Command Get-NvidiaSmiPath -ErrorAction SilentlyContinue) { Get-NvidiaSmiPath } else { $null })
+  $script:LiveMetricsPowerShell = [PowerShell]::Create()
+  [void]$script:LiveMetricsPowerShell.AddScript($script:LiveMetricsWorker)
+  foreach ($argument in @($script:LiveMetricsState,$presentMon,$nvidiaSmi,"$($Hw.MainGpuVendor)","$($Hw.MainGpuPciLocation)")) {
+    [void]$script:LiveMetricsPowerShell.AddArgument($argument)
+  }
+  $script:LiveMetricsAsync = $script:LiveMetricsPowerShell.BeginInvoke()
+  $script:LiveMetricsUiTimer = New-Object Windows.Threading.DispatcherTimer
+  $script:LiveMetricsUiTimer.Interval = [TimeSpan]::FromSeconds(1)
+  $script:LiveMetricsUiTimer.Add_Tick({ Update-LiveMetricsDashboard })
+  $script:LiveMetricsUiTimer.Start()
+  Update-LiveMetricsDashboard
+}
+
+function Stop-LiveMetricsMonitor {
+  if ($script:LiveMetricsUiTimer) { $script:LiveMetricsUiTimer.Stop(); $script:LiveMetricsUiTimer = $null }
+  if ($script:LiveMetricsState) { $script:LiveMetricsState.Stop = $true }
+  if ($script:LiveMetricsPowerShell) {
+    try {
+      if ($script:LiveMetricsAsync -and -not $script:LiveMetricsAsync.IsCompleted -and
+          -not $script:LiveMetricsAsync.AsyncWaitHandle.WaitOne(1200)) { $script:LiveMetricsPowerShell.Stop() }
+      if ($script:LiveMetricsAsync -and $script:LiveMetricsAsync.IsCompleted) {
+        $script:LiveMetricsPowerShell.EndInvoke($script:LiveMetricsAsync) | Out-Null
+      }
+    } catch {} finally { try { $script:LiveMetricsPowerShell.Dispose() } catch {} }
+  }
+  $script:LiveMetricsPowerShell = $null; $script:LiveMetricsAsync = $null; $script:LiveMetricsState = $null
 }
 
 function Update-Count {
@@ -1932,30 +2805,30 @@ function Build-HealthDialog($AttResults) {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="500" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <StackPanel Margin="0,0,0,14">
-    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+    <Border x:Name="DlgTitle" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="12,9">
       <StackPanel Orientation="Horizontal">
-        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-          <TextBlock Text="体检发现问题" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="体检发现问题" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
         </Border>
-        <TextBlock Text="HEALTH CHECK" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock Text="HEALTH CHECK" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
-    <TextBlock Text="以下问题本工具改不了，但按教程手动处理并不难：" Foreground="#FF9AA5A0"
+    <TextBlock Text="以下内容请进入BIOS按照教程手动操作。" Foreground="{DynamicResource TextSec}"
                FontSize="12" Margin="14,12,14,0"/>
     <ScrollViewer MaxHeight="430" VerticalScrollBarVisibility="Auto" Margin="14,10,14,12">
       <StackPanel x:Name="ListPanel"/>
     </ScrollViewer>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
       <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" IsCancel="True"
-              Foreground="#FF04241B" FontWeight="Bold">
+              Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
@@ -2077,7 +2950,7 @@ function Update-StreamerPage {
 
   # 免责声明放最上面：必须让用户第一眼知道这页只是参考、工具改不了游戏内设置
   $warn = New-Object Windows.Controls.Border
-  $warn.Background = New-Brush '#FF2A2008'
+  $warn.Background = New-Brush $script:C.WarningPanel
   $warn.BorderBrush = New-Brush $script:C.Gold
   $warn.BorderThickness = New-Object Windows.Thickness 1
   $warn.Padding = New-Object Windows.Thickness 12, 8, 12, 8
@@ -2399,7 +3272,7 @@ function Build-DisclaimerDialog([bool]$ReadOnly) {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="620" Height="640" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen" ShowInTaskbar="True"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <Grid>
     <Grid.RowDefinitions>
@@ -2408,23 +3281,23 @@ function Build-DisclaimerDialog([bool]$ReadOnly) {
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
-    <Border x:Name="DlgTitle" Grid.Row="0" Background="#FF0D1417" BorderBrush="#FF1B2E28"
+    <Border x:Name="DlgTitle" Grid.Row="0" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}"
             BorderThickness="0,0,0,1" Padding="14,11">
       <StackPanel Orientation="Horizontal">
-        <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="#FF00E884" VerticalAlignment="Center"/>
-        <TextBlock Text="使用前必读" Foreground="#FFFFFFFF" FontSize="15" FontWeight="Bold"
+        <Path Data="M 9,0 L 18,15 L 12,15 L 9,9 L 6,15 L 0,15 Z" Fill="{DynamicResource Green}" VerticalAlignment="Center"/>
+        <TextBlock Text="使用前必读" Foreground="{DynamicResource TextPri}" FontSize="15" FontWeight="Bold"
                    Margin="11,0,0,0" VerticalAlignment="Center"/>
-        <TextBlock Text="DISCLAIMER" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock Text="DISCLAIMER" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="10,3,0,0"/>
       </StackPanel>
     </Border>
-    <Border Grid.Row="1" Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,12,14,0">
+    <Border Grid.Row="1" Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="14,12,14,0">
       <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto" Padding="16,12,16,14">
         <StackPanel x:Name="Body"/>
       </ScrollViewer>
     </Border>
     <TextBlock x:Name="HintTxt" Grid.Row="2" Text="请滚动到底部阅读完整内容后再选择。"
-               Foreground="#FFE5C46A" FontSize="11" Margin="16,8,16,0"/>
+               Foreground="{DynamicResource Gold}" FontSize="11" Margin="16,8,16,0"/>
     <Grid Grid.Row="3" Margin="14,10,14,14">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
@@ -2432,11 +3305,11 @@ function Build-DisclaimerDialog([bool]$ReadOnly) {
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <Button x:Name="AgreeBtn" Grid.Column="1" MinWidth="126" Height="34" IsEnabled="False"
-              Foreground="#FF04241B" FontWeight="Bold">
+              Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.05,0 L 1,0 L 1,0.8 L 0.95,1 L 0,1 L 0,0.2 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
@@ -2445,8 +3318,8 @@ function Build-DisclaimerDialog([bool]$ReadOnly) {
                 <Setter TargetName="Bg" Property="Fill" Value="#FF33F09E"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Bg" Property="Fill" Value="#FF1E3A30"/>
-                <Setter Property="Foreground" Value="#FF6B7A73"/>
+                <Setter TargetName="Bg" Property="Fill" Value="{DynamicResource LineHi}"/>
+                <Setter Property="Foreground" Value="{DynamicResource DisabledText}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -2454,16 +3327,16 @@ function Build-DisclaimerDialog([bool]$ReadOnly) {
         <TextBlock x:Name="AgreeTxt" Text="同意并继续"/>
       </Button>
       <Button x:Name="DeclineBtn" Grid.Column="2" MinWidth="112" Height="34"
-              Foreground="#FF00E884" Margin="10,0,0,0">
+              Foreground="{DynamicResource Green}" Margin="10,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -3135,6 +4008,326 @@ function Expand-PerformanceSessions([object]$Value) {
   }
 }
 
+function Get-PerformanceSessionTimestamp($Session) {
+  try {
+    [DateTimeOffset]::Parse("$($Session.recordedAt)",[Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind)
+  } catch { [DateTimeOffset]::MinValue }
+}
+
+function Test-PerformanceSessionValid($Session) {
+  if (-not $Session) { return $false }
+  if ($Session.PSObject.Properties['validity']) { return "$($Session.validity)" -eq 'valid' }
+  try {
+    return (-not [bool]$Session.captureFailed -and -not [bool]$Session.gameExitedEarly -and
+      [int]$Session.durationSec -ge 90 -and [int64]$Session.frameCount -ge 1000 -and
+      [double]$Session.avgFps -gt 0 -and [double]$Session.fps1Low -gt 0)
+  } catch { $false }
+}
+
+function Get-PerformanceSessionDisplayMode($Session) {
+  try {
+    $adapters = @($Session.analysisContext.gpuAdapters)
+    $adapter = @($adapters | Where-Object { [bool]$_.main -and "$($_.displayMode)" } | Select-Object -First 1)
+    if (-not $adapter.Count) { $adapter = @($adapters | Where-Object { "$($_.displayMode)" } | Select-Object -First 1) }
+    if ($adapter.Count) { return "$($adapter[0].displayMode)".Trim().ToLowerInvariant() }
+  } catch {}
+  ''
+}
+
+function Get-PerformanceSessionToolState($Session) {
+  if (-not $Session) { return 'unknown' }
+  $tier = "$($Session.configTier)".Trim().ToLowerInvariant()
+  $scheme = "$($Session.optimizationScheme)".Trim().ToLowerInvariant()
+  $hash = "$($Session.optimizationItemSetHash)".Trim()
+  if ($tier -eq 'baseline' -and $scheme -in '','baseline' -and -not $hash) { return 'baseline' }
+  if ($hash -or $tier -in 'light','balanced','full' -or
+      ($scheme -and $scheme -ne 'baseline')) { return 'managed' }
+  'unknown'
+}
+
+function Get-PerformanceSessionToolStateLabel($Session) {
+  switch (Get-PerformanceSessionToolState $Session) {
+    'baseline' { '未使用工具' }
+    'managed' { '已应用工具' }
+    default { '状态未知' }
+  }
+}
+
+function Get-PerformanceSessionComparisonConfidence($Before, $After) {
+  if (-not $Before -or -not $After) { return 'incompatible' }
+  $missing = $false
+  $beforeGpu = "$($Before.gpuModel)".Trim(); $afterGpu = "$($After.gpuModel)".Trim()
+  if ($beforeGpu -and $afterGpu) {
+    if ($beforeGpu -ine $afterGpu) { return 'incompatible' }
+  } else { $missing = $true }
+
+  foreach ($values in @(
+    @("$($Before.analysisContext.gameExeVersion)".Trim(),"$($After.analysisContext.gameExeVersion)".Trim()),
+    @((Get-PerformanceSessionDisplayMode $Before),(Get-PerformanceSessionDisplayMode $After))
+  )) {
+    if ($values[0] -and $values[1]) {
+      if ($values[0] -ine $values[1]) { return 'incompatible' }
+    } else { $missing = $true }
+  }
+  $beforePower = "$($Before.analysisContext.powerSource)".Trim().ToLowerInvariant()
+  $afterPower = "$($After.analysisContext.powerSource)".Trim().ToLowerInvariant()
+  if ($beforePower -in 'ac','battery' -and $afterPower -in 'ac','battery') {
+    if ($beforePower -ne $afterPower) { return 'incompatible' }
+  } else { $missing = $true }
+  $(if ($missing) { 'reference' } else { 'comparable' })
+}
+
+function Select-PerformanceComparisonPair([object[]]$Sessions, $OptimizationContext) {
+  $valid = @($Sessions | Where-Object { Test-PerformanceSessionValid $_ } |
+    Where-Object { (Get-PerformanceSessionTimestamp $_) -ne [DateTimeOffset]::MinValue })
+  if (-not $valid.Count) {
+    return [pscustomobject]@{Status='no_sessions';Before=$null;After=$null;Confidence='';PairKind=''}
+  }
+  $desiredHash = "$($OptimizationContext.ItemSetHash)".Trim().ToLowerInvariant()
+  if ($desiredHash) {
+    $currentCandidates = @($valid | Where-Object {
+      "$($_.optimizationItemSetHash)".Trim().ToLowerInvariant() -eq $desiredHash
+    })
+  } else {
+    # 当前没有由工具管理的改动时，只比较两次“未使用工具”记录。不要把旧优化记录
+    # 冒充成当前状态，更不要在卡片上暗示用户已经执行过优化。
+    $currentCandidates = @($valid | Where-Object { (Get-PerformanceSessionToolState $_) -eq 'baseline' })
+  }
+  if (-not $currentCandidates.Count) {
+    return [pscustomobject]@{Status='waiting_current';Before=$null;After=$null;Confidence='';PairKind=''}
+  }
+
+  $hadEarlierCandidate = $false
+  foreach ($after in @($currentCandidates | Sort-Object { Get-PerformanceSessionTimestamp $_ } -Descending)) {
+    $afterTime = Get-PerformanceSessionTimestamp $after
+    $beforeCandidates = @()
+    if ($desiredHash) {
+      # 优先用同环境的未使用工具记录作为参照；没有时再退回同一优化状态的上一条记录。
+      $beforeCandidates += @($valid | Where-Object {
+        (Get-PerformanceSessionToolState $_) -eq 'baseline' -and
+        (Get-PerformanceSessionTimestamp $_) -lt $afterTime
+      } | Sort-Object { Get-PerformanceSessionTimestamp $_ } -Descending)
+    }
+    $beforeCandidates += @($currentCandidates | Where-Object {
+      (Get-PerformanceSessionTimestamp $_) -lt $afterTime
+    } | Sort-Object { Get-PerformanceSessionTimestamp $_ } -Descending)
+    foreach ($before in $beforeCandidates) {
+      $hadEarlierCandidate = $true
+      $confidence = Get-PerformanceSessionComparisonConfidence $before $after
+      if ($confidence -ne 'incompatible') {
+        $pairKind = $(if ((Get-PerformanceSessionToolState $before) -eq 'baseline' -and
+            (Get-PerformanceSessionToolState $after) -eq 'managed') { 'tool_change' } else { 'history' })
+        return [pscustomobject]@{
+          Status='paired';Before=$before;After=$after;Confidence=$confidence;PairKind=$pairKind
+        }
+      }
+    }
+  }
+  if ($hadEarlierCandidate) {
+    return [pscustomobject]@{Status='environment_mismatch';Before=$null;After=$null;Confidence='';PairKind=''}
+  }
+  [pscustomobject]@{Status='waiting_next';Before=$null;After=$null;Confidence='';PairKind=''}
+}
+
+function Get-PerformanceComparisonMetricValue($Session, [string]$Key) {
+  if (-not $Session) { return $null }
+  $value = switch ($Key) {
+    'fps' { $Session.avgFps }
+    'cpu' { $Session.performanceContext.processCpuAvgPct }
+    'gpu' { $Session.gpuUtilAvg }
+    'memory' { $Session.performanceContext.systemMemoryUsedAvgPct }
+    default { $null }
+  }
+  if ($null -eq $value -or "$value" -eq '') { return $null }
+  try {
+    $number = [double]$value
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -lt 0) { return $null }
+    $number
+  } catch { $null }
+}
+
+$script:PerformanceComparisonCacheKey = ''
+function Refresh-PerformanceComparison([switch]$Force) {
+  $path = Join-Path $script:UserConfigDir 'performance-sessions.json'
+  $context = Get-TelemetryOptimizationContext
+  $stamp = ''
+  try {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      $file = Get-Item -LiteralPath $path -Force
+      $stamp = "$($file.LastWriteTimeUtc.Ticks):$($file.Length)"
+    }
+  } catch {}
+  $cacheKey = "$stamp|$($context.ItemSetHash)"
+  if (-not $Force -and $cacheKey -eq $script:PerformanceComparisonCacheKey) { return }
+  $script:PerformanceComparisonCacheKey = $cacheKey
+
+  $sessions = @()
+  try {
+    if ($stamp) {
+      $file = Get-Item -LiteralPath $path -Force
+      if ($file.Length -gt 0 -and $file.Length -le 4MB) {
+        $sessions = @(Expand-PerformanceSessions (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json))
+      }
+    }
+  } catch { $sessions = @() }
+  $pair = Select-PerformanceComparisonPair $sessions $context
+  if ($pair.Status -ne 'paired') {
+    $emptyText = switch ($pair.Status) {
+      'waiting_current' { '等待当前状态记录' }
+      'waiting_next' { '等待下一次记录' }
+      'environment_mismatch' { '暂无同环境记录' }
+      default { '暂无历史记录' }
+    }
+    foreach ($key in 'fps','cpu','gpu','memory') {
+      Set-LiveMetricComparison -Key $key -Before $null -After $null -EmptyText $emptyText `
+        -Tooltip '取得两段同环境的有效游戏记录后，这里会显示记录变化；是否使用过工具不会改变文案。'
+    }
+    return
+  }
+
+  $beforeTime = (Get-PerformanceSessionTimestamp $pair.Before).ToLocalTime().ToString('MM-dd HH:mm')
+  $afterTime = (Get-PerformanceSessionTimestamp $pair.After).ToLocalTime().ToString('MM-dd HH:mm')
+  $confidenceText = $(if ($pair.Confidence -eq 'comparable') {
+      '硬件、游戏版本、桌面显示模式和供电状态一致；游戏内设置与场景仍需保持一致'
+    } else { '部分环境字段缺失，变化仅供参考' })
+  $prefix = '变化'
+  $beforeState = Get-PerformanceSessionToolStateLabel $pair.Before
+  $afterState = Get-PerformanceSessionToolStateLabel $pair.After
+  $definitions = @(
+    @('fps','percent','平均 FPS'),
+    @('cpu','points','游戏进程 CPU 平均占用'),
+    @('gpu','points','GPU 平均占用'),
+    @('memory','points','系统内存平均占用')
+  )
+  foreach ($definition in $definitions) {
+    $key = $definition[0]
+    $beforeValue = Get-PerformanceComparisonMetricValue $pair.Before $key
+    $afterValue = Get-PerformanceComparisonMetricValue $pair.After $key
+    $tooltip = "$($definition[2])：前一条 $beforeValue → 后一条 $afterValue。记录时间 $beforeTime / $afterTime；状态 $beforeState → $afterState；$confidenceText。"
+    Set-LiveMetricComparison -Key $key -Before $beforeValue -After $afterValue -Mode $definition[1] `
+      -Prefix $prefix -Tooltip $tooltip -EmptyText '该指标暂无记录'
+  }
+}
+
+function Get-PerformanceMetricHistoryDefinition([string]$Key) {
+  switch ($Key) {
+    'fps' { [pscustomobject]@{Title='FPS 历史记录';Label='平均 FPS';Unit='帧'} }
+    'cpu' { [pscustomobject]@{Title='CPU 占用历史记录';Label='游戏进程 CPU 平均占用';Unit='%'} }
+    'gpu' { [pscustomobject]@{Title='GPU 占用历史记录';Label='GPU 平均占用';Unit='%'} }
+    'memory' { [pscustomobject]@{Title='内存占用历史记录';Label='系统内存平均占用';Unit='%'} }
+    default { $null }
+  }
+}
+
+function Get-PerformanceMetricHistoryRows([object[]]$Sessions, [string]$Key) {
+  $definition = Get-PerformanceMetricHistoryDefinition $Key
+  if (-not $definition) { return @() }
+  $rows = New-Object System.Collections.ArrayList
+  foreach ($session in @($Sessions | Where-Object { Test-PerformanceSessionValid $_ } |
+      Sort-Object { Get-PerformanceSessionTimestamp $_ } -Descending)) {
+    $timestamp = Get-PerformanceSessionTimestamp $session
+    $value = Get-PerformanceComparisonMetricValue $session $Key
+    if ($timestamp -eq [DateTimeOffset]::MinValue -or $null -eq $value) { continue }
+    $parts = New-Object System.Collections.Generic.List[string]
+    $gpu = "$($session.gpuModel)".Trim()
+    $displayMode = Get-PerformanceSessionDisplayMode $session
+    $gameVersion = "$($session.analysisContext.gameExeVersion)".Trim()
+    if ($gpu) { $parts.Add($gpu) }
+    if ($displayMode) { $parts.Add($displayMode.ToUpperInvariant()) }
+    if ($gameVersion) { $parts.Add("游戏 $gameVersion") }
+    [void]$rows.Add([pscustomobject]@{
+      TimeText=$timestamp.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+      Value=[double]$value
+      ValueText=("{0:N1} {1}" -f [double]$value,$definition.Unit)
+      State=(Get-PerformanceSessionToolState $session)
+      StateText=(Get-PerformanceSessionToolStateLabel $session)
+      ContextText=($parts -join ' · ')
+    })
+    if ($rows.Count -ge 50) { break }
+  }
+  @($rows)
+}
+
+function Show-PerformanceMetricHistory([string]$Key) {
+  $definition = Get-PerformanceMetricHistoryDefinition $Key
+  if (-not $definition) { return }
+  $sessions = @()
+  $path = Join-Path $script:UserConfigDir 'performance-sessions.json'
+  try {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      $file = Get-Item -LiteralPath $path -Force
+      if ($file.Length -gt 0 -and $file.Length -le 4MB) {
+        $sessions = @(Expand-PerformanceSessions (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json))
+      }
+    }
+  } catch { $sessions = @() }
+  $rows = @(Get-PerformanceMetricHistoryRows $sessions $Key)
+
+  $historyXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="560" Height="620" MinHeight="420" WindowStyle="None" ResizeMode="CanResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
+        FontFamily="Microsoft YaHei UI" FontSize="12">
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Border x:Name="DragBar" Grid.Row="0" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="14,10">
+      <DockPanel><TextBlock Text="性能历史" Foreground="{DynamicResource TextPri}" FontSize="14" FontWeight="Bold"/><TextBlock Text="  PERFORMANCE HISTORY" Foreground="{DynamicResource Green}" FontFamily="Consolas" FontSize="10" VerticalAlignment="Center"/></DockPanel>
+    </Border>
+    <StackPanel Grid.Row="1" Margin="16,14,16,9">
+      <TextBlock x:Name="MetricTitle" Foreground="{DynamicResource Green}" FontSize="16" FontWeight="Bold"/>
+      <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSec}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+    </StackPanel>
+    <ScrollViewer Grid.Row="2" Margin="12,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel x:Name="ItemsPanel" Margin="4,2,4,8"/>
+    </ScrollViewer>
+    <Border Grid.Row="3" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="14,11">
+      <Button x:Name="CloseButton" Content="关闭" Width="92" Height="30" HorizontalAlignment="Right" Background="{DynamicResource Green}" Foreground="{DynamicResource GreenDark}" BorderThickness="0" FontWeight="Bold" Cursor="Hand"/>
+    </Border>
+  </Grid>
+</Window>
+'@
+  $dialog = [Windows.Markup.XamlReader]::Parse($historyXaml)
+  $dialog.Resources.MergedDictionaries.Add($script:ThemeRes)
+  $dialog.Owner = $window
+  $dialog.FindName('MetricTitle').Text = $definition.Title
+  $dialog.FindName('StatusText').Text = "共 $($rows.Count) 条有效记录 · 按时间倒序 · 未使用工具的记录也会保留并明确标注"
+  $panel = $dialog.FindName('ItemsPanel')
+  if (-not $rows.Count) {
+    $empty = New-Text '暂无有效历史记录。运行游戏并保持一段稳定对局后，这里会自动出现记录。' $script:C.TextSec 13
+    $empty.TextWrapping = 'Wrap'; $empty.HorizontalAlignment = 'Center'; $empty.Margin = '18,70,18,0'
+    [void]$panel.Children.Add($empty)
+  } else {
+    foreach ($row in $rows) {
+      $card = New-Object Windows.Controls.Border
+      $card.Background = New-Brush $script:C.Panel
+      $card.BorderBrush = New-Brush $script:C.Line
+      $card.BorderThickness = '1'; $card.Padding = '12,10'; $card.Margin = '0,0,0,8'
+      $stack = New-Object Windows.Controls.StackPanel
+      $meta = New-Object Windows.Controls.DockPanel
+      $stateColor = switch ($row.State) { 'managed' { $script:C.Green } 'baseline' { $script:C.Gold } default { $script:C.TextMut } }
+      $state = New-Text $row.StateText $stateColor 10 -Mono
+      $state.SetValue([Windows.Controls.DockPanel]::DockProperty,[Windows.Controls.Dock]::Right)
+      $time = New-Text $row.TimeText $script:C.TextMut 10 -Mono
+      [void]$meta.Children.Add($state); [void]$meta.Children.Add($time); [void]$stack.Children.Add($meta)
+      $valueText = New-Text ("$($definition.Label)  $($row.ValueText)") $script:C.TextPri 14 -Mono
+      $valueText.FontWeight = 'Bold'; $valueText.Margin = '0,7,0,0'
+      [void]$stack.Children.Add($valueText)
+      if ($row.ContextText) {
+        $contextText = New-Text $row.ContextText $script:C.TextSec 10 -Mono
+        $contextText.TextWrapping = 'Wrap'; $contextText.Margin = '0,5,0,0'
+        [void]$stack.Children.Add($contextText)
+      }
+      $card.Child = $stack; [void]$panel.Children.Add($card)
+    }
+  }
+  $dialog.FindName('DragBar').Add_MouseLeftButtonDown({ $dialog.DragMove() })
+  $dialog.FindName('CloseButton').Add_Click({ $dialog.Close() })
+  [void]$dialog.ShowDialog()
+}
+
 $script:PerformanceCaptureWorker = {
   param($GamePid, $PresentMon, $SessionFile, $TelemetryModule, $TelemetryConfigPath,
         $UploadUrl, $InstallId, $Version,
@@ -3738,6 +4931,7 @@ function Poll-GamePerformanceCapture {
     $script:PerformanceJobs.Remove($job) | Out-Null
     Write-Log "游戏性能记录已完成（PID $($job.Pid)），汇总已保存到本地并按隐私设置匿名上报。"
   }
+  Refresh-PerformanceComparison
   # 实验期间同一 PID 要顺序采多轮，普通“每 PID 一次”的采样必须暂停，
   # 否则会抢 PresentMon 会话并把实验轮次写入普通 performance_sessions。
   if ((Test-TuningExperimentActive) -or $script:TuningSampling -or -not $script:TargetExe) { return }
@@ -4208,7 +5402,7 @@ function Update-TuningRunTable {
       ("{0:N1}" -f [double]$run.p99FrameMs),("{0:N1}" -f [double]$run.stuttersPerMin),("{0:N1}" -f [double]$run.gpuUtilAvg),
       ("{0:N1}" -f [double]$run.gpuTempAvg),("{0:N1}" -f [double]$run.gpuPowerAvg),$reason)
     for($i=0;$i -lt $values.Count;$i++) {
-      $t=New-Text "$($values[$i])" $(if($run.validity -eq 'valid'){$script:C.TextSec}else{'#FFE5C46A'}) 10 -Mono
+      $t=New-Text "$($values[$i])" $(if($run.validity -eq 'valid'){$script:C.TextSec}else{$script:C.Gold}) 10 -Mono
       $t.Margin=New-Object Windows.Thickness 7,4,3,3; [Windows.Controls.Grid]::SetColumn($t,$i); $grid.Children.Add($t)|Out-Null
     }
     $ui.TuneRunPanel.Children.Add($grid) | Out-Null
@@ -4905,22 +6099,22 @@ function Show-DiagnosticFeedbackDialog {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="700" Height="650" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <Window.Resources>
     <Style x:Key="FeedbackCheck" TargetType="CheckBox">
-      <Setter Property="Foreground" Value="#FFFFFFFF"/>
+      <Setter Property="Foreground" Value="{DynamicResource TextPri}"/>
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
-            <Border x:Name="Row" Background="#FF0B1713" BorderBrush="#FF1B2E28"
+            <Border x:Name="Row" Background="{DynamicResource PanelDeep}" BorderBrush="{DynamicResource Line}"
                     BorderThickness="1" Padding="10,8" Margin="0,0,0,7">
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <Border x:Name="Box" Width="14" Height="14" BorderBrush="#FF2C443B"
+                <Border x:Name="Box" Width="14" Height="14" BorderBrush="{DynamicResource LineHi}"
                         BorderThickness="1" Background="Transparent" VerticalAlignment="Top" Margin="0,1,0,0">
-                  <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="#FF04241B"
+                  <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="{DynamicResource GreenDark}"
                         StrokeThickness="2" Visibility="Collapsed"/>
                 </Border>
                 <ContentPresenter Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center"/>
@@ -4928,14 +6122,14 @@ function Show-DiagnosticFeedbackDialog {
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Box" Property="Background" Value="#FF00E884"/>
-                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="Background" Value="{DynamicResource Green}"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Green}"/>
                 <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
-                <Setter TargetName="Row" Property="BorderBrush" Value="#FF17603F"/>
-                <Setter TargetName="Row" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource GreenLine}"/>
+                <Setter TargetName="Row" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Row" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource Green}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -4945,42 +6139,42 @@ function Show-DiagnosticFeedbackDialog {
   </Window.Resources>
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <Border x:Name="DlgTitle" Grid.Row="0" Background="#FF0D1417" BorderBrush="#FF1B2E28"
+    <Border x:Name="DlgTitle" Grid.Row="0" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}"
             BorderThickness="0,0,0,1" Padding="14,11">
       <Grid>
         <StackPanel Orientation="Horizontal">
-          <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-            <TextBlock Text="反馈选择" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+          <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+            <TextBlock Text="反馈选择" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
           </Border>
-          <TextBlock Text="DIAGNOSTIC FEEDBACK" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+          <TextBlock Text="DIAGNOSTIC FEEDBACK" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                      VerticalAlignment="Center" Margin="9,0,0,0"/>
         </StackPanel>
-        <TextBlock Text="1 / 2" HorizontalAlignment="Right" Foreground="#FF00E884"
+        <TextBlock Text="1 / 2" HorizontalAlignment="Right" Foreground="{DynamicResource Green}"
                    FontFamily="Consolas" FontSize="10" VerticalAlignment="Center"/>
       </Grid>
     </Border>
     <Grid Grid.Row="1" Margin="14,12,14,8">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <StackPanel Grid.Row="0" Margin="2,0,2,10">
-        <TextBlock Text="这次主要遇到了什么？优化后有哪些改善？" Foreground="#FFFFFFFF"
+        <TextBlock Text="这次主要遇到了什么？优化后有哪些改善？" Foreground="{DynamicResource TextPri}"
                    FontSize="17" FontWeight="Bold"/>
         <TextBlock Text="两组都可以多选。改善项还没有感受到时可留空；至少选择一项后再继续。"
-                   Foreground="#FF9AA5A0" FontSize="11" Margin="0,4,0,0"/>
+                   Foreground="{DynamicResource TextSec}" FontSize="11" Margin="0,4,0,0"/>
       </StackPanel>
       <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <Grid>
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-          <Border Grid.Column="0" Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Padding="11">
+          <Border Grid.Column="0" Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="11">
             <StackPanel>
-              <TextBlock Text="遇到的问题（可多选）" Foreground="#FFE5C46A" FontSize="13" FontWeight="Bold"/>
-              <TextBlock Text="CURRENT PROBLEMS" Foreground="#FF7A8580" FontFamily="Consolas" FontSize="9" Margin="0,2,0,9"/>
+              <TextBlock Text="遇到的问题（可多选）" Foreground="{DynamicResource Gold}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="CURRENT PROBLEMS" Foreground="{DynamicResource TextMut}" FontFamily="Consolas" FontSize="9" Margin="0,2,0,9"/>
               <StackPanel x:Name="IssuePanel"/>
             </StackPanel>
           </Border>
-          <Border Grid.Column="2" Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Padding="11">
+          <Border Grid.Column="2" Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="11">
             <StackPanel>
-              <TextBlock Text="优化后已有改善（可多选）" Foreground="#FF00E884" FontSize="13" FontWeight="Bold"/>
-              <TextBlock Text="IMPROVEMENTS" Foreground="#FF7A8580" FontFamily="Consolas" FontSize="9" Margin="0,2,0,9"/>
+              <TextBlock Text="优化后已有改善（可多选）" Foreground="{DynamicResource Green}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock Text="IMPROVEMENTS" Foreground="{DynamicResource TextMut}" FontFamily="Consolas" FontSize="9" Margin="0,2,0,9"/>
               <StackPanel x:Name="BenefitPanel"/>
             </StackPanel>
           </Border>
@@ -4990,7 +6184,7 @@ function Show-DiagnosticFeedbackDialog {
     <Grid Grid.Row="2" Margin="14,4,14,14">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <TextBlock x:Name="HintTxt" Grid.Column="0" Text="选择内容会写入诊断报告，上传前仍会显示完整数据清单。"
-                 Foreground="#FF7A8580" FontSize="10" VerticalAlignment="Center" TextWrapping="Wrap" Margin="2,0,10,0"/>
+                 Foreground="{DynamicResource TextMut}" FontSize="10" VerticalAlignment="Center" TextWrapping="Wrap" Margin="2,0,10,0"/>
       <Button x:Name="CancelBtn" Grid.Column="1" Content="取消" Width="82" Height="34" IsCancel="True"/>
       <Button x:Name="NextBtn" Grid.Column="2" Content="下一步：确认上传" Width="158" Height="34"
               IsDefault="True" Margin="9,0,0,0"/>
@@ -5107,7 +6301,7 @@ function New-DiagnosticReport($Feedback) {
   } catch {}
   $lines.Add("DeltaForceBooster 诊断报告")
   $lines.Add("生成时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-  $lines.Add("界面版本：v$script:GuiVersion")
+  $lines.Add("界面版本：v$script:DisplayVersion（构建 $script:GuiVersion）")
   $lines.Add('')
 
   $lines.Add('== 用户反馈选择 ==')
@@ -5392,35 +6586,35 @@ function Build-GpuGuideDialog($Hw) {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="520" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <StackPanel Margin="0,0,0,14">
-    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+    <Border x:Name="DlgTitle" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="12,9">
       <StackPanel Orientation="Horizontal">
-        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-          <TextBlock Text="显卡指引" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="显卡指引" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
         </Border>
-        <TextBlock Text="GPU DRIVER GUIDE" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock Text="GPU DRIVER GUIDE" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
-    <Border Background="#FF0E2A21" BorderBrush="#FF17603F" BorderThickness="1" Margin="14,12,14,0" Padding="10,7">
-      <TextBlock x:Name="BannerTxt" Text="" Foreground="#FF00E884" FontSize="12" FontWeight="Bold" TextWrapping="Wrap"/>
+    <Border Background="{DynamicResource AccentPanel}" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Margin="14,12,14,0" Padding="10,7">
+      <TextBlock x:Name="BannerTxt" Text="" Foreground="{DynamicResource Green}" FontSize="12" FontWeight="Bold" TextWrapping="Wrap"/>
     </Border>
     <StackPanel x:Name="AppPanel" Margin="14,10,14,0"/>
-    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,10,14,12">
+    <Border Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="14,10,14,12">
       <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
-        <TextBlock x:Name="MsgTxt" Text="" Foreground="#FF9AA5A0" FontSize="12" LineHeight="19"
+        <TextBlock x:Name="MsgTxt" Text="" Foreground="{DynamicResource TextSec}" FontSize="12" LineHeight="19"
                    TextWrapping="Wrap" Padding="12,9"/>
       </ScrollViewer>
     </Border>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
       <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" IsCancel="True"
-              Foreground="#FF04241B" FontWeight="Bold">
+              Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
@@ -6296,37 +7490,37 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="440" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <StackPanel Margin="0,0,0,14">
-    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+    <Border x:Name="DlgTitle" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="12,9">
       <StackPanel Orientation="Horizontal">
-        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-          <TextBlock x:Name="ChipTxt" Text="" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock x:Name="ChipTxt" Text="" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
         </Border>
-        <TextBlock x:Name="EnTxt" Text="" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock x:Name="EnTxt" Text="" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
     <!-- 醒目横幅（可选）：显卡指引用它标出「检测到你的显卡：xxx」，让用户一眼确认
          这份指引就是按自己的硬件生成的（实机反馈感知不到） -->
-    <Border x:Name="BannerRow" Visibility="Collapsed" Background="#FF0E2A21" BorderBrush="#FF17603F"
+    <Border x:Name="BannerRow" Visibility="Collapsed" Background="{DynamicResource AccentPanel}" BorderBrush="{DynamicResource GreenLine}"
             BorderThickness="1" Margin="14,12,14,0" Padding="10,7">
-      <TextBlock x:Name="BannerTxt" Text="" Foreground="#FF00E884" FontSize="12" FontWeight="Bold"
+      <TextBlock x:Name="BannerTxt" Text="" Foreground="{DynamicResource Green}" FontSize="12" FontWeight="Bold"
                  TextWrapping="Wrap"/>
     </Border>
-    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,12,14,12">
+    <Border Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="14,12,14,12">
       <ScrollViewer MaxHeight="340" VerticalScrollBarVisibility="Auto">
-        <TextBlock x:Name="MsgTxt" Text="" Foreground="#FF9AA5A0" FontSize="12" LineHeight="19"
+        <TextBlock x:Name="MsgTxt" Text="" Foreground="{DynamicResource TextSec}" FontSize="12" LineHeight="19"
                    TextWrapping="Wrap" Padding="12,9"/>
       </ScrollViewer>
     </Border>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
-      <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" Foreground="#FF04241B" FontWeight="Bold">
+      <Button x:Name="OkBtn" MinWidth="104" Height="30" IsDefault="True" Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
@@ -6339,16 +7533,16 @@ function Show-ConfirmDialog([string]$ChipText, [string]$EnText, [string]$Message
         </Button.Template>
         <TextBlock x:Name="OkTxt" Text="确定"/>
       </Button>
-      <Button x:Name="CancelBtn" Width="80" Height="30" IsCancel="True" Foreground="#FF00E884" Margin="9,0,0,0">
+      <Button x:Name="CancelBtn" Width="80" Height="30" IsCancel="True" Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -6578,43 +7772,43 @@ function Show-RebootDialog([string[]]$ItemNames) {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="460" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <StackPanel Margin="0,0,0,16">
-    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+    <Border x:Name="DlgTitle" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="12,9">
       <StackPanel Orientation="Horizontal">
-        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-          <TextBlock Text="重启提醒" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="重启提醒" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
         </Border>
-        <TextBlock Text="REBOOT REQUIRED" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock Text="REBOOT REQUIRED" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
     <StackPanel Orientation="Horizontal" Margin="16,14,16,4">
       <!-- 电源符号图标：圆环开口 + 竖杠，全部固定尺寸拼装，不用归一化 Path（教训 #3） -->
       <Grid Width="34" Height="34" VerticalAlignment="Center">
-        <Ellipse Stroke="#FF00E884" StrokeThickness="2.5" Margin="3,6,3,2"/>
-        <Border Width="8" Height="14" Background="#FF0C1814" VerticalAlignment="Top" HorizontalAlignment="Center"/>
-        <Border Width="3" Height="15" Background="#FF00E884" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,1,0,0"/>
+        <Ellipse Stroke="{DynamicResource Green}" StrokeThickness="2.5" Margin="3,6,3,2"/>
+        <Border Width="8" Height="14" Background="{DynamicResource InputSurface}" VerticalAlignment="Top" HorizontalAlignment="Center"/>
+        <Border Width="3" Height="15" Background="{DynamicResource Green}" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,1,0,0"/>
       </Grid>
       <StackPanel Margin="13,0,0,0" VerticalAlignment="Center">
-        <TextBlock Text="需要重启电脑" Foreground="#FFFFFFFF" FontSize="16" FontWeight="Bold"/>
-        <TextBlock Text="以下优化项已写入成功，但要等重启后才完全生效：" Foreground="#FF9AA5A0"
+        <TextBlock Text="需要重启电脑" Foreground="{DynamicResource TextPri}" FontSize="16" FontWeight="Bold"/>
+        <TextBlock Text="以下优化项已写入成功，但要等重启后才完全生效：" Foreground="{DynamicResource TextSec}"
                    FontSize="11" Margin="0,3,0,0"/>
       </StackPanel>
     </StackPanel>
-    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="16,8,16,12">
+    <Border Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="16,8,16,12">
       <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto">
-        <TextBlock x:Name="ItemsTxt" Text="" Foreground="#FF9AA5A0" FontSize="12" LineHeight="20"
+        <TextBlock x:Name="ItemsTxt" Text="" Foreground="{DynamicResource TextSec}" FontSize="12" LineHeight="20"
                    TextWrapping="Wrap" Padding="12,8"/>
       </ScrollViewer>
     </Border>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="16,0,16,0">
-      <Button x:Name="RebootBtn" MinWidth="110" Height="32" Foreground="#FF04241B" FontWeight="Bold">
+      <Button x:Name="RebootBtn" MinWidth="110" Height="32" Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
@@ -6627,16 +7821,16 @@ function Show-RebootDialog([string[]]$ItemNames) {
         </Button.Template>
         <TextBlock Text="立即重启"/>
       </Button>
-      <Button x:Name="LaterBtn" MinWidth="110" Height="32" IsCancel="True" Foreground="#FF00E884" Margin="9,0,0,0">
+      <Button x:Name="LaterBtn" MinWidth="110" Height="32" IsCancel="True" Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -6665,30 +7859,30 @@ function Show-NameDialog {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="380" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <StackPanel Margin="0,0,0,14">
-    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+    <Border x:Name="DlgTitle" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="12,9">
       <StackPanel Orientation="Horizontal">
-        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-          <TextBlock Text="存为方案" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="存为方案" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
         </Border>
-        <TextBlock Text="SAVE PRESET" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock Text="SAVE PRESET" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
-    <TextBlock Text="把当前勾选的优化项保存为方案，输入方案名：" Foreground="#FF9AA5A0" Margin="14,12,14,8"/>
-    <Border Background="#FF0B1712" BorderBrush="#FF2C443B" BorderThickness="1" Margin="14,0,14,12">
-      <TextBox x:Name="NameBox" BorderThickness="0" Background="Transparent" Foreground="#FFFFFFFF"
-               CaretBrush="#FF00E884" Padding="9,6" FontSize="12" MaxLength="40"/>
+    <TextBlock Text="把当前勾选的优化项保存为方案，输入方案名：" Foreground="{DynamicResource TextSec}" Margin="14,12,14,8"/>
+    <Border Background="{DynamicResource ComboSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1" Margin="14,0,14,12">
+      <TextBox x:Name="NameBox" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource TextPri}"
+               CaretBrush="{DynamicResource Green}" Padding="9,6" FontSize="12" MaxLength="40"/>
     </Border>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="14,0,14,0">
-      <Button x:Name="OkBtn" Width="96" Height="30" IsDefault="True" Foreground="#FF04241B"
+      <Button x:Name="OkBtn" Width="96" Height="30" IsDefault="True" Foreground="{DynamicResource GreenDark}"
               FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Grid>
@@ -6701,16 +7895,16 @@ function Show-NameDialog {
         </Button.Template>
         <TextBlock Text="确定"/>
       </Button>
-      <Button x:Name="CancelBtn" Width="80" Height="30" IsCancel="True" Foreground="#FF00E884" Margin="9,0,0,0">
+      <Button x:Name="CancelBtn" Width="80" Height="30" IsCancel="True" Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -6804,42 +7998,42 @@ function Show-UpdateDialog($UpdInfo) {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="470" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <StackPanel Margin="0,0,0,14">
-    <Border x:Name="DlgTitle" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="12,9">
+    <Border x:Name="DlgTitle" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="12,9">
       <StackPanel Orientation="Horizontal">
-        <Border Background="#FFE5C46A" Padding="7,1" VerticalAlignment="Center">
-          <TextBlock Text="发现新版本" Foreground="#FF3A2C0C" FontSize="11" FontWeight="Bold"/>
+        <Border Background="{DynamicResource Gold}" Padding="7,1" VerticalAlignment="Center">
+          <TextBlock Text="发现新版本" Foreground="{DynamicResource GoldDark}" FontSize="11" FontWeight="Bold"/>
         </Border>
-        <TextBlock Text="UPDATE AVAILABLE" FontFamily="Consolas" FontSize="9" Foreground="#FF7A8580"
+        <TextBlock Text="UPDATE AVAILABLE" FontFamily="Consolas" FontSize="9" Foreground="{DynamicResource TextMut}"
                    VerticalAlignment="Center" Margin="9,0,0,0"/>
       </StackPanel>
     </Border>
     <StackPanel Orientation="Horizontal" Margin="14,12,14,4">
-      <TextBlock x:Name="VerText" Text="" Foreground="#FF00E884" FontSize="15" FontWeight="Bold"/>
-      <TextBlock x:Name="CurText" Text="" Foreground="#FF7A8580" FontSize="11" Margin="9,0,0,0"
+      <TextBlock x:Name="VerText" Text="" Foreground="{DynamicResource Green}" FontSize="15" FontWeight="Bold"/>
+      <TextBlock x:Name="CurText" Text="" Foreground="{DynamicResource TextMut}" FontSize="11" Margin="9,0,0,0"
                  VerticalAlignment="Bottom"/>
     </StackPanel>
-    <Border Background="#FF081310" BorderBrush="#FF1B2E28" BorderThickness="1" Margin="14,6,14,8">
+    <Border Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="14,6,14,8">
       <ScrollViewer MaxHeight="140" VerticalScrollBarVisibility="Auto">
-        <TextBlock x:Name="NotesText" Text="" Foreground="#FF9AA5A0" FontSize="11"
+        <TextBlock x:Name="NotesText" Text="" Foreground="{DynamicResource TextSec}" FontSize="11"
                    TextWrapping="Wrap" Padding="10,8"/>
       </ScrollViewer>
     </Border>
     <!-- 内置更新说明：走安装器覆盖升级，覆盖安装保护会保住配置与备份 -->
-    <TextBlock x:Name="InlineNote" Text="" Foreground="#FF7A8580" FontSize="10"
+    <TextBlock x:Name="InlineNote" Text="" Foreground="{DynamicResource TextMut}" FontSize="10"
                TextWrapping="Wrap" Margin="14,0,14,8"/>
     <!-- 下载进度区：点「立即更新」后展开；进度由轮询定时器在 UI 线程刷新 -->
     <StackPanel x:Name="DlPanel" Visibility="Collapsed" Margin="14,0,14,10">
       <Grid>
-        <TextBlock x:Name="DlPhaseText" Text="正在下载更新…" Foreground="#FF9AA5A0" FontSize="11"/>
-        <TextBlock x:Name="DlSizeText" Text="" Foreground="#FF7A8580" FontFamily="Consolas"
+        <TextBlock x:Name="DlPhaseText" Text="正在下载更新…" Foreground="{DynamicResource TextSec}" FontSize="11"/>
+        <TextBlock x:Name="DlSizeText" Text="" Foreground="{DynamicResource TextMut}" FontFamily="Consolas"
                    FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center"/>
       </Grid>
-      <Border x:Name="DlTrack" Height="8" Background="#FF081310" BorderBrush="#FF1B2E28"
+      <Border x:Name="DlTrack" Height="8" Background="{DynamicResource LogBg}" BorderBrush="{DynamicResource Line}"
               BorderThickness="1" Margin="0,6,0,0">
-        <Border x:Name="DlFill" Background="#FF00E884" HorizontalAlignment="Left" Width="0"/>
+        <Border x:Name="DlFill" Background="{DynamicResource Green}" HorizontalAlignment="Left" Width="0"/>
       </Border>
     </StackPanel>
     <!-- 安装阶段：进度不可知（安装器在另一个进程里跑），只给转圈 + 一句话 -->
@@ -6848,17 +8042,17 @@ function Show-UpdateDialog($UpdInfo) {
         <Grid.RenderTransform>
           <RotateTransform x:Name="SpinRot" Angle="0"/>
         </Grid.RenderTransform>
-        <Ellipse Stroke="#FF1B2E28" StrokeThickness="2.5" Width="18" Height="18"/>
-        <Path Stroke="#FF00E884" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+        <Ellipse Stroke="{DynamicResource Line}" StrokeThickness="2.5" Width="18" Height="18"/>
+        <Path Stroke="{DynamicResource Green}" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
               Data="M 10,1 A 9,9 0 0 1 19,10"/>
       </Grid>
-      <TextBlock x:Name="InstText" Text="正在安装，请稍候…" Foreground="#FF00E884" FontSize="12"
+      <TextBlock x:Name="InstText" Text="正在安装，请稍候…" Foreground="{DynamicResource Green}" FontSize="12"
                  VerticalAlignment="Center" Margin="11,0,0,0"/>
     </StackPanel>
     <!-- 失败区：下载/校验失败的明确报错，旁边的「前往下载」变身降级入口 -->
-    <Border x:Name="ErrPanel" Visibility="Collapsed" Background="#FF1A0E10" BorderBrush="#FF7A3034"
+    <Border x:Name="ErrPanel" Visibility="Collapsed" Background="{DynamicResource DangerPanel}" BorderBrush="#FF7A3034"
             BorderThickness="1" Margin="14,0,14,10">
-      <TextBlock x:Name="ErrText" Text="" Foreground="#FFE5484D" FontSize="11"
+      <TextBlock x:Name="ErrText" Text="" Foreground="{DynamicResource Danger}" FontSize="11"
                  TextWrapping="Wrap" Padding="10,7"/>
     </Border>
     <Grid Margin="14,0,14,0">
@@ -6874,33 +8068,33 @@ function Show-UpdateDialog($UpdInfo) {
           <ControlTemplate TargetType="CheckBox">
             <Border Background="Transparent" Padding="0,3">
               <StackPanel Orientation="Horizontal">
-                <Border x:Name="Box" Width="13" Height="13" BorderBrush="#FF2C443B"
+                <Border x:Name="Box" Width="13" Height="13" BorderBrush="{DynamicResource LineHi}"
                         BorderThickness="1" Background="Transparent" VerticalAlignment="Center">
-                  <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="#FF04241B"
+                  <Path x:Name="Mark" Data="M 2,5.5 L 4.5,8.5 L 10,2" Stroke="{DynamicResource GreenDark}"
                         StrokeThickness="2" Visibility="Collapsed"/>
                 </Border>
-                <TextBlock Text="不再提醒此版本" Foreground="#FF7A8580" FontSize="11"
+                <TextBlock Text="不再提醒此版本" Foreground="{DynamicResource TextMut}" FontSize="11"
                            Margin="7,0,0,0" VerticalAlignment="Center"/>
               </StackPanel>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Box" Property="Background" Value="#FF00E884"/>
-                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="Background" Value="{DynamicResource Green}"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Green}"/>
                 <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Box" Property="BorderBrush" Value="#FF00E884"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Green}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </CheckBox.Template>
       </CheckBox>
-      <Button x:Name="UpdBtn" Grid.Column="1" MinWidth="96" Height="30" Foreground="#FF04241B" FontWeight="Bold">
+      <Button x:Name="UpdBtn" Grid.Column="1" MinWidth="96" Height="30" Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
           <ControlTemplate TargetType="Button">
             <Grid>
-              <Path x:Name="Bg" Stretch="Fill" Fill="#FF00E884"
+              <Path x:Name="Bg" Stretch="Fill" Fill="{DynamicResource Green}"
                     Data="M 0.06,0 L 1,0 L 1,0.78 L 0.94,1 L 0,1 L 0,0.22 Z"/>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="14,0"/>
             </Grid>
@@ -6913,16 +8107,16 @@ function Show-UpdateDialog($UpdInfo) {
         </Button.Template>
         <TextBlock Text="立即更新"/>
       </Button>
-      <Button x:Name="GoBtn" Grid.Column="2" MinWidth="96" Height="30" Foreground="#FF00E884" Margin="9,0,0,0">
+      <Button x:Name="GoBtn" Grid.Column="2" MinWidth="96" Height="30" Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -6930,20 +8124,20 @@ function Show-UpdateDialog($UpdInfo) {
         <TextBlock x:Name="GoTxt" Text="前往下载"/>
       </Button>
       <Button x:Name="CancelDlBtn" Grid.Column="3" Visibility="Collapsed" MinWidth="96" Height="30"
-              Foreground="#FF00E884" Margin="9,0,0,0">
+              Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12,0"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="#FF7A8580"/>
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF1B2E28"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextMut}"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Line}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -6951,16 +8145,16 @@ function Show-UpdateDialog($UpdInfo) {
         <TextBlock x:Name="CancelDlTxt" Text="取消下载"/>
       </Button>
       <Button x:Name="LaterBtn" Grid.Column="4" Width="86" Height="30" IsCancel="True"
-              Foreground="#FF00E884" Margin="9,0,0,0">
+              Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" BorderBrush="#FF17603F" BorderThickness="1" Background="Transparent">
+            <Border x:Name="B" BorderBrush="{DynamicResource GreenLine}" BorderThickness="1" Background="Transparent">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF00E884"/>
-                <Setter TargetName="B" Property="Background" Value="#FF0E2A21"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Green}"/>
+                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentPanel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -6989,8 +8183,8 @@ function Show-UpdateDialog($UpdInfo) {
                  'CancelDlBtn','CancelDlTxt','LaterBtn') {
     $script:UpdUi[$n] = $script:UpdDlg.FindName($n)
   }
-  $script:UpdUi.VerText.Text = "新版本 v$($UpdInfo.Version)"
-  $script:UpdUi.CurText.Text = "当前 v$($UpdInfo.Current)"
+  $script:UpdUi.VerText.Text = "新版本 v$($UpdInfo.DisplayVersion)"
+  $script:UpdUi.CurText.Text = "当前 v$script:DisplayVersion"
   # 清单由发布脚本写成单行 JSON 时常用字面量 \n 表示换行；显示前统一还原，避免更新
   # 说明里直接露出“\n”字符。
   $notes = ("$($UpdInfo.Notes)" -replace '\\n', "`n").Trim()
@@ -7225,7 +8419,7 @@ function ConvertTo-NotificationList($Value) {
     $title = "$($item.title)".Trim()
     $content = "$($item.content)".Trim()
     $level = "$($item.level)".Trim().ToLowerInvariant()
-    if (-not $title -or $title.Length -gt 80 -or -not $content -or $content.Length -gt 2000) { continue }
+    if (-not $title -or $title.Length -gt 80 -or -not $content -or $content.Length -gt 10000) { continue }
     if ($level -notin 'info','important','warning') { continue }
     $active = $true
     if ($item.PSObject.Properties['active']) { $active = [bool]$item.active }
@@ -7317,6 +8511,65 @@ function Get-NotificationDisplayTime([int64]$UnixTime) {
   catch { '' }
 }
 
+function ConvertTo-NotificationTextSegments([string]$Content) {
+  $segments = [Collections.Generic.List[object]]::new()
+  if ([string]::IsNullOrEmpty($Content)) { return @() }
+  $cursor = 0
+  $trimChars = [char[]]@('.', ',', ';', ':', '!', '?', ')', ']', '}', '>', '"', "'",
+    '，', '。', '！', '？', '；', '：', '）', '》', '】')
+  foreach ($match in [regex]::Matches($Content, '(?i)https?://[^\s<>"'']+')) {
+    $urlText = $match.Value.TrimEnd($trimChars)
+    if (-not $urlText) { continue }
+    $uri = $null
+    if (-not [Uri]::TryCreate($urlText, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -notin 'https','http') { continue }
+    if ($match.Index -gt $cursor) {
+      [void]$segments.Add([pscustomobject]@{ Text = $Content.Substring($cursor, $match.Index - $cursor); Url = '' })
+    }
+    [void]$segments.Add([pscustomobject]@{ Text = $urlText; Url = $uri.AbsoluteUri })
+    # 末尾的中文句号、右括号等不属于链接，留给下一段普通文字。
+    $cursor = $match.Index + $urlText.Length
+  }
+  if ($cursor -lt $Content.Length) {
+    [void]$segments.Add([pscustomobject]@{ Text = $Content.Substring($cursor); Url = '' })
+  }
+  @($segments.ToArray())
+}
+
+function New-NotificationBodyTextBlock([string]$Content) {
+  $body = New-Object Windows.Controls.TextBlock
+  $body.Foreground = New-Brush $script:C.TextSec
+  $body.FontSize = 12
+  $body.LineHeight = 20
+  $body.TextWrapping = 'Wrap'
+  $body.Margin = '0,7,0,0'
+  foreach ($segment in @(ConvertTo-NotificationTextSegments $Content)) {
+    if (-not $segment.Url) {
+      [void]$body.Inlines.Add((New-Object Windows.Documents.Run "$($segment.Text)"))
+      continue
+    }
+    $link = New-Object Windows.Documents.Hyperlink
+    $link.NavigateUri = New-Object Uri "$($segment.Url)"
+    $link.Foreground = New-Brush $script:C.Green
+    $link.TextDecorations = [Windows.TextDecorations]::Underline
+    $link.Cursor = 'Hand'
+    $link.ToolTip = '点击在默认浏览器中打开'
+    [void]$link.Inlines.Add((New-Object Windows.Documents.Run "$($segment.Text)"))
+    $link.Add_RequestNavigate({
+      param($sender, $eventArgs)
+      try {
+        $target = $eventArgs.Uri
+        if ($target -and $target.IsAbsoluteUri -and $target.Scheme -in 'https','http') {
+          Start-Process -FilePath $target.AbsoluteUri
+        }
+      } catch {}
+      $eventArgs.Handled = $true
+    })
+    [void]$body.Inlines.Add($link)
+  }
+  $body
+}
+
 function Show-NotificationHistory {
   $unreadBefore = [int64]$script:NotificationLastSeenId
   $latest = Get-NotificationLatestId
@@ -7329,27 +8582,28 @@ function Show-NotificationHistory {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="520" Height="610" MinHeight="420" WindowStyle="None" ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#FF0C1814" BorderBrush="#FF2C443B" BorderThickness="1"
+        Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <Border x:Name="DragBar" Grid.Row="0" Background="#FF0D1417" BorderBrush="#FF1B2E28" BorderThickness="0,0,0,1" Padding="14,10">
-      <DockPanel><TextBlock Text="通知中心" Foreground="#FFFFFFFF" FontSize="14" FontWeight="Bold"/><TextBlock Text="  NOTIFICATIONS" Foreground="#FF00E884" FontFamily="Consolas" FontSize="10" VerticalAlignment="Center"/></DockPanel>
+    <Border x:Name="DragBar" Grid.Row="0" Background="{DynamicResource TopBar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="14,10">
+      <DockPanel><TextBlock Text="通知中心" Foreground="{DynamicResource TextPri}" FontSize="14" FontWeight="Bold"/><TextBlock Text="  NOTIFICATIONS" Foreground="{DynamicResource Green}" FontFamily="Consolas" FontSize="10" VerticalAlignment="Center"/></DockPanel>
     </Border>
     <StackPanel Grid.Row="1" Margin="16,14,16,8">
-      <TextBlock Text="官方通知与历史消息" Foreground="#FF00E884" FontSize="16" FontWeight="Bold"/>
-      <TextBlock x:Name="StatusText" Foreground="#FF9AA5A0" Margin="0,5,0,0" TextWrapping="Wrap"/>
+      <TextBlock Text="官方通知与历史消息" Foreground="{DynamicResource Green}" FontSize="16" FontWeight="Bold"/>
+      <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSec}" Margin="0,5,0,0" TextWrapping="Wrap"/>
     </StackPanel>
     <ScrollViewer Grid.Row="2" Margin="12,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
       <StackPanel x:Name="ItemsPanel" Margin="4,2,4,8"/>
     </ScrollViewer>
-    <Border Grid.Row="3" BorderBrush="#FF1B2E28" BorderThickness="0,1,0,0" Padding="14,11">
-      <Button x:Name="CloseButton" Content="关闭" Width="92" Height="30" HorizontalAlignment="Right" Background="#FF00E884" Foreground="#FF04241B" BorderThickness="0" FontWeight="Bold" Cursor="Hand"/>
+    <Border Grid.Row="3" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="14,11">
+      <Button x:Name="CloseButton" Content="关闭" Width="92" Height="30" HorizontalAlignment="Right" Background="{DynamicResource Green}" Foreground="{DynamicResource GreenDark}" BorderThickness="0" FontWeight="Bold" Cursor="Hand"/>
     </Border>
   </Grid>
 </Window>
 '@
   $dialog = [Windows.Markup.XamlReader]::Parse($nxaml)
+  $dialog.Resources.MergedDictionaries.Add($script:ThemeRes)
   $dialog.Owner = $window
   $panel = $dialog.FindName('ItemsPanel')
   $count = @($script:NotificationItems).Count
@@ -7396,13 +8650,7 @@ function Show-NotificationHistory {
       $title.TextWrapping = 'Wrap'
       $title.Margin = '0,7,0,0'
       [void]$stack.Children.Add($title)
-      $body = New-Object Windows.Controls.TextBlock
-      $body.Text = "$($notice.content)"
-      $body.Foreground = New-Brush $script:C.TextSec
-      $body.FontSize = 12
-      $body.LineHeight = 20
-      $body.TextWrapping = 'Wrap'
-      $body.Margin = '0,7,0,0'
+      $body = New-NotificationBodyTextBlock "$($notice.content)"
       [void]$stack.Children.Add($body)
       $card.Child = $stack
       [void]$panel.Children.Add($card)
@@ -7492,10 +8740,10 @@ function Start-UpdateCheck {
           # 新版本第一次出现就直接弹详情；同一版本本次运行只自动弹一次，标题栏入口常驻
           $isNew = ("$($found.Version)" -ne "$(if ($script:UpdateInfo) { $script:UpdateInfo.Version })")
           $script:UpdateInfo = $found
-          $ui.UpdateBtn.ToolTip = "新版本 v$($found.Version) 可用（当前 v$($found.Current)），点击查看详情"
+          $ui.UpdateBtn.ToolTip = "新版本 v$($found.DisplayVersion) 可用（当前 v$script:DisplayVersion），点击查看详情"
           $ui.UpdateBtn.Visibility = 'Visible'
           if ($isNew) {
-            Write-Log "检测到新版本 v$($found.Version)（当前 v$($found.Current)），正在显示更新详情。"
+            Write-Log "检测到新版本 v$($found.DisplayVersion)（当前 v$script:DisplayVersion），正在显示更新详情。"
             Show-DetectedUpdateDialog
           }
         }
@@ -7551,14 +8799,14 @@ function Start-ManualUpdateCheck {
       Write-Log '检查更新失败：网络不可达或服务器暂时无响应。'
       Show-ConfirmDialog '检查更新' 'CHECK UPDATE' '检查更新失败：网络不可达或服务器暂时无响应，请稍后再试。' '知道了' -InfoOnly | Out-Null
     } elseif ($r.Status -eq 'latest') {
-      Write-Log "已是最新版本 v$($script:GuiVersion)。"
-      Show-ConfirmDialog '检查更新' 'CHECK UPDATE' "已是最新版本 v$($script:GuiVersion)，无需更新。" '知道了' -InfoOnly | Out-Null
+      Write-Log "已是最新版本 v$($script:DisplayVersion)。"
+      Show-ConfirmDialog '检查更新' 'CHECK UPDATE' "已是最新版本 v$($script:DisplayVersion)，无需更新。" '知道了' -InfoOnly | Out-Null
     } else {
       # 发现新版：与定时检查同一收口——点亮标题栏入口，并直接弹更新详情
       $script:UpdateInfo = $r.Info
-      $ui.UpdateBtn.ToolTip = "新版本 v$($r.Info.Version) 可用（当前 v$($r.Info.Current)），点击查看详情"
+      $ui.UpdateBtn.ToolTip = "新版本 v$($r.Info.DisplayVersion) 可用（当前 v$script:DisplayVersion），点击查看详情"
       $ui.UpdateBtn.Visibility = 'Visible'
-      Write-Log "检测到新版本 v$($r.Info.Version)（当前 v$($r.Info.Current)）。"
+      Write-Log "检测到新版本 v$($r.Info.DisplayVersion)（当前 v$script:DisplayVersion）。"
       if (Show-UpdateDialog $script:UpdateInfo) { $ui.UpdateBtn.Visibility = 'Collapsed' }
     }
   })
@@ -7576,6 +8824,8 @@ $script:HardwareInfo = $null
 Initialize-NotificationState
 
 $window.Add_ContentRendered({
+  Initialize-LiveMetricsDashboard
+  Refresh-PerformanceComparison -Force
   Start-NotificationCheck
   $script:NotificationPeriodicTimer = New-Object Windows.Threading.DispatcherTimer
   $script:NotificationPeriodicTimer.Interval = [TimeSpan]::FromSeconds($script:NotificationCheckIntervalSeconds)
@@ -7588,10 +8838,19 @@ $window.Add_ContentRendered({
     $gpu = ($hw.Gpus | Where-Object { $_.Name -eq $hw.MainGpuName } | Select-Object -First 1)
     if (-not $gpu) { $gpu = $hw.Gpus | Select-Object -First 1 }
     $cpuShort = ($hw.CPU -replace '^\d+th Gen ', '' -replace '\(R\)|\(TM\)', '' -replace '\s*@.*$', '').Trim()
-    $ui.HwGrid.Children.Add((New-HwCard 'CPU' $cpuShort "$($hw.Cores)核 / $($hw.Threads)线程")) | Out-Null
-    $ui.HwGrid.Children.Add((New-HwCard 'GPU' $gpu.Name "$($gpu.Vendor) · $(if (@($hw.Gpus).Count -gt 1) { '双显卡' } else { '单显卡' })" -Ribbon)) | Out-Null
+    $script:HardwareTemperatureReadouts.Clear()
+    $ui.HwGrid.Children.Add((New-HwCard 'CPU' $cpuShort "$($hw.Cores)核 / $($hw.Threads)线程" -TemperatureKey 'cpu')) | Out-Null
+    $ui.HwGrid.Children.Add((New-HwCard 'GPU' $gpu.Name "$($gpu.Vendor) · $(if (@($hw.Gpus).Count -gt 1) { '双显卡' } else { '单显卡' })" -Ribbon -TemperatureKey 'gpu')) | Out-Null
     $systemName = "$($hw.ComputerBrand) $($hw.ComputerModel)".Trim()
     $ui.HwGrid.Children.Add((New-HwCard 'SYSTEM' $systemName "$($hw.RamGB) GB · $(if ($hw.IsLaptop) { '笔记本' } else { '台式机' }) · Build $($hw.Build)")) | Out-Null
+    $displayClass = Resolve-DisplayClassLabel ([int]$hw.DisplayWidth) ([int]$hw.DisplayHeight)
+    $displayName = $(if ("$($hw.DisplayName)".Trim()) { "$($hw.DisplayName)".Trim() } else { '显示器' })
+    $displayValue = $(if ($displayClass -in '1K','2K','4K') { "$displayClass · $displayName" } else { $displayClass })
+    $displaySub = $(if ([int]$hw.DisplayWidth -gt 0 -and [int]$hw.DisplayHeight -gt 0) {
+      "$($hw.DisplayWidth) × $($hw.DisplayHeight)$(if ([int]$hw.DisplayRefreshHz -gt 0) { " · $($hw.DisplayRefreshHz) Hz" })"
+    } else { '未获取当前分辨率' })
+    $ui.HwGrid.Children.Add((New-HwCard 'DISPLAY' $displayValue $displaySub)) | Out-Null
+    try { Start-LiveMetricsMonitor $hw } catch { Write-Log "实时硬件状态启动失败：$($_.Exception.Message)" }
     Update-DropFrameRepairPage
 
     Write-Log '开始检测硬件与系统状态…'
@@ -7648,6 +8907,9 @@ $window.Add_ContentRendered({
 
 $ui.TitleBar.Add_MouseLeftButtonDown({ $window.DragMove() })
 $ui.MinBtn.Add_Click({ $window.WindowState = 'Minimized' })
+if ($script:LightThemeEnabled) {
+  $ui.ThemeBtn.Add_Click({ Set-AppTheme $(if ($script:CurrentTheme -eq 'dark') { 'light' } else { 'dark' }) -Persist })
+}
 $ui.NoticeBtn.Add_Click({
   if (@($script:NotificationItems).Count -gt 0) {
     Show-NotificationHistory
@@ -7673,6 +8935,8 @@ $window.Add_Closing({
     $_.Cancel = $true
     Write-Log '正在执行优化/还原，请等本轮结束后再关闭。'
   } else {
+    try { Save-AppUiPreferences $script:CurrentTheme (Get-PersistableAppWindowHeight) } catch {}
+    Stop-LiveMetricsMonitor
     if ($script:PerformanceTimer) { $script:PerformanceTimer.Stop() }
     if ($script:TuningTelemetryTimer) { $script:TuningTelemetryTimer.Stop() }
     if ($script:NotificationPeriodicTimer) { $script:NotificationPeriodicTimer.Stop() }
@@ -8123,6 +9387,9 @@ $ui.InlineRestoreClearBtn.Add_Click({
 })
 $ui.InlineRestoreSelectedBtn.Add_Click({ Invoke-InlineRestoreAction 'selected_items' })
 $ui.InlineRestoreAllBtn.Add_Click({ Invoke-InlineRestoreAction 'all' })
+# 在任何窗口出现前恢复用户上次的主题与窗口高度；旧版偏好没有高度时默认使用 1200。
+Set-AppTheme (Get-SavedAppTheme)
+Set-SavedAppWindowHeight
 # 免责声明门控放在主窗口之前：没同意就不该看到任何可点的优化按钮。
 # 读取/写入配置失败一律按「没同意」处理——宁可多问一次，也不能因为磁盘异常就放行
 if (-not (Test-DisclaimerAccepted)) {
@@ -8130,3 +9397,7 @@ if (-not (Test-DisclaimerAccepted)) {
 }
 
 $window.ShowDialog() | Out-Null
+# 主窗口关闭就是本次会话的终点。通知/更新检查等后台 PowerShell runspace 即使窗口已
+# 消失，仍可能让 powershell.exe、EngineHost 和启动器继续存活并占住全局单实例锁；
+# Closing 已完成偏好保存、忙碌保护与实时监控清理，这里用进程级退出收尾。
+Invoke-AppExit
