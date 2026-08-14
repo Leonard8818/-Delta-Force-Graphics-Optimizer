@@ -644,9 +644,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复安装到其他磁盘后，因上次安装中断或安全软件隔离导致启动器缺失时，安装向导阻止重新安装的问题。
-- 对已验证的残缺安装进行保留式修复：重新安装前保留原目录，安装或启动验证失败时恢复原现场。
-- 未验证的普通目录仍保持严格保护，不会被安装器覆盖或清理。
+- 修正实时 FPS 统计口径：优先按实际显示帧率和主游戏交换链计算，避免多交换链、丢弃帧或旧采样造成读数偏差。
+- CPU 温度缺少可信传感器来源时显示明确状态与原因，不再把不可靠的主板温区当作 CPU 温度。
+- 显卡型号伪装现可在「还原设置」中单独选择并恢复真实型号。
 '@
 $manifestObj = [ordered]@{
   # 版本与显示版本逐字一致，避免更新判断、界面和安装包文件名各用一套编号。

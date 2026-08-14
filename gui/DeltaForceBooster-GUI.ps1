@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.1
+  DeltaForceBooster 图形界面 — v0.23.0.2
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.2：修正实时 FPS 的显示帧率与主交换链统计口径；CPU 温度缺少可信传感器源时说明原因；
+         显卡型号伪装支持单独还原。
   v0.23.0.1：修复其他盘的既有安装因启动器缺失而阻止重新安装的问题；残缺目录会先保留，失败时恢复现场。
   v0.23.0.0：CPU/GPU 硬件与温度卡提前；FPS、CPU/GPU/内存卡直接显示记录变化并可查看历史；
          百分号与温度单位跟随数值字号和颜色；深色主题恢复金黄强调色，移除执行优化按钮内的
@@ -480,8 +482,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.1'
-$script:DisplayVersion = '0.23.0.1'
+$script:GuiVersion = '0.23.0.2'
+$script:DisplayVersion = '0.23.0.2'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -848,7 +850,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.1 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.2 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1434,7 +1436,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.1 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.2 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -1905,7 +1907,7 @@ function New-HwCard([string]$Label, [string]$Value, [string]$Sub, [switch]$Ribbo
     [void]$headerDock.Children.Add($head)
     $sp.Children.Add($headerDock) | Out-Null
     $script:HardwareTemperatureReadouts[$TemperatureKey] = [pscustomobject]@{
-      ValueText=$temperatureValue;UnitText=$temperatureUnit
+      ValueText=$temperatureValue;UnitText=$temperatureUnit;Container=$temperature
     }
   } else {
     $sp.Children.Add($head) | Out-Null
@@ -2144,22 +2146,28 @@ function Set-LiveMetricComparison {
     else { New-Brush $script:C.Gold })
 }
 
-function Set-HardwareTemperature([string]$Key, $Value) {
+function Set-HardwareTemperature([string]$Key, $Value, [string]$Source = '', [string]$UnavailableReason = '') {
   $readout = $script:HardwareTemperatureReadouts[$Key]
   if (-not $readout) { return }
   if ($null -eq $Value) {
-    $readout.ValueText.Text = '--'
+    $readout.ValueText.Text = 'N/A'
+    $readout.UnitText.Text = ''
     $readout.ValueText.Foreground = New-Brush $script:C.TextMut
     $readout.UnitText.Foreground = New-Brush $script:C.TextMut
+    $readout.Container.ToolTip = $(if ($UnavailableReason) { $UnavailableReason } else { '当前没有可用的温度数据' })
+    $readout.Container.Cursor = [Windows.Input.Cursors]::Help
     return
   }
   $temperature = [double]$Value
+  $readout.UnitText.Text = '°C'
   $readout.ValueText.Text = $(if ([math]::Abs($temperature-[math]::Round($temperature)) -lt 0.05) {
     "{0:N0}" -f $temperature
   } else { "{0:N1}" -f $temperature })
   $temperatureBrush = New-Brush (Get-TemperatureColor $temperature)
   $readout.ValueText.Foreground = $temperatureBrush
   $readout.UnitText.Foreground = $temperatureBrush
+  $readout.Container.ToolTip = $(if ($Source) { "数据源：$Source" } else { '实时传感器温度' })
+  $readout.Container.Cursor = [Windows.Input.Cursors]::Arrow
 }
 
 function Get-TemperatureColor([double]$Temperature) {
@@ -2217,11 +2225,26 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 
 public sealed class DfbLivePresentMonSampler : IDisposable {
-  private sealed class FramePoint { public long Ticks; public double Milliseconds; }
+  private sealed class FramePoint {
+    public long Ticks;
+    public string SwapChain;
+    public double DisplayMilliseconds;
+    public double PresentMilliseconds;
+  }
+  private sealed class FrameSummary {
+    public int DisplayCount;
+    public double DisplayTotalMilliseconds;
+    public int PresentCount;
+    public double PresentTotalMilliseconds;
+  }
   private readonly object gate = new object();
   private readonly Queue<FramePoint> frames = new Queue<FramePoint>();
   private Process process;
-  private int frameColumn = -1;
+  private int displayColumn = -1;
+  private int presentColumn = -1;
+  private int swapChainColumn = -1;
+  private bool headerReady;
+  private string metricLabel = "";
 
   private static string[] SplitCsv(string line) {
     var fields = new List<string>();
@@ -2239,27 +2262,59 @@ public sealed class DfbLivePresentMonSampler : IDisposable {
     return fields.ToArray();
   }
 
-  private void OnOutput(object sender, DataReceivedEventArgs e) {
-    if (String.IsNullOrWhiteSpace(e.Data)) return;
-    string[] fields = SplitCsv(e.Data);
+  private static int FindColumn(string[] fields, params string[] names) {
+    for (int i = 0; i < fields.Length; i++) {
+      foreach (string name in names) {
+        if (String.Equals(fields[i].Trim(), name, StringComparison.OrdinalIgnoreCase)) return i;
+      }
+    }
+    return -1;
+  }
+
+  public void AcceptCsvLine(string line) {
+    if (String.IsNullOrWhiteSpace(line)) return;
+    string[] fields = SplitCsv(line);
     lock (gate) {
-      if (frameColumn < 0) {
-        for (int i = 0; i < fields.Length; i++) {
-          if (String.Equals(fields[i], "MsBetweenPresents", StringComparison.OrdinalIgnoreCase) ||
-              String.Equals(fields[i], "FrameTime", StringComparison.OrdinalIgnoreCase)) {
-            frameColumn = i;
-            return;
-          }
-        }
+      if (!headerReady) {
+        // PresentMon 的 DisplayedTime 才是实际屏幕换帧间隔。FrameTime/
+        // MsBetweenPresents 只是应用调用 Present 的速率，在 DLSS/AFMF 帧生成、
+        // 丢帧或合成器介入时会和用户看到的 FPS 不一致。
+        displayColumn = FindColumn(fields, "DisplayedTime");
+        if (displayColumn < 0) displayColumn = FindColumn(fields, "MsBetweenDisplayChange");
+        presentColumn = FindColumn(fields, "FrameTime", "MsBetweenPresents");
+        swapChainColumn = FindColumn(fields, "SwapChainAddress");
+        headerReady = displayColumn >= 0 || presentColumn >= 0;
         return;
       }
-      if (frameColumn >= fields.Length) return;
-      double milliseconds;
-      if (!Double.TryParse(fields[frameColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out milliseconds) ||
-          milliseconds <= 0.0 || milliseconds > 1000.0) return;
-      frames.Enqueue(new FramePoint { Ticks = DateTime.UtcNow.Ticks, Milliseconds = milliseconds });
+      double displayMilliseconds = Double.NaN;
+      double presentMilliseconds = Double.NaN;
+      if (displayColumn >= 0 && displayColumn < fields.Length) {
+        double parsed;
+        if (Double.TryParse(fields[displayColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out parsed) &&
+            parsed > 0.0 && parsed <= 1000.0) displayMilliseconds = parsed;
+      }
+      if (presentColumn >= 0 && presentColumn < fields.Length) {
+        double parsed;
+        if (Double.TryParse(fields[presentColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out parsed) &&
+            parsed > 0.0 && parsed <= 1000.0) presentMilliseconds = parsed;
+      }
+      if (Double.IsNaN(displayMilliseconds) && Double.IsNaN(presentMilliseconds)) return;
+      string swapChain = swapChainColumn >= 0 && swapChainColumn < fields.Length ? fields[swapChainColumn].Trim() : "";
+      if (String.IsNullOrEmpty(swapChain)) swapChain = "__default__";
+      frames.Enqueue(new FramePoint {
+        Ticks = DateTime.UtcNow.Ticks,
+        SwapChain = swapChain,
+        DisplayMilliseconds = displayMilliseconds,
+        PresentMilliseconds = presentMilliseconds
+      });
       Trim(DateTime.UtcNow.AddSeconds(-3).Ticks);
     }
+  }
+
+  private void OnOutput(object sender, DataReceivedEventArgs e) {
+    // Stop/重启采样器时旧 PresentMon 仍可能补发最后几行；这些行不得混入
+    // 新游戏进程或新交换链的滚动窗口。
+    if (e != null && Object.ReferenceEquals(sender, process)) AcceptCsvLine(e.Data);
   }
 
   private void Trim(long cutoff) {
@@ -2300,16 +2355,61 @@ public sealed class DfbLivePresentMonSampler : IDisposable {
     lock (gate) {
       Trim(DateTime.UtcNow.AddSeconds(-2.5).Ticks);
       if (frames.Count < 5) return Double.NaN;
-      double total = 0.0;
-      foreach (FramePoint frame in frames) total += frame.Milliseconds;
-      return total > 0.0 ? Math.Round(1000.0 / (total / frames.Count), 1) : Double.NaN;
+      // 游戏、启动视频和 UI 可能各自拥有交换链。把它们混在一起平均会制造
+      // 不存在的 FPS；以窗口内有效显示帧最多的交换链作为主游戏交换链。
+      var summaries = new Dictionary<string, FrameSummary>(StringComparer.OrdinalIgnoreCase);
+      foreach (FramePoint frame in frames) {
+        FrameSummary summary;
+        if (!summaries.TryGetValue(frame.SwapChain, out summary)) {
+          summary = new FrameSummary();
+          summaries.Add(frame.SwapChain, summary);
+        }
+        if (!Double.IsNaN(frame.DisplayMilliseconds)) {
+          summary.DisplayCount++;
+          summary.DisplayTotalMilliseconds += frame.DisplayMilliseconds;
+        }
+        if (!Double.IsNaN(frame.PresentMilliseconds)) {
+          summary.PresentCount++;
+          summary.PresentTotalMilliseconds += frame.PresentMilliseconds;
+        }
+      }
+      FrameSummary primary = null;
+      bool useDisplay = false;
+      foreach (FrameSummary summary in summaries.Values) {
+        if (summary.DisplayCount >= 5 && (primary == null || !useDisplay || summary.DisplayCount > primary.DisplayCount)) {
+          primary = summary;
+          useDisplay = true;
+        }
+      }
+      if (!useDisplay) {
+        primary = null;
+        foreach (FrameSummary summary in summaries.Values) {
+          if (summary.PresentCount >= 5 && (primary == null || summary.PresentCount > primary.PresentCount)) primary = summary;
+        }
+      }
+      if (primary == null) return Double.NaN;
+      metricLabel = useDisplay ? "显示帧率" : "呈现帧率";
+      int count = useDisplay ? primary.DisplayCount : primary.PresentCount;
+      double total = useDisplay ? primary.DisplayTotalMilliseconds : primary.PresentTotalMilliseconds;
+      return count >= 5 && total > 0.0 ? Math.Round(1000.0 / (total / count), 1) : Double.NaN;
     }
+  }
+
+  public string MetricLabel {
+    get { lock (gate) { return metricLabel; } }
   }
 
   public void Stop() {
     Process old = process;
     process = null;
-    lock (gate) { frames.Clear(); frameColumn = -1; }
+    lock (gate) {
+      frames.Clear();
+      displayColumn = -1;
+      presentColumn = -1;
+      swapChainColumn = -1;
+      headerReady = false;
+      metricLabel = "";
+    }
     if (old == null) return;
     try { if (!old.HasExited) old.Kill(); } catch { }
     try { old.WaitForExit(1500); } catch { }
@@ -2413,21 +2513,32 @@ $script:LiveMetricsWorker = {
   $ErrorActionPreference = 'SilentlyContinue'
 
   function Get-OptionalSensorTemperatures {
-    $cpu = $null; $gpu = $null; $source = ''
+    $cpu = $null; $gpu = $null; $cpuSource = ''; $gpuSource = ''; $providerSeen = $false
     foreach ($namespace in 'root\LibreHardwareMonitor','root\OpenHardwareMonitor') {
       try {
         $sensors = @(Get-CimInstance -Namespace $namespace -ClassName Sensor -ErrorAction Stop |
           Where-Object { "$($_.SensorType)" -eq 'Temperature' -and $null -ne $_.Value })
+        $providerSeen = $true
+        $providerName = $(if ($namespace -match 'Libre') { 'LibreHardwareMonitor' } else { 'OpenHardwareMonitor' })
         $cpuValues = @($sensors | Where-Object { "$($_.Name)" -match '(?i)CPU Package|CPU Core|Core Max|Tctl|Tdie' } |
           ForEach-Object { [double]$_.Value } | Where-Object { $_ -ge 10 -and $_ -le 125 })
         $gpuValues = @($sensors | Where-Object { "$($_.Name)" -match '(?i)GPU Core|GPU Temperature' } |
           ForEach-Object { [double]$_.Value } | Where-Object { $_ -ge 10 -and $_ -le 125 })
-        if ($cpuValues.Count) { $cpu = [math]::Round(($cpuValues | Measure-Object -Maximum).Maximum,1) }
-        if ($gpuValues.Count) { $gpu = [math]::Round(($gpuValues | Measure-Object -Maximum).Maximum,1) }
-        if ($null -ne $cpu -or $null -ne $gpu) { $source = $(if ($namespace -match 'Libre') { 'LibreHardwareMonitor' } else { 'OpenHardwareMonitor' }); break }
+        if ($null -eq $cpu -and $cpuValues.Count) {
+          $cpu = [math]::Round(($cpuValues | Measure-Object -Maximum).Maximum,1); $cpuSource = $providerName
+        }
+        if ($null -eq $gpu -and $gpuValues.Count) {
+          $gpu = [math]::Round(($gpuValues | Measure-Object -Maximum).Maximum,1); $gpuSource = $providerName
+        }
+        if ($null -ne $cpu -and $null -ne $gpu) { break }
       } catch {}
     }
-    [pscustomobject]@{Cpu=$cpu;Gpu=$gpu;Source=$source}
+    $cpuStatus = $(if ($null -ne $cpu) { '' } elseif ($providerSeen) {
+      '已连接硬件监控源，但它没有上报可信的 CPU 封装温度'
+    } else {
+      'Windows 没有统一的可信 CPU 封装温度接口；当前也未检测到 LibreHardwareMonitor/OpenHardwareMonitor WMI 传感器源'
+    })
+    [pscustomobject]@{Cpu=$cpu;Gpu=$gpu;CpuSource=$cpuSource;GpuSource=$gpuSource;CpuStatus=$cpuStatus}
   }
 
   function Get-WindowsGpuUsage {
@@ -2484,8 +2595,8 @@ $script:LiveMetricsWorker = {
         if ([double]::IsNaN($cpuUsage)) { $cpuUsage = [DfbLiveSystemMetrics]::ReadCpuUsage() }
         $memoryUsage = [DfbLiveSystemMetrics]::ReadMemoryUsage()
         $optional = Get-OptionalSensorTemperatures
-        $cpuTemp = $optional.Cpu; $cpuSource = $optional.Source
-        $gpuUsage = $null; $gpuTemp = $optional.Gpu; $gpuSource = $(if ($null -ne $gpuTemp) { $optional.Source } else { '' })
+        $cpuTemp = $optional.Cpu; $cpuSource = $optional.CpuSource
+        $gpuUsage = $null; $gpuTemp = $optional.Gpu; $gpuSource = $optional.GpuSource
         if ($GpuVendor -eq 'NVIDIA') {
           $nvidia = Get-NvidiaSnapshot
           if ($nvidia) {
@@ -2496,7 +2607,7 @@ $script:LiveMetricsWorker = {
         if ($null -eq $gpuUsage) { $gpuUsage = Get-WindowsGpuUsage }
         $State.CpuUsage = $(if ([double]::IsNaN($cpuUsage)) { $null } else { [math]::Round($cpuUsage,1) })
         $State.MemoryUsage = $(if ([double]::IsNaN($memoryUsage)) { $null } else { [math]::Round($memoryUsage,1) })
-        $State.CpuTemperature = $cpuTemp; $State.CpuTemperatureSource = $cpuSource
+        $State.CpuTemperature = $cpuTemp; $State.CpuTemperatureSource = $cpuSource; $State.CpuTemperatureStatus = $optional.CpuStatus
         $State.GpuUsage = $gpuUsage; $State.GpuTemperature = $gpuTemp; $State.GpuTemperatureSource = $gpuSource
         $State.SampledAt = $now
       }
@@ -2521,7 +2632,15 @@ $script:LiveMetricsWorker = {
 
       if ($gamePid -gt 0 -and $sampler.IsRunning) {
         $fps = $sampler.ReadFps()
-        if (-not [double]::IsNaN($fps) -and $fps -gt 0) { $State.Fps = $fps; $State.FpsStatus = '实时帧率' }
+        if (-not [double]::IsNaN($fps) -and $fps -gt 0) {
+          $State.Fps = $fps
+          $State.FpsStatus = $(if ($sampler.MetricLabel) { $sampler.MetricLabel } else { '实时帧率' })
+        } else {
+          # 交换链停止出帧（最小化、切换场景或退出渲染）后立即清掉旧值，
+          # 避免把最后一次采样误当成仍在变化的实时 FPS。
+          $State.Fps = $null
+          $State.FpsStatus = '等待有效帧'
+        }
       } elseif ($gamePid -gt 0) { $State.Fps = $null; $State.FpsStatus = '采样不可用' }
       Start-Sleep -Milliseconds 400
     }
@@ -2536,9 +2655,9 @@ function Update-LiveMetricsDashboard {
   $state = $script:LiveMetricsState
   Set-LiveMetricGauge 'fps' $state.Fps "$($state.FpsStatus)" $script:C.Green
   Set-LiveMetricGauge 'cpu' $state.CpuUsage '处理器效用' $script:C.Green
-  Set-HardwareTemperature 'cpu' $state.CpuTemperature
+  Set-HardwareTemperature 'cpu' $state.CpuTemperature "$($state.CpuTemperatureSource)" "$($state.CpuTemperatureStatus)"
   Set-LiveMetricGauge 'gpu' $state.GpuUsage '实时占用' $script:C.Green
-  Set-HardwareTemperature 'gpu' $state.GpuTemperature
+  Set-HardwareTemperature 'gpu' $state.GpuTemperature "$($state.GpuTemperatureSource)"
   Set-LiveMetricGauge 'memory' $state.MemoryUsage '实时占用' $script:C.Gold
 }
 
@@ -2551,7 +2670,7 @@ function Start-LiveMetricsMonitor($Hw) {
   }
   $script:LiveMetricsState = [hashtable]::Synchronized(@{
     Stop=$false;Fps=$null;FpsStatus='游戏未运行';GameRunning=$false;CpuUsage=$null;CpuTemperature=$null
-    CpuTemperatureSource='';GpuUsage=$null;GpuTemperature=$null;GpuTemperatureSource='';MemoryUsage=$null
+    CpuTemperatureSource='';CpuTemperatureStatus='正在检测可信 CPU 温度源';GpuUsage=$null;GpuTemperature=$null;GpuTemperatureSource='';MemoryUsage=$null
   })
   $presentMon = Join-Path $script:RootDir 'tools\PresentMon.exe'
   $nvidiaSmi = $(if (Get-Command Get-NvidiaSmiPath -ErrorAction SilentlyContinue) { Get-NvidiaSmiPath } else { $null })

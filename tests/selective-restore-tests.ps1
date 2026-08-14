@@ -82,9 +82,9 @@ try {
   Assert-True ($powerRecord.ItemId -eq 'power-ultimate' -and $powerRecord.DefinitionHash -match '^[0-9a-f]{64}$') `
     '没有 Ops 的电源项目必须能够生成 schema v3 备份项目记录'
   $selectiveIds = @(Get-SelectiveRestoreItemIds)
-  Assert-True ($selectiveIds.Count -eq 8 -and
-    @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref' |
-      Where-Object { $selectiveIds -notcontains $_ }).Count -eq 0) '第一版按项目复原白名单必须固定为八个低风险项目'
+  Assert-True ($selectiveIds.Count -eq 9 -and
+    @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref','gpu-name-spoof' |
+      Where-Object { $selectiveIds -notcontains $_ }).Count -eq 0) '按项目复原白名单必须包含显卡型号伪装'
   $dvrSpecs = @(
     [pscustomobject]@{Path='HKCU:\System\GameConfigStore';Name='GameDVR_Enabled';Existed=$true;OldValue=1;OldKind='DWord';AppliedValue=0;AppliedKind='DWord'},
     [pscustomobject]@{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR';Name='AppCaptureEnabled';Existed=$true;OldValue=1;OldKind='DWord';AppliedValue=0;AppliedKind='DWord'}
@@ -121,6 +121,20 @@ try {
   Assert-True ($multiResult.RestoredItems -eq 2 -and $multiResult.RestoredOps -eq 2 -and $multiResult.Failed.Count -eq 0 -and
     (Get-RegValue $prioSpec.Path $prioSpec.Name) -eq 38 -and (Get-RegValue $netSpec.Path $netSpec.Name) -eq 10) `
     '多选复原必须在一个操作中独立恢复全部勾选项目'
+
+  $gpuNameSpec = [pscustomobject]@{
+    Path='HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_10DE&DEV_2783\0001';Name='DeviceDesc';Existed=$true
+    OldValue='NVIDIA GeForce RTX 4070 SUPER';OldKind='String';AppliedValue='NVIDIA GeForce GTX 1050 Ti';AppliedKind='String'
+  }
+  $script:RegState[(Get-TestRegKey $gpuNameSpec.Path $gpuNameSpec.Name)] = [pscustomobject]@{Value=$gpuNameSpec.AppliedValue;Kind='String'}
+  [void](New-TestV3RegBackup 'gpu-name-spoof' '★ 显卡型号伪装' @($gpuNameSpec))
+  $gpuNameRow = @((Get-RestoreItemCatalog).Items | Where-Object Id -eq 'gpu-name-spoof')
+  Assert-True ($gpuNameRow.Count -eq 1 -and $gpuNameRow[0].CanRestore -and $gpuNameRow[0].SettingCount -eq 1) `
+    '显卡型号伪装必须显示为可单独复原项目'
+  $gpuNameResult = Invoke-RestoreSelected @('gpu-name-spoof')
+  Assert-True ($gpuNameResult.RestoredItems -eq 1 -and $gpuNameResult.RestoredOps -eq 1 -and
+    (Get-RegValue $gpuNameSpec.Path $gpuNameSpec.Name) -eq $gpuNameSpec.OldValue) `
+    '显卡型号伪装单独复原没有写回真实型号'
 
   $sysPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
   $sysOld = [pscustomobject]@{Path=$sysPath;Name='SystemResponsiveness';Existed=$true;OldValue=20;OldKind='DWord';AppliedValue=10;AppliedKind='DWord'}

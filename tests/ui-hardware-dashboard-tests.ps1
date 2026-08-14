@@ -31,6 +31,7 @@ foreach ($needle in @(
   "Set-HardwareTemperature 'cpu'","Set-HardwareTemperature 'gpu'","-TemperatureKey 'cpu'","-TemperatureKey 'gpu'",
   "`$v.TextWrapping = 'Wrap'","`$v.TextTrimming = 'None'","`$v.ToolTip = `$Value",
   'DfbLivePresentMonSampler','DfbProcessorUtilitySampler','DfbLiveSystemMetrics','Get-TemperatureColor','Start-LiveMetricsMonitor',
+  "`$State.FpsStatus = '等待有效帧'",
   '@"\Processor Information(_Total)\% Processor Utility"','处理器效用',
   'windowHeight=[math]::Round($WindowHeight,0)','Set-SavedAppWindowHeight','Save-AppUiPreferences $script:CurrentTheme',
   "Set-AppTheme (Get-SavedAppTheme)","Set-AppTheme `$(if (`$script:CurrentTheme -eq 'dark') { 'light' } else { 'dark' }) -Persist"
@@ -124,11 +125,20 @@ Assert-True ((Get-TemperatureColor 40) -ne (Get-TemperatureColor 95)) 'temperatu
     Assert-True ($script:MetricGauges[$key].UnitText.Foreground.Color -eq $script:MetricGauges[$key].ValueText.Foreground.Color) "percentage unit color differs from its number: $key"
   }
   [void](New-HwCard 'CPU' 'CPU fixture' '8核 / 16线程' -TemperatureKey 'cpu')
-  Set-HardwareTemperature 'cpu' 48
+  Set-HardwareTemperature 'cpu' 48 'fixture sensor'
   Assert-True ($script:HardwareTemperatureReadouts.cpu.ValueText.Text -eq '48') 'CPU temperature was not rendered inside its hardware card'
+  Assert-True ($script:HardwareTemperatureReadouts.cpu.Container.ToolTip -eq '数据源：fixture sensor') 'CPU temperature source is not visible'
   Assert-True ($script:HardwareTemperatureReadouts.cpu.UnitText.FontSize -eq $script:HardwareTemperatureReadouts.cpu.ValueText.FontSize) 'temperature unit size differs from its number'
   Assert-True ($script:HardwareTemperatureReadouts.cpu.UnitText.FontWeight -eq $script:HardwareTemperatureReadouts.cpu.ValueText.FontWeight) 'temperature unit weight differs from its number'
   Assert-True ($script:HardwareTemperatureReadouts.cpu.UnitText.Foreground.Color -eq $script:HardwareTemperatureReadouts.cpu.ValueText.Foreground.Color) 'temperature unit color differs from its number'
+  Set-HardwareTemperature 'cpu' $null '' 'fixture unavailable reason'
+  Assert-True ($script:HardwareTemperatureReadouts.cpu.ValueText.Text -eq 'N/A' -and
+    $script:HardwareTemperatureReadouts.cpu.UnitText.Text -eq '' -and
+    $script:HardwareTemperatureReadouts.cpu.Container.ToolTip -eq 'fixture unavailable reason') `
+    'missing CPU temperature does not explain the unavailable sensor source'
+  Set-HardwareTemperature 'cpu' 52 'fixture sensor'
+  Assert-True ($script:HardwareTemperatureReadouts.cpu.UnitText.Text -eq '°C') `
+    'temperature unit was not restored after a sensor source became available'
 }
 
 foreach ($functionName in 'Expand-PerformanceSessions','Get-PerformanceSessionTimestamp','Test-PerformanceSessionValid',
@@ -202,6 +212,23 @@ Initialize-LiveMetricsTypes
 Assert-True ([bool]('DfbLivePresentMonSampler' -as [type])) 'PresentMon live sampler type did not compile'
 Assert-True ([bool]('DfbProcessorUtilitySampler' -as [type])) 'processor utility sampler type did not compile'
 Assert-True ([bool]('DfbLiveSystemMetrics' -as [type])) 'system metrics type did not compile'
+$displaySampler = New-Object DfbLivePresentMonSampler
+try {
+  $displaySampler.AcceptCsvLine('Application,ProcessID,SwapChainAddress,DisplayedTime,FrameTime')
+  foreach ($index in 1..10) { $displaySampler.AcceptCsvLine("game.exe,42,0xMAIN,10,8") }
+  foreach ($index in 1..5) { $displaySampler.AcceptCsvLine("game.exe,42,0xUI,50,5") }
+  $displaySampler.AcceptCsvLine('game.exe,42,0xMAIN,NA,8')
+  Assert-True ([math]::Abs($displaySampler.ReadFps()-100.0) -lt 0.01) `
+    'live FPS mixed secondary swap chains or counted a dropped displayed frame'
+  Assert-True ($displaySampler.MetricLabel -eq '显示帧率') 'live FPS did not prefer the actual display cadence'
+} finally { $displaySampler.Dispose() }
+$presentSampler = New-Object DfbLivePresentMonSampler
+try {
+  $presentSampler.AcceptCsvLine('Application,ProcessID,SwapChainAddress,DisplayedTime,FrameTime')
+  foreach ($index in 1..8) { $presentSampler.AcceptCsvLine("game.exe,42,0xMAIN,NA,20") }
+  Assert-True ([math]::Abs($presentSampler.ReadFps()-50.0) -lt 0.01) 'live FPS fallback did not read PresentMon FrameTime'
+  Assert-True ($presentSampler.MetricLabel -eq '呈现帧率') 'unavailable display tracking was not labeled as present FPS'
+} finally { $presentSampler.Dispose() }
 $cpuSampler = New-Object DfbProcessorUtilitySampler
 try {
   Start-Sleep -Milliseconds 1000

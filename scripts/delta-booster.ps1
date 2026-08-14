@@ -3183,8 +3183,9 @@ function New-BackupItemRecord($Item) {
 }
 
 function Get-SelectiveRestoreItemIds {
-  # 第一阶段只开放无需重启、没有复杂依赖且底层目标可独立验证的八项。
-  @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref')
+  # 只开放没有复杂依赖且底层目标可独立验证的项目。显卡型号伪装只有一个
+  # 已完整记录原值的 DeviceDesc 注册表操作，也可安全地单独冲突检测与还原。
+  @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref','gpu-name-spoof')
 }
 
 function Sort-BackupRecordsNewestFirst($Records) {
