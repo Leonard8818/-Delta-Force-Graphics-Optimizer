@@ -2896,7 +2896,10 @@ function Test-AllowedBackupRegTarget($Op) {
       $path -ieq 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences') {
     if (Test-AllowedGameExe $name) { return $true }
   }
-  if ($path -match '^HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\(DeltaForceClient-Win64-Shipping|DeltaForce)\.exe\\PerfOptions$' -and
+  # 最早公开版本的手动文件选择器接受任意 EXE，曾有用户选择游戏同目录的
+  # DeltaForceClient.exe，并由 game-priority 写入这两个 PerfOptions 值。当前应用入口
+  # 仍只接受真实 Shipping/DeltaForce 主程序；这里只精确兼容该历史 IFEO 目标用于还原。
+  if ($path -match '^HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\(DeltaForceClient-Win64-Shipping|DeltaForceClient|DeltaForce)\.exe\\PerfOptions$' -and
       $name -iin @('CpuPriorityClass','IoPriority')) { return $true }
   if ($path -match '^HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\\{4d36e968-e325-11ce-bfc1-08002be10318\}\\\d{4}$' -and
       $name -ieq 'DisableDynamicPstate') { return $true }

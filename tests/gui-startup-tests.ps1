@@ -28,10 +28,10 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.12'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.12'") -and
-    $raw.Contains('Text="[ v0.23.0.12 ]"')) `
-  'the unified v0.23.0.12 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.13'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.13'") -and
+    $raw.Contains('Text="[ v0.23.0.13 ]"')) `
+  'the unified v0.23.0.13 version is missing or inconsistent'
 Assert-True ($raw.Contains("`$script:UpdUi.CancelDlTxt.Text = '取消排队'") -and
     $raw.Contains("'正在取消排队…'") -and
     $raw.Contains('QueueEstimatedWaitSeconds') -and $raw.Contains('预计约 {0} 分钟') -and

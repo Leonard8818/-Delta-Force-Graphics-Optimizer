@@ -518,6 +518,27 @@ try {
     (Get-RegValue $prioSpec.Path $prioSpec.Name) -eq 38 -and (Get-RegValue $netSpec.Path $netSpec.Name) -eq 10) `
     '多选复原必须在一个操作中独立恢复全部勾选项目'
 
+  # 最早版本允许手动选择 DeltaForceClient.exe，并将 game-priority 写到该 IFEO 路径。
+  # 新版不再把它当作有效游戏主程序，但必须能精确消费并还原这类历史签名备份。
+  $legacyIfeoPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\DeltaForceClient.exe\PerfOptions'
+  $legacyPrioritySpecs = @(
+    [pscustomobject]@{Path=$legacyIfeoPath;Name='CpuPriorityClass';Existed=$false;OldValue=$null;OldKind='';AppliedValue=3;AppliedKind='DWord'},
+    [pscustomobject]@{Path=$legacyIfeoPath;Name='IoPriority';Existed=$false;OldValue=$null;OldKind='';AppliedValue=3;AppliedKind='DWord'}
+  )
+  foreach ($spec in $legacyPrioritySpecs) {
+    $script:RegState[(Get-TestRegKey $spec.Path $spec.Name)] = [pscustomobject]@{Value=3;Kind='DWord'}
+  }
+  [void](New-TestV3RegBackup 'game-priority' '游戏进程 CPU/IO 优先级提高到「高」' $legacyPrioritySpecs)
+  $legacyPriorityRow = @((Get-RestoreItemCatalog).Items | Where-Object Id -eq 'game-priority')
+  Assert-True ($legacyPriorityRow.Count -eq 1 -and $legacyPriorityRow[0].CanRestore -and
+    $legacyPriorityRow[0].SettingCount -eq 2) '历史 DeltaForceClient.exe 优先级备份必须进入可复原目录'
+  $legacyPriorityResult = Invoke-RestoreSelected @('game-priority')
+  Assert-True ($legacyPriorityResult.RestoredItems -eq 1 -and $legacyPriorityResult.RestoredOps -eq 2 -and
+    $legacyPriorityResult.Failed.Count -eq 0 -and
+    $null -eq (Get-RegValue $legacyIfeoPath 'CpuPriorityClass') -and
+    $null -eq (Get-RegValue $legacyIfeoPath 'IoPriority')) `
+    '历史 DeltaForceClient.exe 优先级备份没有精确恢复到原本不存在的状态'
+
   $gpuNameSpec = [pscustomobject]@{
     Path='HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_10DE&DEV_2783\0001';Name='DeviceDesc';Existed=$true
     OldValue='NVIDIA GeForce RTX 4070 SUPER';OldKind='String';AppliedValue='NVIDIA GeForce GTX 1050 Ti';AppliedKind='String'

@@ -201,6 +201,16 @@ try {
     Set-Item -LiteralPath Function:\Get-RegValue -Value $originalGetRegValue
   }
   Assert-True (Test-AllowedBackupRegTarget ([pscustomobject]@{Path='HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_1002&DEV_744C\GPU0';Name='DeviceDesc'})) 'AMD DeviceDesc 必须进入签名备份白名单以支持完整还原'
+  $legacyPriorityPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\DeltaForceClient.exe\PerfOptions'
+  Assert-True (Test-AllowedBackupRegTarget ([pscustomobject]@{Path=$legacyPriorityPath;Name='CpuPriorityClass'})) `
+    '早期版本写入的 DeltaForceClient.exe CPU 优先级必须保留精确还原兼容'
+  Assert-True (Test-AllowedBackupRegTarget ([pscustomobject]@{Path=$legacyPriorityPath;Name='IoPriority'})) `
+    '早期版本写入的 DeltaForceClient.exe IO 优先级必须保留精确还原兼容'
+  Assert-True (-not (Test-AllowedBackupRegTarget ([pscustomobject]@{Path=$legacyPriorityPath;Name='Debugger'})) -and
+    -not (Test-AllowedBackupRegTarget ([pscustomobject]@{
+      Path='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\DeltaForceClientHelper.exe\PerfOptions'
+      Name='CpuPriorityClass'
+    }))) '历史 IFEO 兼容不得扩大到其他值名或相似进程名'
 
   $thinkPad = Resolve-ComputerBrand 'LENOVO' 'ThinkPad X1 Carbon' 'LENOVO'
   $hp = Resolve-ComputerBrand 'HP' 'OMEN 16' 'HP'

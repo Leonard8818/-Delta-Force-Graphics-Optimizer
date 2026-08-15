@@ -32,17 +32,13 @@ Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.23\
   "$($releaseManifest.minimumSupportedVersion)" -eq '0.23.0.8') `
   'release manifest version or mandatory-upgrade floor is stale'
 $expectedReleaseNotes = @'
-- 停止新应用会在系统盘创建超大页面文件的固定虚拟内存项，避免游戏中 C 盘空间异常增长。
-- 关闭内存压缩改为仅供手动对比，不再被默认、全选或内置方案带上。
-- 历史虚拟内存及全部纯注册表优化现在可按项目精确复原，并保留后续修改冲突保护。
-- 停止从软件内执行没有可验证自动备份的 NVIDIA Profile Inspector 导入。
-- 修复多用户或远程会话电脑上，其他会话运行软件导致本会话首次启动误报“已经在运行”的问题；重复点击会优先置前已有窗口。
-- 显卡型号伪装改为 NVIDIA 笔记本推荐 GTX 1050 Ti、台式机推荐 GTX 750 Ti，AMD 继续推荐 RX560。
+- 修复从早期版本升级后，还原游戏进程优先级可能提示“备份注册表目标不在白名单”、导致还原列表读取失败的问题。
+- 历史兼容仅开放 DeltaForceClient.exe 的 CpuPriorityClass 与 IoPriority 原优化项，其他进程名和 IFEO 值继续按安全白名单拒绝。
 - v0.23.0.8 以前的版本仍需完成更新后继续使用。
 '@
 Assert-True (("$($releaseManifest.notes)" -replace "`r`n", "`n") -eq ($expectedReleaseNotes -replace "`r`n", "`n") -and
   $installerBuildSource.Contains("`$manifestNotes = @'")) `
-  'v0.23.0.12 release notes are missing or inconsistent'
+  'v0.23.0.13 release notes are missing or inconsistent'
 Assert-True ($launcherBuildSource.Contains('const string ActiveMarkerName = @"Global\DeltaForceBooster.LaunchSession";') -and
   $launcherBuildSource.Contains('const string InstanceMarkerName = @"Local\DeltaForceBooster.LaunchInstance";') -and
   $launcherBuildSource.Contains('activeMarker = CreateSessionMarker(ActiveMarkerName') -and

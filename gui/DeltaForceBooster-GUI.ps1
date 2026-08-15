@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.12
+  DeltaForceBooster 图形界面 — v0.23.0.13
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.13：修复早期版本对 DeltaForceClient.exe 应用进程优先级后，新版读取
+         历史备份误报“备份注册表目标不在白名单”、导致还原列表及还原操作失败的问题。
   v0.23.0.12：停止新应用会在系统盘创建超大页面文件的虚拟内存项；内存压缩项改为仅手动选择；
          历史虚拟内存与全部纯注册表优化支持按项目精确复原；停用无自动备份的 NPI 导入；
          修复其他登录会话导致首次启动误报“已运行”，重复点击会置前现有窗口；NVIDIA
@@ -501,8 +503,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.12'
-$script:DisplayVersion = '0.23.0.12'
+$script:GuiVersion = '0.23.0.13'
+$script:DisplayVersion = '0.23.0.13'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -869,7 +871,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.12 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.13 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1455,7 +1457,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.12 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.13 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
