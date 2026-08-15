@@ -31,14 +31,14 @@ Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.23\
   "$($releaseManifest.minimumSupportedVersion)" -eq '0.23.0.8') `
   'release manifest version or mandatory-upgrade floor is stale'
 $expectedReleaseNotes = @'
-- 修复内置更新遇到下载服务器繁忙（HTTP 429 或 503）时立即失败的问题，现在会按服务器等待时间自动重试。
-- 优化持续繁忙时的提示，不再向用户显示 GetResponse、Too Many Requests 等底层错误。
-- 增强旧版本更新兼容性；下载队列占满时，旧版客户端仍可获取更新包。
+- 修复电脑已安装 PawnIO 或存在残留组件时，安装器可能报退出码 183 并中断的问题。
+- 兼容 PawnIO 2.2.0 与 2.2.0.0，增加现有驱动、设备和 DriverStore 识别，避免重复安装。
+- 温度传感器驱动未就绪时不再阻断软件主体安装；仅 CPU 温度可能暂不显示，其他功能可继续使用。
 - v0.23.0.8 以前的版本仍需完成更新后继续使用。
 '@
 Assert-True (("$($releaseManifest.notes)" -replace "`r`n", "`n") -eq ($expectedReleaseNotes -replace "`r`n", "`n") -and
   $installerBuildSource.Contains("`$manifestNotes = @'")) `
-  'v0.23.0.9 release notes are missing or inconsistent'
+  'v0.23.0.10 release notes are missing or inconsistent'
 $disclaimerText = [IO.File]::ReadAllText((Join-Path $root 'DISCLAIMER.md'))
 Assert-True ($disclaimerText -notmatch '自动寻找最佳配置|自动调优|experiments') `
   'usage notice still exposes automatic best-configuration Beta information'
@@ -77,6 +77,18 @@ Assert-True ($setupSource -match 'EnsurePawnIoInstalled\(stage, onProgress\)' -a
   $setupSource -match 'PawnIoInstallerSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032"' -and
   $setupSource -match '测试模式已跳过 PawnIO 驱动安装') `
   'installer no longer installs the verified PawnIO driver or isolates driver installation from test builds'
+$pawnIoSection = [regex]::Match($setupSource, '(?s)static bool IsPawnIoCurrent.*?static bool IsTrustedInstallWriter').Value
+Assert-True ($pawnIoSection.Contains('SYSTEM\CurrentControlSet\Services\PawnIO') -and
+  $pawnIoSection.Contains('SYSTEM\CurrentControlSet\Enum\ROOT\PAWNIO') -and
+  $pawnIoSection.Contains('DriverStore') -and
+  $pawnIoSection.Contains('PawnIO.sys') -and
+  ([regex]::Matches($pawnIoSection, 'new Version\(2, 2, 0\)').Count -ge 2) -and
+  -not $pawnIoSection.Contains('new Version(2, 2, 0, 0)') -and
+  $pawnIoSection.Contains('bool currentAfterInstall = IsPawnIoCurrent') -and
+  $pawnIoSection.Contains('if (exitCode == 183)') -and
+  $pawnIoSection.Contains('软件主体将继续安装') -and
+  -not $pawnIoSection.Contains('throw new InvalidOperationException("PawnIO 驱动安装失败')) `
+  'PawnIO detection/failure regression: existing driver or exit 183 can still abort the application install'
 Assert-True ($setupSource -match 'SetNamedSecurityInfoW' -and
   $setupSource -match 'LABEL_SECURITY_INFORMATION' -and
   $setupSource -match 'S:\(ML;OICI;NW;;;HI\)' -and

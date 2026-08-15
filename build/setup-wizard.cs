@@ -1579,11 +1579,50 @@ static class Installer {
                     Version parsed;
                     if (!Version.TryParse(Convert.ToString(key.GetValue("DisplayVersion"), CultureInfo.InvariantCulture), out parsed)) continue;
                     installedVersion = parsed;
-                    return parsed.CompareTo(new Version(2, 2, 0, 0)) >= 0;
+                    // FileVersion can be reported as either 2.2.0 or 2.2.0.0.  A
+                    // four-part minimum makes System.Version treat 2.2.0 as older
+                    // because its missing Revision is -1, so compare at three parts.
+                    if (parsed.CompareTo(new Version(2, 2, 0)) >= 0) return true;
                 }
             } catch (Exception) { }
         }
+        // Some hardware tools install the signed PawnIO driver without keeping its
+        // Add/Remove Programs entry.  Treat the protected DriverStore service and a
+        // present ROOT\PAWNIO device as authoritative too, otherwise a second setup
+        // can return ERROR_ALREADY_EXISTS (183) and block the whole application.
+        try {
+            using (RegistryKey baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine,
+                       Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32))
+            using (RegistryKey service = baseKey.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PawnIO"))
+            using (RegistryKey device = baseKey.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\ROOT\PAWNIO")) {
+                if (service == null || device == null || device.SubKeyCount < 1) return false;
+                int serviceType = Convert.ToInt32(service.GetValue("Type", 0), CultureInfo.InvariantCulture);
+                if (serviceType != 1) return false;
+                string rawPath = Convert.ToString(service.GetValue("ImagePath"), CultureInfo.InvariantCulture);
+                if (string.IsNullOrWhiteSpace(rawPath)) return false;
+                rawPath = Environment.ExpandEnvironmentVariables(rawPath.Trim().Trim('"'));
+                string windows = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.Windows)).TrimEnd('\\');
+                const string systemRootPrefix = @"\SystemRoot\";
+                if (rawPath.StartsWith(systemRootPrefix, StringComparison.OrdinalIgnoreCase))
+                    rawPath = Path.Combine(windows, rawPath.Substring(systemRootPrefix.Length));
+                string fullPath = Path.GetFullPath(rawPath);
+                string driverStore = Path.GetFullPath(Path.Combine(windows, "System32", "DriverStore", "FileRepository")).TrimEnd('\\') + "\\";
+                if (!fullPath.StartsWith(driverStore, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(Path.GetFileName(fullPath), "PawnIO.sys", StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(fullPath)) return false;
+                Version parsed;
+                if (!Version.TryParse(FileVersionInfo.GetVersionInfo(fullPath).FileVersion, out parsed)) return false;
+                installedVersion = parsed;
+                return parsed.CompareTo(new Version(2, 2, 0)) >= 0;
+            }
+        } catch (Exception) { }
         return false;
+    }
+
+    static string PawnIoUnavailableNote(string detail) {
+        return "硬件传感器驱动暂未就绪" +
+            (string.IsNullOrEmpty(detail) ? "" : "（" + detail + "）") +
+            "；软件主体将继续安装，除 CPU 温度可能暂不显示外，其他功能不受影响。";
     }
 
     static void EnsurePawnIoInstalled(string stage, Action<int, int, string> onProgress) {
@@ -1607,30 +1646,50 @@ static class Installer {
             throw new InvalidDataException("PawnIO 驱动安装器完整性复验失败");
         if (onProgress != null) onProgress(1, 1, "正在安装签名硬件传感器驱动 PawnIO");
 
-        int exitCode;
-        using (Process process = Process.Start(new ProcessStartInfo {
-            FileName = installer,
-            Arguments = "-install -silent",
-            WorkingDirectory = Path.GetDirectoryName(installer),
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden
-        })) {
-            if (process == null) throw new InvalidOperationException("PawnIO 驱动安装进程未创建");
-            if (!process.WaitForExit(120000)) {
-                try { process.Kill(); } catch (Exception) { }
-                throw new TimeoutException("PawnIO 驱动安装超时");
+        int exitCode = -1;
+        try {
+            using (Process process = Process.Start(new ProcessStartInfo {
+                FileName = installer,
+                Arguments = "-install -silent",
+                WorkingDirectory = Path.GetDirectoryName(installer),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            })) {
+                if (process == null) {
+                    PawnIoInstallNote = PawnIoUnavailableNote("驱动安装程序未启动");
+                    return;
+                }
+                if (!process.WaitForExit(120000)) {
+                    try { process.Kill(); } catch (Exception) { }
+                    PawnIoInstallNote = PawnIoUnavailableNote("驱动安装超时");
+                    return;
+                }
+                exitCode = process.ExitCode;
             }
-            exitCode = process.ExitCode;
+        } catch (Exception) {
+            PawnIoInstallNote = PawnIoUnavailableNote("驱动安装程序未完成");
+            return;
         }
-        if (exitCode != 0 && exitCode != 3010)
-            throw new InvalidOperationException("PawnIO 驱动安装失败，退出码 " + exitCode);
-        if (!IsPawnIoCurrent(out installedVersion))
-            throw new InvalidOperationException("PawnIO 安装器已返回成功，但系统没有登记有效版本");
-        PawnIoRebootRequired = exitCode == 3010;
-        PawnIoInstallNote = PawnIoRebootRequired
-            ? "PawnIO 驱动已安装；Windows 要求重启后启用 CPU 温度读取"
-            : "硬件传感器驱动已安装：PawnIO " + installedVersion;
+        bool currentAfterInstall = IsPawnIoCurrent(out installedVersion);
+        if (currentAfterInstall) {
+            PawnIoRebootRequired = exitCode == 3010;
+            PawnIoInstallNote = PawnIoRebootRequired
+                ? "PawnIO 驱动已安装；Windows 要求重启后启用 CPU 温度读取"
+                : "硬件传感器驱动已就绪：PawnIO " + installedVersion;
+            return;
+        }
+        if (exitCode == 3010) {
+            PawnIoRebootRequired = true;
+            PawnIoInstallNote = "PawnIO 驱动已写入；Windows 要求重启后启用 CPU 温度读取";
+            return;
+        }
+        if (exitCode == 183) {
+            PawnIoInstallNote = "检测到电脑中已有 PawnIO 组件，已保留现有状态并继续安装；" +
+                "除 CPU 温度可能暂不显示外，其他功能不受影响。";
+            return;
+        }
+        PawnIoInstallNote = PawnIoUnavailableNote(exitCode == 0 ? "系统尚未启用驱动" : "错误 " + exitCode);
     }
 
     static bool IsTrustedInstallWriter(SecurityIdentifier sid) {

@@ -687,9 +687,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复内置更新遇到下载服务器繁忙（HTTP 429 或 503）时立即失败的问题，现在会按服务器等待时间自动重试。
-- 优化持续繁忙时的提示，不再向用户显示 GetResponse、Too Many Requests 等底层错误。
-- 增强旧版本更新兼容性；下载队列占满时，旧版客户端仍可获取更新包。
+- 修复电脑已安装 PawnIO 或存在残留组件时，安装器可能报退出码 183 并中断的问题。
+- 兼容 PawnIO 2.2.0 与 2.2.0.0，增加现有驱动、设备和 DriverStore 识别，避免重复安装。
+- 温度传感器驱动未就绪时不再阻断软件主体安装；仅 CPU 温度可能暂不显示，其他功能可继续使用。
 - v0.23.0.8 以前的版本仍需完成更新后继续使用。
 '@
 $manifestObj = [ordered]@{
