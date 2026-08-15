@@ -165,15 +165,18 @@ try {
     $spoofModels[2] -eq 'NVIDIA GeForce RTX 2050' -and
     $spoofModels[3] -eq 'NVIDIA GeForce RTX 2060' -and
     $spoofModels[4] -eq 'AMD Radeon RX560') '显卡型号伪装下拉选项不完整或顺序漂移'
-  Assert-True ((Test-RecommendedGpuSpoofModel $spoofModels[0]) -and
-    (Test-RecommendedGpuSpoofModel $spoofModels[1]) -and
-    (-not (Test-RecommendedGpuSpoofModel $spoofModels[2])) -and
-    (-not (Test-RecommendedGpuSpoofModel $spoofModels[3])) -and
-    (Test-RecommendedGpuSpoofModel $spoofModels[4])) '推荐星标必须只覆盖 750 Ti/1050 Ti/RX560'
-  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 3060 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') 'RTX 30 系默认应伪装为 GTX 750 Ti'
-  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 4070' $false) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 40 系默认应伪装为 GTX 1050 Ti'
+  Assert-True ((Test-RecommendedGpuSpoofModel $spoofModels[0] $false 'NVIDIA' 'NVIDIA GeForce RTX 4070') -and
+    (-not (Test-RecommendedGpuSpoofModel $spoofModels[1] $false 'NVIDIA' 'NVIDIA GeForce RTX 4070')) -and
+    (-not (Test-RecommendedGpuSpoofModel $spoofModels[0] $true 'NVIDIA' 'NVIDIA GeForce RTX 4060 Laptop GPU')) -and
+    (Test-RecommendedGpuSpoofModel $spoofModels[1] $true 'NVIDIA' 'NVIDIA GeForce RTX 4060 Laptop GPU') -and
+    (Test-RecommendedGpuSpoofModel $spoofModels[4] $false 'AMD' 'AMD Radeon RX 7900 XTX')) `
+    '推荐星标未按台式 750 Ti、笔记本 1050 Ti、AMD RX560 唯一显示'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 3060 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') 'RTX 30 系台式机默认应伪装为 GTX 750 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 4070' $false) -eq 'NVIDIA GeForce GTX 750 Ti') 'RTX 40 系台式机默认应伪装为 GTX 750 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 5060' $false) -eq 'NVIDIA GeForce GTX 750 Ti') 'RTX 50 系台式机默认应伪装为 GTX 750 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 3060 Laptop GPU' $true) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 30 系笔记本默认应伪装为 GTX 1050 Ti'
   Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce RTX 5060 Laptop GPU' $true) -eq 'NVIDIA GeForce GTX 1050 Ti') 'RTX 50 系笔记本默认应伪装为 GTX 1050 Ti'
-  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce GTX 1660 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') '其他台式 N 卡兜底应伪装为 GTX 750 Ti'
+  Assert-True ((Get-DefaultGpuSpoofModel 'NVIDIA GeForce GTX 1660 Ti' $false) -eq 'NVIDIA GeForce GTX 750 Ti') '其他台式 N 卡应伪装为 GTX 750 Ti'
   Assert-True ((Get-DefaultGpuSpoofModel 'AMD Radeon RX 7900 XTX' $false 'AMD') -eq 'AMD Radeon RX560') 'AMD 默认应伪装为 AMD Radeon RX560'
   Assert-True ((Get-GpuVendor 'PCI\VEN_1002&DEV_744C\GPU0' 'NVIDIA GeForce RTX 2060') -eq 'AMD') 'AMD 设备伪装成 GeForce 后不得改变真实厂商判定'
 

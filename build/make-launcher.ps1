@@ -1,5 +1,8 @@
 ﻿<#
-  DeltaForceBooster 启动器构建脚本 — v0.6
+  DeltaForceBooster 启动器构建脚本 — v0.7
+  v0.7：把“是否重复打开”从全电脑全局标记拆为当前 Windows 会话标记，避免其他登录
+        会话正在使用时把本会话第一次启动误判成重复；重复点击时优先恢复并置前已有窗口。
+        原全局标记继续只承担 EngineHost 生命周期认证与卸载互斥。
   v0.6：收尾阶段不再对 GetProcessById 拿到的 EngineHost 直接读 ExitCode/WaitForExit——
         那会抛「进程不是由此对象启动的」，把 EngineHost 真正的失败原因盖成一句无关
         报错；改为可失败的安全读取，读不到就如实说明。会话建立后再出错也不再谎称
@@ -167,7 +170,12 @@ using Microsoft.Win32;
 [assembly: AssemblyFileVersion("$ver4")]
 
 static class Launcher {
-    const string SessionMarkerName = @"Global\DeltaForceBooster.LaunchSession";
+    // 全局标记只表示至少一个可信 launcher 正在运行，供 EngineHost 生命周期认证与卸载
+    // 互斥使用；它不再决定“当前用户是否重复打开”。Local 命名空间由 Windows 按登录
+    // 会话隔离，其他用户/远程会话的实例不会再挡住本会话第一次启动。
+    const string ActiveMarkerName = @"Global\DeltaForceBooster.LaunchSession";
+    const string InstanceMarkerName = @"Local\DeltaForceBooster.LaunchInstance";
+    const string MainWindowTitle = "三角洲行动 · 画面优化助手";
     const int MaxBrokerPayloadBytes = 24 * 1024 * 1024;
     static readonly string[][] RequiredFiles = new string[][] {
 $hashRowsText
@@ -235,6 +243,12 @@ $hashRowsText
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool SetForegroundWindow(IntPtr window);
 
     static bool PathHasReparsePoint(string path) {
         try {
@@ -377,14 +391,44 @@ $hashRowsText
         return security;
     }
 
-    static Mutex CreateSessionMarker(out bool createdNew) {
+    static Mutex CreateSessionMarker(string name, out bool createdNew) {
         var users = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
         var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         var security = new MutexSecurity();
         security.SetAccessRuleProtection(true, false);
         security.AddAccessRule(new MutexAccessRule(users, MutexRights.Synchronize | MutexRights.Modify, AccessControlType.Allow));
         security.AddAccessRule(new MutexAccessRule(admins, MutexRights.FullControl, AccessControlType.Allow));
-        return new Mutex(false, SessionMarkerName, out createdNew, security);
+        try { return new Mutex(false, name, out createdNew, security); }
+        catch (UnauthorizedAccessException) {
+            // 带 MutexSecurity 的构造函数打开“其他登录用户创建的”现有全局对象时会申请
+            // FullControl，而 ACL 只给普通用户 Synchronize/Modify。旧逻辑把这个权限差异
+            // 直接当作“已经运行”，正是多用户电脑首次启动误报的一条路径。按已授予权限
+            // 重开即可；若对象本身真的拒绝这些权限，异常继续上抛并显示真实启动错误。
+            createdNew = false;
+            return Mutex.OpenExisting(name, MutexRights.Synchronize | MutexRights.Modify);
+        }
+    }
+
+    static bool TryActivateExistingWindow() {
+        int self = Process.GetCurrentProcess().Id;
+        int session = Process.GetCurrentProcess().SessionId;
+        foreach (Process process in Process.GetProcesses()) {
+            try {
+                if (process.Id == self || process.SessionId != session ||
+                    !String.Equals(process.MainWindowTitle, MainWindowTitle, StringComparison.Ordinal))
+                    continue;
+                IntPtr window = process.MainWindowHandle;
+                if (window == IntPtr.Zero) continue;
+                // SW_RESTORE 同时覆盖正常与最小化窗口；本 launcher 是用户刚刚主动点击的
+                // 前台进程，因此 SetForegroundWindow 可把启动权传给已存在的主窗口/声明窗。
+                ShowWindowAsync(window, 9);
+                SetForegroundWindow(window);
+                return true;
+            } catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            finally { process.Dispose(); }
+        }
+        return false;
     }
 
     static string ReadBoundedUtf8(BinaryReader reader, int maxBytes) {
@@ -717,22 +761,30 @@ $hashRowsText
 
     [STAThread]
     static void Main() {
-        Mutex marker = null;
+        Mutex activeMarker = null;
+        Mutex instanceMarker = null;
         try {
             DfbTokenFacts token = DfbTokenValidation.FromCurrentProcess();
             bool currentAdmin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
             bool repairOnly = IsRepairOnlyToken(token, currentAdmin);
             if (!token.IsMedium && !repairOnly)
                 throw new InvalidOperationException("当前 Windows 会话令牌不是可用的普通或管理员交互令牌。");
+            bool activeCreated;
+            activeMarker = CreateSessionMarker(ActiveMarkerName, out activeCreated);
             bool createdNew;
-            try { marker = CreateSessionMarker(out createdNew); }
-            catch (UnauthorizedAccessException) { createdNew = false; }
+            instanceMarker = CreateSessionMarker(InstanceMarkerName, out createdNew);
             if (!createdNew) {
 #if DFB_TESTING
                 if (WriteAlreadyRunningTestMarker()) return;
 #endif
-                MessageBox.Show("软件已经在运行，请使用已经打开的窗口。", "三角洲行动优化助手",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // 首个实例可能正在通过 UAC 或加载主界面，给它一个很短的就绪窗口；已经
+                // 可见时直接置前，不再让用户面对“第一次运行却说已经运行”的误导提示。
+                for (int attempt = 0; attempt < 12; attempt++) {
+                    if (TryActivateExistingWindow()) return;
+                    Thread.Sleep(100);
+                }
+                MessageBox.Show("软件正在启动。请查看任务栏中的已有窗口；如果屏幕上有管理员授权提示，请先点击“是”。",
+                    "三角洲行动优化助手", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -756,7 +808,8 @@ $hashRowsText
                 reason = "启动失败：" + ex.Message;
             MessageBox.Show(reason, "三角洲行动优化助手", MessageBoxButtons.OK, MessageBoxIcon.Error);
         } finally {
-            if (marker != null) marker.Dispose();
+            if (instanceMarker != null) instanceMarker.Dispose();
+            if (activeMarker != null) activeMarker.Dispose();
         }
     }
 }

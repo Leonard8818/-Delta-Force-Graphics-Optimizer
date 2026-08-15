@@ -265,12 +265,14 @@ try {
   } $enginePath $profileCase
 } finally { if (Test-Path -LiteralPath $profileCase) { Remove-Item -LiteralPath $profileCase -Recurse -Force } }
 
-# Actual WinPS5.1 second-launch regression: a held lifetime mutex returns before ValidateFiles/RunAs.
+# Actual WinPS5.1 second-launch regression: a held current-session instance mutex returns before
+# ValidateFiles/RunAs. The separate Global lifetime marker is intentionally not the duplicate gate.
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('DeltaForceBooster-Tests\engine-session-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($testRoot)
 $testLauncher = Join-Path $testRoot 'launcher-test.exe'
 $markerFile = Join-Path $testRoot 'already-running.txt'
 $marker = $null
+$p = $null
 try {
   & $winPs -NoProfile -ExecutionPolicy Bypass -File $hostBuildPath | Out-Host
   Assert-True ($LASTEXITCODE -eq 0) 'EngineHost test build failed'
@@ -278,8 +280,8 @@ try {
   Assert-True ($LASTEXITCODE -eq 0) 'launcher DFB_TESTING build failed'
   Copy-Item -LiteralPath (Join-Path $root '启动优化工具.exe') -Destination $testLauncher
   $created = $false
-  $marker = New-Object Threading.Mutex($false, 'Global\DeltaForceBooster.LaunchSession', [ref]$created)
-  Assert-True $created 'test could not acquire the lifetime launcher marker'
+  $marker = New-Object Threading.Mutex($false, 'Local\DeltaForceBooster.LaunchInstance', [ref]$created)
+  Assert-True $created 'test could not acquire the current-session launcher marker'
   $env:DFB_TEST_ALREADY_RUNNING_LOG = $markerFile
   $p = Start-Process -FilePath $testLauncher -WorkingDirectory ([Environment]::SystemDirectory) -PassThru
   Assert-True ($p.WaitForExit(10000)) 'second launcher did not return without UAC'
@@ -287,6 +289,8 @@ try {
     [IO.File]::ReadAllText($markerFile) -eq 'already-running') 'second launcher did not take the pre-UAC already-running path'
 } finally {
   Remove-Item Env:DFB_TEST_ALREADY_RUNNING_LOG -ErrorAction SilentlyContinue
+  if ($p -and -not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
+  if ($p) { $p.Dispose() }
   if ($marker) { $marker.Dispose() }
   if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
   # Do not leave a DFB_TESTING launcher in the repository after the regression.

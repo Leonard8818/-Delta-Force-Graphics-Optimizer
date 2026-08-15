@@ -28,10 +28,10 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.11'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.11'") -and
-    $raw.Contains('Text="[ v0.23.0.11 ]"')) `
-  'the unified v0.23.0.11 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.12'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.12'") -and
+    $raw.Contains('Text="[ v0.23.0.12 ]"')) `
+  'the unified v0.23.0.12 version is missing or inconsistent'
 Assert-True ($raw.Contains("`$script:UpdUi.CancelDlTxt.Text = '取消排队'") -and
     $raw.Contains("'正在取消排队…'") -and
     $raw.Contains('QueueEstimatedWaitSeconds') -and $raw.Contains('预计约 {0} 分钟') -and
@@ -64,9 +64,14 @@ Assert-True ($raw.Contains('function Show-DiagnosticFeedbackDialog') -and
   $raw.Contains("Id = 'one_percent_gain'; Label = '1% Low 提升 / 掉帧减少'")) `
   'diagnostic feedback page is missing required multi-select problem/improvement choices'
 Assert-True ($raw.Contains('New-Object Windows.Controls.ComboBoxItem') -and
-  $raw.Contains("Test-RecommendedGpuSpoofModel `$model") -and
+  $raw.Contains('$recommended = Test-RecommendedGpuSpoofModel $model $isLaptop $gpuVendor $gpuName') -and
+  $raw.Contains('★ 为当前笔记本/台式机推荐项') -and
   $raw.Contains("`$this.SelectedItem.Tag")) `
-  'GPU model selector does not render recommendation stars separately from the registry value'
+  'GPU model selector does not render the form-factor recommendation separately from the registry value'
+Assert-True ($raw.Contains("'Local\DeltaForceBooster.GUI'") -and
+  -not $raw.Contains("'Global\DeltaForceBooster.GUI'") -and
+  $raw.Contains('Title="三角洲行动 · 画面优化助手" Width="620" Height="640"')) `
+  'GUI single-instance scope still crosses Windows sessions or the first-run disclaimer cannot be activated'
 Assert-True ($raw.Contains("Get-XmpBiosTutorial `$script:HardwareInfo") -and
   $raw.Contains("New-HwCard 'SYSTEM' `$systemName") -and
   $raw.Contains('电脑：$($hw.ComputerBrand) $($hw.ComputerModel)')) `
@@ -96,6 +101,10 @@ Assert-True ($raw.Contains('x:Name="FrameFixCacheBtn" Content="清理着色器�
 Assert-True ($raw.Contains('@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children)') -and
   $raw.Contains('包含 ★ 显卡型号伪装 · 执行前二次确认')) `
   'optimization select-all does not include the GPU model spoof row'
+Assert-True ($raw.Contains("BulkSelect = [bool](-not `$Item.ContainsKey('BulkSelect') -or `$Item.BulkSelect)") -and
+  $raw.Contains('$bulkSelect = [bool]($row.DataContext -and $row.DataContext.BulkSelect)') -and
+  $raw.Contains('$bulkSelect -and $row.Tag -ne $true')) `
+  'optimization select-all ignores the per-item bulk-selection safety boundary'
 Assert-True ($raw.Contains("Show-ConfirmDialog '未选择优化项' 'NO ITEMS SELECTED'") -and
   $raw.Contains('请先勾选至少一个优化项目，再点击「执行优化」。')) `
   'execute optimization does not show a visible prompt when no item is selected'

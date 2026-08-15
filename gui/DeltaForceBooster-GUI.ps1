@@ -1,9 +1,13 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.11
+  DeltaForceBooster 图形界面 — v0.23.0.12
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.12：停止新应用会在系统盘创建超大页面文件的虚拟内存项；内存压缩项改为仅手动选择；
+         历史虚拟内存与全部纯注册表优化支持按项目精确复原；停用无自动备份的 NPI 导入；
+         修复其他登录会话导致首次启动误报“已运行”，重复点击会置前现有窗口；NVIDIA
+         型号伪装改为笔记本推荐 GTX 1050 Ti、台式机推荐 GTX 750 Ti。
   v0.23.0.11：修复软件内立即重启在部分电脑上点击后没有反应的问题；运行日志改为跨会话保留，
          重新打开后可直接复制或随完整诊断上传，并补充 VBS/内存完整性状态。
   v0.23.0.10：修复已有 PawnIO 驱动或残留组件时安装可能报退出码 183 并中断的问题；
@@ -363,13 +367,13 @@ if ($needsUacRepair) {
     } else { exit }
 }
 
-# 同一台电脑只保留一个主程序实例。用全局命名 Mutex 而不是枚举 powershell.exe：启动器、
-# bat 和直接运行 ps1 最终都会经过这里，同时不会误伤用户开的其他 PowerShell 窗口。
+# 当前 Windows 登录会话只保留一个主程序实例。Local 命名空间避免其他用户/远程会话
+# 正在运行时把本会话第一次启动误报成重复；全电脑范围的系统写入仍由引擎 mutex 串行化。
 $createdNew = $false
-$script:InstanceMutex = [Threading.Mutex]::new($true, 'Global\DeltaForceBooster.GUI', [ref]$createdNew)
+$script:InstanceMutex = [Threading.Mutex]::new($true, 'Local\DeltaForceBooster.GUI', [ref]$createdNew)
 if (-not $createdNew) {
   Add-Type -AssemblyName PresentationFramework
-  [Windows.MessageBox]::Show('软件已经在运行，请使用已经打开的窗口。', '三角洲行动 · 画面优化助手', 'OK', 'Information') | Out-Null
+  [Windows.MessageBox]::Show('当前 Windows 会话已有主窗口，请使用任务栏中的现有窗口。', '三角洲行动 · 画面优化助手', 'OK', 'Information') | Out-Null
   $script:InstanceMutex.Dispose()
   exit
 }
@@ -497,8 +501,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.11'
-$script:DisplayVersion = '0.23.0.11'
+$script:GuiVersion = '0.23.0.12'
+$script:DisplayVersion = '0.23.0.12'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -865,7 +869,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.11 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.12 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1451,7 +1455,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.11 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.12 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2758,11 +2762,16 @@ function Update-Count {
   # 「可执行」= 未处于已就绪/正常态的项（行 Tag 存的是检测到的 Optimized 状态）
   $oper = @($rows | Where-Object { $_.Tag -ne $true })
   $ui.CountText.Text = "已选 $sel / $($rows.Count) · 可执行 $($oper.Count)"
-  # 全选框三态回显：程序赋值不触发 Click，不会与点击处理器互相递归
+  # 全选框只代表允许批量选择的项目；高磁盘/内存影响项仍可手动勾选，但不会被「全选」带上。
+  # 程序赋值不触发 Click，不会与点击处理器互相递归。
   if ($ui.SelAllChk) {
-    $operLeft = @($oper | Where-Object { -not $_.Child.Children[0].IsChecked }).Count
+    $bulkOper = @($oper | Where-Object { $_.DataContext -and $_.DataContext.BulkSelect })
+    $bulkLeft = @($bulkOper | Where-Object { -not $_.Child.Children[0].IsChecked }).Count
+    $manualSelected = @($rows | Where-Object {
+      $_.DataContext -and -not $_.DataContext.BulkSelect -and $_.Child.Children[0].IsChecked
+    }).Count
     $ui.SelAllChk.IsChecked = $(if ($sel -eq 0) { $false }
-                                elseif ($oper.Count -gt 0 -and $operLeft -eq 0) { $true }
+                                elseif ($bulkOper.Count -gt 0 -and $bulkLeft -eq 0 -and $manualSelected -eq 0) { $true }
                                 else { $null })
   }
 }
@@ -2779,6 +2788,9 @@ function New-ItemRow($Item, $State, [bool]$Last) {
   # 不写任何东西，上次通过不代表这次仍然正常（运行库可能被别的软件装崩）。此前 VC++
   # 体检一旦通过，套方案时就再也不会被勾上，等于永远只检测一次
   $row.Tag = $(if ($Item.Kind -eq 'check') { $null } else { $State.Optimized })
+  $row.DataContext = [pscustomobject]@{
+    BulkSelect = [bool](-not $Item.ContainsKey('BulkSelect') -or $Item.BulkSelect)
+  }
 
   $g = New-Object Windows.Controls.Grid
   foreach ($w in 'Auto', '*', 'Auto') {
@@ -2867,16 +2879,20 @@ function New-ItemRow($Item, $State, [bool]$Last) {
                          $script:SelectedGpuSpoofModel
                        } else { $Item.SpoofModel })
     $selectedOption = $null
+    $isLaptop = [bool]$script:HardwareInfo.IsLaptop
+    $gpuVendor = "$($script:HardwareInfo.MainGpuVendor)"
+    $gpuName = "$($script:HardwareInfo.MainGpuName)"
     foreach ($model in $models) {
       $option = New-Object Windows.Controls.ComboBoxItem
-      $option.Content = "$(if (Test-RecommendedGpuSpoofModel $model) { '★ ' })$model"
+      $recommended = Test-RecommendedGpuSpoofModel $model $isLaptop $gpuVendor $gpuName
+      $option.Content = "$(if ($recommended) { '★ ' })$model"
       $option.Tag = $model
       [void]$modelBox.Items.Add($option)
       if ($model -eq $selectedModel) { $selectedOption = $option }
     }
     $modelBox.SelectedItem = $selectedOption
     $script:SelectedGpuSpoofModel = "$selectedModel"
-    $modelBox.ToolTip = '选择要向系统和游戏上报的显卡型号；★ 为推荐项'
+    $modelBox.ToolTip = '选择要向系统和游戏上报的显卡型号；★ 为当前笔记本/台式机推荐项'
     $modelBox.Add_SelectionChanged({
       if ($this.SelectedItem -and $this.SelectedItem.Tag) {
         $script:SelectedGpuSpoofModel = "$($this.SelectedItem.Tag)"
@@ -3531,7 +3547,7 @@ function Build-DisclaimerDialog([bool]$ReadOnly) {
   $dxaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="620" Height="640" WindowStyle="None" ResizeMode="NoResize"
+        Title="三角洲行动 · 画面优化助手" Width="620" Height="640" WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen" ShowInTaskbar="True"
         Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource LineHi}" BorderThickness="1"
         FontFamily="Microsoft YaHei UI" FontSize="12">
@@ -9375,12 +9391,13 @@ $ui.CheckUpdBtn.Add_Click({
   Start-ManualUpdateCheck
 })
 
-# 全选/全不选（实机诉求）：安全区与显卡型号伪装区一起处理；已就绪项不重复圈选，
-# 显卡伪装在执行时仍走独立二次确认。全不选则一视同仁清空。
+# 全选/全不选：只批量勾选 BulkSelect 项，避免把会显著增加页面文件 IO 的专家项顺手带上；
+# 已就绪项不重复圈选。全不选仍一视同仁清空。
 $ui.SelAllChk.Add_Click({
   $on = ($ui.SelAllChk.IsChecked -eq $true)
   foreach ($row in (@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children))) {
-    $row.Child.Children[0].IsChecked = $(if ($on) { $row.Tag -ne $true } else { $false })
+    $bulkSelect = [bool]($row.DataContext -and $row.DataContext.BulkSelect)
+    $row.Child.Children[0].IsChecked = $(if ($on) { $bulkSelect -and $row.Tag -ne $true } else { $false })
   }
   Update-Count
   if ($ui.PresetBox -and $ui.PresetBox.SelectedIndex -ge 0) {

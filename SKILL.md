@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 注意事项（如实告知用户）：
 - `visualfx-perf`（视觉效果最佳性能）会让桌面外观明显变朴素，默认不做；
 - `mouse-accel-off` 会改变鼠标手感，只推荐给愿意重新适应的射击游戏玩家；
-- `pagefile-custom`（固定虚拟内存）只在闪退/爆内存时才建议；
+- 固定虚拟内存功能已停止新应用；旧版 `pagefile-custom` 备份仍可在「还原设置」中单独复原；
 - `windowed-opt-off`（关窗口化游戏优化）微软说开着能降延迟、社区说关掉才不掉帧，
   两派都有实测支持，默认不勾选，建议让用户开关各测一次再定；
 - `wsearch-off` 会让系统搜索变慢，`hibernate-off` 会顺带关掉快速启动；
@@ -131,13 +131,8 @@ Agent 只负责向用户解释需要保持同一地图、画质、分辨率和�
 Intel 优化、低延迟 N 卡走 Reflex / A 卡走 Anti-Lag），转述时先说明检测到的显卡型号
 （`Hardware.MainGpuName`，双显卡以独显为准），再给对应厂商的内容。
 
-进阶（可选）：`<root>\tools\` 已附带推荐参数的 `DeltaForce-Recommended.nip`
-（电源最高性能/超低延迟超高/垂直同步强制关/预渲染 1/着色器缓存无限制/线程优化开/
-DLSS 强制 Preset K）。用户再自行下载官方签名的 NVIDIA Profile Inspector
-（`nvidiaProfileInspector.exe`）放入同目录；只有文件名、数字签名和发布者校验通过时，
-检测结果才会出现 `nvidia-profile` 项，可用 `-Items nvidia-profile` 显式导入。它不在
-任何内置预设中，执行后还会检查进程退出码。该 .nip 未经实机导入验证，且此项无自动备份——导入前必须提醒用户先在 Inspector 中
-Export Profiles 手动备份当前配置。
+NVIDIA Profile Inspector 配置导入不再由本工具执行：该操作无法生成可验证的自动还原
+备份。需要调整驱动配置时，只展示 `GpuGuide`，由用户在显卡控制面板中手动设置。
 
 ### 还原（用户后悔时）
 
@@ -180,7 +175,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 | prio-separation | Win32PrioritySeparation=40，前台调度权重 | 是 | 需要 |
 | paging-exec | 内核代码常驻内存 | 是 | 需要 |
 | wer-off | 关闭 Windows 错误报告 | 是 | 否 |
-| mem-compress-off | 关闭内存压缩与页面合并 | 内存≥32G 才默认 | 需要 |
+| mem-compress-off | 关闭内存压缩与页面合并（仅供手动对比，不进入默认、全选或内置方案） | 否 | 需要 |
 | transparency-off | 关闭窗口透明特效 | 是 | 否 |
 | fso-off | 为游戏禁用全屏优化 | 是 | 否 |
 | gpu-pref | 强制游戏用高性能 GPU | 是 | 否 |
@@ -202,14 +197,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<root>\scripts\delta-booste
 | windowed-opt-off | 关闭「窗口化游戏优化」（复合串只改目标子键） | 否 | 否 |
 | vcredist-check | VC++ v14 运行库体检（纯检测，缺失才报问题） | 否 | 否 |
 | xmp-check | 内存频率 / XMP·A-XMP·EXPO·DOCP 体检（纯检测） | 否 | 否 |
-| pagefile-custom | 虚拟内存固定（初始=内存×1.5、最大=×2，仅闪退时用） | 否 | 需要 |
-| nvidia-profile | 导入 N 卡配置档（需 tools\ 就位） | 否 | 需要 |
 
 risky 档（默认不勾；`main` 会选中但仍要求独立确认 / `-Risky`）：
 
 | Id | 作用 | 风险 |
 |---|---|---|
-| gpu-name-spoof | 显卡型号伪装（`Enum\PCI\VEN_10DE/1002&...\DeviceDesc`）：RTX 30 系默认 GTX 750 Ti，RTX 40/50 系默认 GTX 1050 Ti，AMD 默认 RX560；GUI 可选 GTX 750 Ti、GTX 1050 Ti、RTX 2050、RTX 2060、RX560，其中 750 Ti、1050 Ti、RX560 标 ★ | 有实测反例：有人改完帧数不升反降；重装/更新显卡驱动后失效；系统上报型号与真实硬件不一致，反作弊如何对待未知。支持 NVIDIA / AMD，原值完整备份、还原逐字节写回 |
+| gpu-name-spoof | 显卡型号伪装（`Enum\PCI\VEN_10DE/1002&...\DeviceDesc`）：NVIDIA 笔记本默认并标 ★ GTX 1050 Ti，台式机默认并标 ★ GTX 750 Ti，AMD 默认并标 ★ RX560；GUI 仍可手动选择 GTX 750 Ti、GTX 1050 Ti、RTX 2050、RTX 2060、RX560 | 有实测反例：有人改完帧数不升反降；重装/更新显卡驱动后失效；系统上报型号与真实硬件不一致，反作弊如何对待未知。支持 NVIDIA / AMD，原值完整备份、还原逐字节写回 |
 
 `power-tuning` 涉及的电源项默认被 Windows 隐藏，脚本会先用 `powercfg -attributes`
 解除隐藏再写入，原隐藏状态一并进备份；CPU 不支持的项（如非大小核 CPU 的调度策略）

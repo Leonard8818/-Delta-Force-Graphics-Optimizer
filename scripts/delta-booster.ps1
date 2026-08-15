@@ -2146,10 +2146,6 @@ function Get-GpuSpoofModels {
     'NVIDIA GeForce RTX 2050', 'NVIDIA GeForce RTX 2060', 'AMD Radeon RX560')
 }
 
-function Test-RecommendedGpuSpoofModel([string]$Model) {
-  $Model -in @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 1050 Ti', 'AMD Radeon RX560')
-}
-
 function Test-GpuNameSpoofSupported($Hw) {
   [bool]($Hw -and "$($Hw.MainGpuVendor)" -in @('NVIDIA','AMD'))
 }
@@ -2158,12 +2154,15 @@ function Get-DefaultGpuSpoofModel([string]$GpuName, [bool]$IsLaptop, [string]$Gp
   if ($GpuVendor -eq 'AMD' -or (-not $GpuVendor -and "$GpuName" -match '(?i)AMD|Radeon')) {
     return 'AMD Radeon RX560'
   }
-  # 按用户实机经验做代际映射：RTX 30 系默认伪装为 750 Ti，40/50 系默认 1050 Ti。
-  # 其他 N 卡保留原先的机型兜底逻辑，界面可手动切换全部五种目标型号。
-  if ("$GpuName" -match '(?i)RTX\s*30\d{2}') { return 'NVIDIA GeForce GTX 750 Ti' }
-  if ("$GpuName" -match '(?i)RTX\s*(?:40|50)\d{2}') { return 'NVIDIA GeForce GTX 1050 Ti' }
+  # NVIDIA 推荐只按整机形态判断：笔记本统一 1050 Ti，台式机统一 750 Ti。
+  # 界面仍可手动切换全部五种目标型号；AMD 继续使用 RX560。
   if ($IsLaptop) { return 'NVIDIA GeForce GTX 1050 Ti' }
   'NVIDIA GeForce GTX 750 Ti'
+}
+
+function Test-RecommendedGpuSpoofModel([string]$Model, [bool]$IsLaptop,
+                                       [string]$GpuVendor = '', [string]$GpuName = '') {
+  $Model -eq (Get-DefaultGpuSpoofModel $GpuName $IsLaptop $GpuVendor)
 }
 
 function Test-TrustedNvidiaProfileInspector([string]$Path) {
@@ -2237,14 +2236,14 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                Ops  = @(@{ Kind = 'reg'; Path = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting'; Name = 'Disabled'; Value = 1; Kind2 = 'DWord' })
                Note = '游戏崩溃瞬间不再收集转储，避免二次卡死。' }
 
-  # 内存压缩：16G 以下关掉反而更容易爆内存，默认只在 32G 及以上勾选
-  $bigRam = ($hw -and $hw.RamGB -ge 32)
-  $items += @{ Id = 'mem-compress-off'; Tier = 'safe'; Name = '关闭内存压缩与页面合并'; Admin = $true; Default = $bigRam; Kind = 'multi'; Reboot = $true
+  # 关闭内存压缩会让内存压力更早落到页面文件。保留给明确需要对比测试的用户手动选择，
+  # 但不再默认勾选，也不进入「全选」或任何内置方案，避免游戏中系统盘交换量异常增长。
+  $items += @{ Id = 'mem-compress-off'; Tier = 'safe'; Name = '关闭内存压缩与页面合并'; Admin = $true; Default = $false; BulkSelect = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(
                  @{ Kind = 'mmagent'; Feature = 'mc'; Label = '内存压缩' }
                  @{ Kind = 'mmagent'; Feature = 'pc'; Label = '页面合并' }
                )
-               Note = '省下压缩/解压的 CPU 开销，代价是内存吃紧时更早开始动用硬盘。内存 32G 以上默认勾选，16G 及以下不建议。' }
+               Note = '省下压缩/解压的 CPU 开销，代价是内存吃紧时更早开始动用页面文件。仅供手动对比测试，不会被默认方案或「全选」带上。' }
 
   $items += @{ Id = 'transparency-off'; Tier = 'safe'; Name = '关闭窗口透明特效'; Admin = $false; Default = $true; Kind = 'multi'
                Ops  = @(@{ Kind = 'reg'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'EnableTransparency'; Value = 0; Kind2 = 'DWord' })
@@ -2346,21 +2345,15 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
   # 这是它与其余所有优化项的根本区别，Note 里对用户讲清楚
   # 项名以「解决掉帧」开头：用户搜的、问的都是这四个字，「清理着色器缓存」是手段不是诉求，
   # 只写手段的话真正需要它的人在列表里根本认不出来
-  $items += @{ Id = 'shader-cache-clean'; Tier = 'safe'; Name = '★ 解决掉帧：清理着色器缓存（实验功能，不保证生效）'; Admin = $false; Default = $false; Kind = 'cache'
+  $items += @{ Id = 'shader-cache-clean'; Tier = 'safe'; Name = '★ 解决掉帧：清理着色器缓存（实验功能，不保证生效）'; Admin = $false; Default = $false; BulkSelect = $false; Kind = 'cache'
                Note = '针对「进游戏后每隔十几秒卡顿 2~3 秒」这类症状——社区普遍指向显卡/DirectX 着色器缓存异常，游戏大版本更新后尤其高发。只清理系统与显卡驱动的缓存目录，不碰游戏安装目录内任何文件。执行前请先知道三件事：①清理后首次进游戏要重新编译着色器，头一两局可能比现在更卡，之后才恢复；②如果你的掉帧不是从游戏更新之后才开始的，这项大概率无效；③缓存由驱动自动重建，因此本项不进备份、也无需还原——点「还原设置」不会把它恢复回来（也不需要）。游戏和显卡驱动面板开着时部分文件会被占用，关掉再执行效果最好。' }
 
   $items += @{ Id = 'dyntick-off'; Tier = 'safe'; Name = '禁用动态计时器（bcdedit）'; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
                Ops  = @(@{ Kind = 'bcd'; Name = 'disabledynamictick'; Value = 'yes'; Label = '动态计时器' })
                Note = '恢复固定时钟中断，部分机器帧生成间隔更稳。副作用：空闲功耗略升、笔记本续航变差，默认不勾选。重启生效。' }
 
-  # 经验公式：初始=内存GB×1024×1.5、最大=×2。固定大小是为防页面文件动态收缩引发卡顿；
-  # 收益只在闪退/爆内存场景成立，平时不值得占这份磁盘，所以默认不勾选
-  $ramInt = $(if ($hw) { [int][math]::Round($hw.RamGB) } else { 0 })
-  $items += @{ Id = 'pagefile-custom'; Tier = 'safe'; Name = "虚拟内存固定为 $([int]($ramInt * 1.5))–$($ramInt * 2) GB"; Admin = $true; Default = $false; Kind = 'multi'; Reboot = $true
-               Ops  = $(if ($ramInt -gt 0) { @(@{ Kind = 'reg'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
-                                                  Name = 'PagingFiles'; Kind2 = 'MultiString'; Label = '页面文件'
-                                                   Value = [string[]]@("$script:SystemDrive\pagefile.sys $($ramInt * 1536) $($ramInt * 2048)") }) })
-               Note = '取消系统自动管理，按公式固定页面文件（初始=内存×1.5、最大=×2），防止动态收缩引发卡顿。只建议在游戏闪退/爆内存时启用：会立即占用系统盘约 ' + [int]($ramInt * 1.5) + ' GB，默认不勾选。重启生效。' }
+  # pagefile-custom 已停止新应用：旧算法会在系统盘写入内存 1.5～2 倍的页面文件，
+  # 游戏负载下可能占用几十 GB。备份白名单和选择性复原 ID 继续保留，供历史用户恢复原值。
 
   # 以下几项按 exe 路径/文件名落地，没有游戏路径时 Ops 为空，Apply 时跳过并提示
   $fsoOps = $null; $gpuOps = $null; $prioOps = $null
@@ -2399,14 +2392,7 @@ function Get-OptItems([string]$GamePath, [string]$GpuSpoofModel) {
                  Note = '让游戏以为你是另一款显卡从而选择不同渲染路径。已有实测反例：有人改完帧数不升反降。重装或更新显卡驱动后失效（DeviceDesc 被驱动写回）。系统上报的型号与真实硬件不一致，反作弊如何对待这种状态没有公开说明。支持 NVIDIA 与 AMD 主显卡，备份原值可完整还原。' }
   }
 
-  # N 卡进阶：用户自行下载 NVIDIA Profile Inspector 放进 tools\ 后才出现此项
-  $npi = Join-Path $script:ToolsDir 'nvidiaProfileInspector.exe'
-  $nip = Get-Item -LiteralPath (Join-Path $script:ToolsDir 'DeltaForce-Recommended.nip') -ErrorAction SilentlyContinue
-  if ((Test-TrustedNvidiaProfileInspector $npi) -and $nip -and -not (Test-PathHasReparsePoint $nip.FullName)) {
-    $items += @{ Id = 'nvidia-profile'; Tier = 'safe'; Name = "导入 N 卡驱动配置档（$($nip.Name)）"; Admin = $true; Default = $false; Kind = 'npi'
-                 Npi = $npi; Nip = $nip.FullName
-                 Note = '仅在 NVIDIA Profile Inspector 带有效且受信发布者签名时调用，并检查导入进程退出码。此项无自动备份，请先在 Inspector 里手动导出当前配置。' }
-  }
+  # nvidia-profile 已停止从软件内执行：Inspector 导入无法生成可验证的自动还原备份。
 
   $items
 }
@@ -2425,7 +2411,7 @@ function Get-BuiltinPresets {
       Items = @('power-ultimate','power-tuning','powerplan-lock',
                 'prio-separation','game-priority','sys-responsiveness','mmcss-games','net-throttling-off','game-mode',
                 'gpu-irq-affinity',
-                'dvr-off','wer-off','sysmain-off','wsearch-off','hibernate-off','mem-compress-off',
+                'dvr-off','wer-off','sysmain-off','wsearch-off','hibernate-off',
                 'paging-exec','transparency-off','mpo-off','dyntick-off','mouse-accel-off',
                 'hags','fso-off','gpu-pref','gpu-pstate-lock','gpu-name-spoof',
                 'pcie-check','vcredist-check','xmp-check')
@@ -3331,9 +3317,13 @@ function New-BackupItemRecord($Item) {
 }
 
 function Get-SelectiveRestoreItemIds {
-  # 只开放没有复杂依赖且底层目标可独立验证的项目。显卡型号伪装只有一个
-  # 已完整记录原值的 DeviceDesc 注册表操作，也可安全地单独冲突检测与还原。
-  @('game-mode','dvr-off','prio-separation','net-throttling-off','sys-responsiveness','mmcss-games','fso-off','gpu-pref','gpu-name-spoof')
+  # 所有只落注册表、且备份同时记录 AppliedValue/AppliedKind 的项目都可按项目复原；
+  # 复原前会逐值核对当前状态，发现用户或其他程序在优化后改过就保留现状。
+  # pagefile-custom 已停止新应用，但必须继续开放旧备份精确复原。
+  @('hags','game-mode','dvr-off','prio-separation','paging-exec','wer-off','transparency-off',
+    'visualfx-perf','mouse-accel-off','mpo-off','net-throttling-off','sys-responsiveness',
+    'sysmain-off','wsearch-off','gpu-pstate-lock','gpu-irq-affinity','mmcss-games',
+    'windowed-opt-off','pagefile-custom','fso-off','gpu-pref','game-priority','gpu-name-spoof')
 }
 
 function Sort-BackupRecordsNewestFirst($Records) {

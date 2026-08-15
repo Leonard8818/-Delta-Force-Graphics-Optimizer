@@ -16,6 +16,7 @@ function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERT: $Message" }
 }
 $installerBuildSource = [IO.File]::ReadAllText((Join-Path $root 'build\make-installer.ps1'))
+$launcherBuildSource = [IO.File]::ReadAllText((Join-Path $root 'build\make-launcher.ps1'))
 $updaterSource = [IO.File]::ReadAllText((Join-Path $root 'scripts\updater.ps1'))
 $stagingAclFunction = [regex]::Match($updaterSource, '(?s)function Set-BoosterStagingFileAcl\s*\{.*?\n\}').Value
 Assert-True ($stagingAclFunction -match 'GetAccessControl' -and
@@ -31,14 +32,23 @@ Assert-True ($installerBuildSource -match "minimumSupportedVersion\s*=\s*'0\.23\
   "$($releaseManifest.minimumSupportedVersion)" -eq '0.23.0.8') `
   'release manifest version or mandatory-upgrade floor is stale'
 $expectedReleaseNotes = @'
-- 修复软件内「立即重启」在部分电脑上点击后没有反应的问题；现在会直接执行并检查系统返回结果。
-- 运行日志会自动保留最近 10 次会话，关闭软件后重新打开仍可查看和复制。
-- 「上传完整诊断」会携带最近历史日志，并补充 VBS 与内存完整性状态，方便排查卡顿和还原问题。
+- 停止新应用会在系统盘创建超大页面文件的固定虚拟内存项，避免游戏中 C 盘空间异常增长。
+- 关闭内存压缩改为仅供手动对比，不再被默认、全选或内置方案带上。
+- 历史虚拟内存及全部纯注册表优化现在可按项目精确复原，并保留后续修改冲突保护。
+- 停止从软件内执行没有可验证自动备份的 NVIDIA Profile Inspector 导入。
+- 修复多用户或远程会话电脑上，其他会话运行软件导致本会话首次启动误报“已经在运行”的问题；重复点击会优先置前已有窗口。
+- 显卡型号伪装改为 NVIDIA 笔记本推荐 GTX 1050 Ti、台式机推荐 GTX 750 Ti，AMD 继续推荐 RX560。
 - v0.23.0.8 以前的版本仍需完成更新后继续使用。
 '@
 Assert-True (("$($releaseManifest.notes)" -replace "`r`n", "`n") -eq ($expectedReleaseNotes -replace "`r`n", "`n") -and
   $installerBuildSource.Contains("`$manifestNotes = @'")) `
-  'v0.23.0.11 release notes are missing or inconsistent'
+  'v0.23.0.12 release notes are missing or inconsistent'
+Assert-True ($launcherBuildSource.Contains('const string ActiveMarkerName = @"Global\DeltaForceBooster.LaunchSession";') -and
+  $launcherBuildSource.Contains('const string InstanceMarkerName = @"Local\DeltaForceBooster.LaunchInstance";') -and
+  $launcherBuildSource.Contains('activeMarker = CreateSessionMarker(ActiveMarkerName') -and
+  $launcherBuildSource.Contains('instanceMarker = CreateSessionMarker(InstanceMarkerName') -and
+  $launcherBuildSource.Contains('TryActivateExistingWindow()')) `
+  'launcher still conflates the global lifecycle marker with the current-session instance marker'
 $disclaimerText = [IO.File]::ReadAllText((Join-Path $root 'DISCLAIMER.md'))
 Assert-True ($disclaimerText -notmatch '自动寻找最佳配置|自动调优|experiments') `
   'usage notice still exposes automatic best-configuration Beta information'
@@ -434,6 +444,36 @@ try {
   $launcherBytes = [IO.File]::ReadAllBytes((Join-Path $dest '启动优化工具.exe'))
   $launcherAssembly = [Reflection.Assembly]::Load($launcherBytes)
   $launcherType = $launcherAssembly.GetType('Launcher', $true)
+  $activeMarkerField = $launcherType.GetField('ActiveMarkerName', [Reflection.BindingFlags]'Static,NonPublic')
+  $instanceMarkerField = $launcherType.GetField('InstanceMarkerName', [Reflection.BindingFlags]'Static,NonPublic')
+  $activateExisting = $launcherType.GetMethod('TryActivateExistingWindow', [Reflection.BindingFlags]'Static,NonPublic')
+  $createSessionMarker = $launcherType.GetMethod('CreateSessionMarker', [Reflection.BindingFlags]'Static,NonPublic')
+  Assert-True ($activeMarkerField -and $instanceMarkerField -and $activateExisting -and
+    $createSessionMarker -and
+    $activeMarkerField.GetRawConstantValue() -eq 'Global\DeltaForceBooster.LaunchSession' -and
+    $instanceMarkerField.GetRawConstantValue() -eq 'Local\DeltaForceBooster.LaunchInstance') `
+    'compiled launcher lost the separate global lifecycle/current-session instance markers or activation path'
+  # Reproduce the multi-user failure without creating another account: the first handle exposes only
+  # Synchronize/Modify, so a second Mutex(..., MutexSecurity) FullControl open is denied. The launcher
+  # must reopen with the rights actually granted instead of reporting this as a duplicate instance.
+  $limitedMarkerName = 'Local\DeltaForceBooster.Tests.' + [guid]::NewGuid().ToString('N')
+  $limitedMarkerAcl = New-Object Security.AccessControl.MutexSecurity
+  $limitedMarkerAcl.SetAccessRuleProtection($true, $false)
+  $limitedMarkerRights = [Security.AccessControl.MutexRights]::Synchronize -bor [Security.AccessControl.MutexRights]::Modify
+  $limitedMarkerAcl.AddAccessRule((New-Object Security.AccessControl.MutexAccessRule(
+    [Security.Principal.WindowsIdentity]::GetCurrent().User, $limitedMarkerRights,
+    [Security.AccessControl.AccessControlType]::Allow)))
+  $limitedMarkerCreated = $false
+  $limitedMarkerOwner = New-Object Threading.Mutex($false, $limitedMarkerName, [ref]$limitedMarkerCreated, $limitedMarkerAcl)
+  try {
+    $markerInvokeArgs = New-Object 'object[]' 2
+    $markerInvokeArgs[0] = $limitedMarkerName; $markerInvokeArgs[1] = $false
+    $limitedMarkerOpened = [Threading.Mutex]$createSessionMarker.Invoke($null, $markerInvokeArgs)
+    try {
+      Assert-True ($limitedMarkerOpened -and -not [bool]$markerInvokeArgs[1]) `
+        'launcher treated a limited-ACL existing marker as a new marker or failed to reopen it'
+    } finally { if ($limitedMarkerOpened) { $limitedMarkerOpened.Dispose() } }
+  } finally { $limitedMarkerOwner.Dispose() }
   $validateFiles = $launcherType.GetMethod('ValidateFiles', [Reflection.BindingFlags]'Static,NonPublic')
   $invokeArgs = New-Object 'object[]' 1; $invokeArgs[0] = $dest
   Assert-True ($null -eq $validateFiles.Invoke($null, $invokeArgs)) 'launcher rejected intact payload'
