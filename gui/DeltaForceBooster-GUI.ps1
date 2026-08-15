@@ -1,9 +1,11 @@
 ﻿<#
-  DeltaForceBooster 图形界面 — v0.23.0.10
+  DeltaForceBooster 图形界面 — v0.23.0.11
   视觉基准：三角洲行动国服官网 df.qq.com 实测提炼：近黑微青顶栏 #0D1417 + 页面青绿细
   渐变 #0A1512→#10201C + 正绿 CTA #00E884（斜切角）+ 深色金黄辅助标签
   + 中英上下叠排分区标题 + 侧边刻度尺装饰 + 拉字距装饰分隔线。
 
+  v0.23.0.11：修复软件内立即重启在部分电脑上点击后没有反应的问题；运行日志改为跨会话保留，
+         重新打开后可直接复制或随完整诊断上传，并补充 VBS/内存完整性状态。
   v0.23.0.10：修复已有 PawnIO 驱动或残留组件时安装可能报退出码 183 并中断的问题；
          扩展现有驱动识别，温度驱动未就绪时不再阻断软件主体安装。
   v0.23.0.9：修复下载服务器繁忙时内置更新直接失败并显示底层 HTTP 错误的问题；
@@ -495,8 +497,8 @@ catch {
 }
 
 # 内置更新、安装身份、程序集元数据和界面统一使用同一个四段版本号。
-$script:GuiVersion = '0.23.0.10'
-$script:DisplayVersion = '0.23.0.10'
+$script:GuiVersion = '0.23.0.11'
+$script:DisplayVersion = '0.23.0.11'
 # 浅色主题实现保留给下个版本；当前版本隐藏入口并强制使用深色，避免半成品提前发布。
 $script:LightThemeEnabled = $false
 $script:UpdaterPath = Join-Path $script:RootDir 'scripts\updater.ps1'
@@ -863,7 +865,7 @@ $xaml = @'
           </TextBlock>
           <Border Width="1" Height="13" Background="{DynamicResource LineHi}" Margin="11,0"/>
           <TextBlock Text="画面优化助手" Foreground="{DynamicResource TextSec}" FontSize="12" VerticalAlignment="Center"/>
-          <TextBlock Text="[ v0.23.0.10 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
+          <TextBlock Text="[ v0.23.0.11 ]" Style="{StaticResource Mono}" Foreground="{DynamicResource Green}" Margin="9,0,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="NoticeBtn" Style="{StaticResource Ghost}"
@@ -1399,7 +1401,7 @@ $xaml = @'
       <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,9,0,0">
         <!-- 把诊断信息打包发给作者排查；上传前列清单请用户确认，不会静默发送 -->
         <Button x:Name="ReportBtn" Content="上传完整诊断" Style="{StaticResource Ghost}" Width="132"/>
-        <TextBlock Text="上传前会列出内容并请你确认，路径中的用户名会脱敏" Style="{StaticResource Mono}"
+        <TextBlock Text="关闭软件后仍保留最近运行日志；重新打开可直接复制或上传" Style="{StaticResource Mono}"
                    Margin="12,0,0,0"/>
       </StackPanel>
     </Grid>
@@ -1449,7 +1451,7 @@ $xaml = @'
       <Border Grid.Column="2" Height="1" Background="{DynamicResource LineSoft}" VerticalAlignment="Center" Margin="9,0"/>
       <Border Grid.Column="3" Width="5" Height="5" BorderBrush="{DynamicResource Green}" BorderThickness="1" VerticalAlignment="Center" Margin="0,0,9,0"/>
       <StackPanel Grid.Column="4" Orientation="Horizontal">
-        <TextBlock Text="[ V0.23.0.10 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
+        <TextBlock Text="[ V0.23.0.11 ] 改动前自动备份 · 可按项目精确复原" Style="{StaticResource Mono}" FontSize="9"/>
         <!-- 随时可重看免责声明：首次启动的门控之外也得留个常驻入口 -->
         <Button x:Name="DisclaimerBtn" Style="{StaticResource Ghost}" Height="17" FontSize="9"
                 Margin="10,0,0,0" Content="免责声明"/>
@@ -2915,6 +2917,95 @@ function Update-PresetList {
   }
 }
 
+$script:RunLogDir = Join-Path $script:UserConfigDir 'run-logs'
+$script:CurrentRunLogPath = ''
+$script:RunLogPersistenceError = ''
+$script:RunLogMaxFileBytes = 1MB
+$script:RunLogRetentionCount = 10
+$script:RunLogHistoryCount = 5
+$script:RunLogHistoryMaxBytes = 160KB
+
+function Get-RunLogTail([string]$Path, [int]$MaxBytes) {
+  if (-not $Path -or $MaxBytes -le 0 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  $file = Get-Item -LiteralPath $Path -Force
+  if ($file.Length -le $MaxBytes) { return [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8) }
+  $stream = New-Object IO.FileStream($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+    [IO.FileShare]::ReadWrite, 4096, [IO.FileOptions]::SequentialScan)
+  try {
+    [void]$stream.Seek(-$MaxBytes, [IO.SeekOrigin]::End)
+    $bytes = New-Object byte[] $MaxBytes
+    $read = $stream.Read($bytes, 0, $bytes.Length)
+  } finally { $stream.Dispose() }
+  $text = [Text.Encoding]::UTF8.GetString($bytes, 0, $read)
+  $firstLineEnd = $text.IndexOf("`n")
+  if ($firstLineEnd -ge 0) { $text = $text.Substring($firstLineEnd + 1) }
+  "（较早内容已截断）`r`n$text"
+}
+
+function Get-RecentRunLogHistory([object[]]$Files) {
+  $remaining = [int]$script:RunLogHistoryMaxBytes
+  $blocks = New-Object System.Collections.Generic.List[string]
+  foreach ($file in @($Files | Select-Object -First $script:RunLogHistoryCount)) {
+    if ($remaining -le 0 -or -not (Test-ProtectedFileAcl $file.FullName)) { continue }
+    $perFile = [math]::Min(48KB, $remaining)
+    $text = Get-RunLogTail $file.FullName $perFile
+    if (-not $text) { continue }
+    [void]$blocks.Add("===== 历史会话：$($file.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')) =====`r`n$text".TrimEnd())
+    $remaining -= [Text.Encoding]::UTF8.GetByteCount($text)
+  }
+  $blocks.ToArray() -join "`r`n`r`n"
+}
+
+function Initialize-RunLogStore {
+  try {
+    New-ProtectedDirectory $script:RunLogDir $false
+    $existing = @(Get-ChildItem -LiteralPath $script:RunLogDir -File -Filter 'run-*.log' -ErrorAction Stop |
+      Sort-Object LastWriteTime -Descending)
+    $history = Get-RecentRunLogHistory $existing
+
+    $session = $(if ("$env:DFB_ENGINE_HOST_SESSION" -match '^[0-9a-fA-F]{32}$') {
+      "$env:DFB_ENGINE_HOST_SESSION"
+    } else { [guid]::NewGuid().ToString('N') })
+    $name = 'run-{0}-{1}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $session.Substring(0, 8)
+    $path = Join-Path $script:RunLogDir $name
+    $header = "DeltaForceBooster v$script:DisplayVersion｜会话开始：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n"
+    $bytes = (New-Object Text.UTF8Encoding($true)).GetBytes($header)
+    $stream = New-Object IO.FileStream($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    Set-ProtectedFileAcl $path
+    if (-not (Test-ProtectedFileAcl $path)) { throw '运行日志文件权限校验失败' }
+    $script:CurrentRunLogPath = $path
+    foreach ($old in @(Get-ChildItem -LiteralPath $script:RunLogDir -File -Filter 'run-*.log' |
+        Sort-Object LastWriteTime -Descending | Select-Object -Skip $script:RunLogRetentionCount)) {
+      Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($history) {
+      $ui.LogBox.AppendText("$history`r`n`r`n===== 本次运行 =====`r`n")
+      $ui.LogBox.ScrollToEnd()
+    }
+  } catch {
+    $script:CurrentRunLogPath = ''
+    $script:RunLogPersistenceError = $_.Exception.Message
+    $ui.LogBox.AppendText("[提示] 最近运行日志保存暂未启用：$($script:RunLogPersistenceError)`r`n")
+  }
+}
+
+function Add-PersistentRunLogLine([string]$Line) {
+  if (-not $script:CurrentRunLogPath -or -not $Line) { return }
+  try {
+    $file = Get-Item -LiteralPath $script:CurrentRunLogPath -Force -ErrorAction Stop
+    if ($file.Length -ge $script:RunLogMaxFileBytes) { return }
+    $safeLine = $(if ($Line.Length -gt 32768) { $Line.Substring(0, 32768) + '…（本行已截断）' } else { $Line })
+    [IO.File]::AppendAllText($script:CurrentRunLogPath, "$safeLine`r`n", (New-Object Text.UTF8Encoding($true)))
+  } catch {
+    # 日志落盘属于辅助能力，失败时保留界面日志；不能递归调用 Write-Log。
+    $script:RunLogPersistenceError = $_.Exception.Message
+    $script:CurrentRunLogPath = ''
+  }
+}
+
 function Write-Log([string]$Msg) {
   # 先算好整行再传入：方法括号内的逗号会被当成第二个方法参数，-f 拿不到 $Msg 导致 {1} 越界
   $line = "[{0:HH:mm:ss}] {1}" -f (Get-Date), $Msg
@@ -2925,6 +3016,7 @@ function Write-Log([string]$Msg) {
            (($box.VerticalOffset + $box.ViewportHeight) -ge ($box.ExtentHeight - 2))
   $box.AppendText("$line`r`n")
   if ($atEnd) { $box.ScrollToEnd() }
+  Add-PersistentRunLogLine $line
 }
 
 # ---------- 体检问题的解决办法（教程 + 可点击的官方下载入口） ----------
@@ -6436,7 +6528,7 @@ function ConvertTo-DiagnosticFieldValue([object]$Value) {
   $text
 }
 
-# 报告只放排查需要的：硬件 + 各优化项当前状态 + 运行日志 + 版本号 + 最近备份的项目名。
+# 报告只放排查需要的：硬件 + 各优化项当前状态 + 本次/最近历史运行日志 + 版本号 + 最近备份的项目名。
 # 绝不带备份 JSON 原文——那里面是注册表原值，外传没有意义
 function New-DiagnosticReport($Feedback) {
   $lines = New-Object System.Collections.Generic.List[string]
@@ -6570,6 +6662,7 @@ function New-DiagnosticReport($Feedback) {
     $analysis = Get-TelemetryAnalysisContext $hw $script:TargetExe
     foreach ($pair in ([ordered]@{
       windows_display_version=$analysis.windowsDisplayVersion;windows_build_revision=$analysis.windowsBuildRevision
+      vbs_state=$analysis.vbsState;memory_integrity_state=$analysis.memoryIntegrityState
       hags_state=$analysis.hagsState;game_mode_state=$analysis.gameModeState;game_dvr_state=$analysis.gameDvrState
       mpo_state=$analysis.mpoState;windowed_optimization_state=$analysis.windowedOptimizationState
       fso_state=$analysis.fsoState;gpu_preference_state=$analysis.gpuPreferenceState
@@ -6669,7 +6762,7 @@ function New-DiagnosticReport($Feedback) {
   $lines.Add('本次执行产生的备份文件名与结果见下方运行日志。')
   $lines.Add('')
 
-  $lines.Add('== 运行日志 ==')
+  $lines.Add('== 本次与最近历史运行日志 ==')
   $lines.Add($(if ($ui.LogBox.Text) { $ui.LogBox.Text } else { '（空）' }))
 
   $txt = Protect-ReportText (($lines -join "`r`n"))
@@ -7917,9 +8010,7 @@ function Invoke-InlineRestoreAction([ValidateSet('selected_items','all')][string
     $restoreDialogCode = $(if ($failN -gt 0) { 'RESTORE INCOMPLETE' } else { 'RESTORE DONE' })
     Show-ConfirmDialog $restoreDialogTitle $restoreDialogCode $sum '知道了' -InfoOnly | Out-Null
     if (@($r.RebootItems).Count -gt 0 -and (Show-RebootDialog @($r.RebootItems))) {
-      if (Show-ConfirmDialog '确认重启' 'CONFIRM REBOOT' '确定现在重启电脑？未保存的工作会丢失。确认后系统将在 5 秒内重启。' '确认重启') {
-        Invoke-SystemReboot
-      }
+      Start-ConfirmedSystemReboot
     }
   } catch {
     $err = $_.Exception.Message
@@ -7934,16 +8025,37 @@ function Invoke-InlineRestoreAction([ValidateSet('selected_items','all')][string
 # 重启调用单独包一层：验证脚本可整体替换成 mock 走完整个交互链路，
 # 保证任何测试都不会真的把机器重启掉
 function Invoke-SystemReboot {
-  $windowsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
-  if (-not $windowsDir) { throw '系统未提供 Windows 目录' }
-  $shutdownExe = Join-Path $windowsDir 'System32\shutdown.exe'
-  # 主界面已经继承 EngineHost 的 high token，不再跨越第二次 UAC。
-  Start-Process -FilePath $shutdownExe -WindowStyle Hidden -ArgumentList '/r', '/t', '5'
+  $shutdownExe = Join-Path ([Environment]::SystemDirectory) 'shutdown.exe'
+  if (-not (Test-Path -LiteralPath $shutdownExe -PathType Leaf)) { throw '系统重启程序不存在' }
+  # 直接等待 shutdown.exe 返回并检查退出码。旧实现只负责启动子进程，命令被系统拒绝时
+  # 界面仍会当作成功，用户看到的就是“点了立即重启但没有反应”。
+  $output = @(& $shutdownExe /r /t 10 2>&1)
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    $detail = (($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' ').Trim()
+    if ($detail.Length -gt 400) { $detail = $detail.Substring(0, 400) }
+    throw "系统未接受重启请求（退出码 $exitCode$(if ($detail) { "：$detail" })）"
+  }
+  $true
+}
+
+function Start-ConfirmedSystemReboot {
+  try {
+    Write-Log '已确认立即重启，系统将在 10 秒内重启…'
+    Invoke-SystemReboot | Out-Null
+  } catch {
+    $message = $_.Exception.Message
+    Write-Log "[重启未启动] $message"
+    Show-ConfirmDialog '重启未启动' 'REBOOT NOT STARTED' `
+      "$message`n`n请先保存工作，再通过 Windows 开始菜单 → 电源 → 重启。刚才的优化或还原结果已经保存，不需要重复执行。" `
+      '知道了' -InfoOnly | Out-Null
+  }
 }
 
 # 执行完成后的醒目重启提醒：此前只在日志末尾一行小字，用户根本注意不到（实机反馈）。
 # 只在「本次成功项里确实有需重启的」才弹；纯检测/即时生效项不触发。
-# 返回 $true 表示用户点了「立即重启」——调用方还要再走一道确认，重启是破坏性动作
+# 对话框已经明确说明立即重启及未保存工作风险；返回 true 后直接执行，避免第二个模态窗
+# 被前一个窗口遮住，让用户误以为按钮没有反应。
 function Show-RebootDialog([string[]]$ItemNames) {
   $rxaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -7971,7 +8083,7 @@ function Show-RebootDialog([string[]]$ItemNames) {
       </Grid>
       <StackPanel Margin="13,0,0,0" VerticalAlignment="Center">
         <TextBlock Text="需要重启电脑" Foreground="{DynamicResource TextPri}" FontSize="16" FontWeight="Bold"/>
-        <TextBlock Text="以下优化项已写入成功，但要等重启后才完全生效：" Foreground="{DynamicResource TextSec}"
+        <TextBlock Text="以下项目已写入成功，但要等重启后才完全生效：" Foreground="{DynamicResource TextSec}"
                    FontSize="11" Margin="0,3,0,0"/>
       </StackPanel>
     </StackPanel>
@@ -7981,6 +8093,8 @@ function Show-RebootDialog([string[]]$ItemNames) {
                    TextWrapping="Wrap" Padding="12,8"/>
       </ScrollViewer>
     </Border>
+    <TextBlock Text="请先保存正在进行的工作；点击立即重启后，系统将在 10 秒内重启。"
+               Foreground="{DynamicResource Gold}" FontSize="11" TextWrapping="Wrap" Margin="16,0,16,10"/>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="16,0,16,0">
       <Button x:Name="RebootBtn" MinWidth="110" Height="32" Foreground="{DynamicResource GreenDark}" FontWeight="Bold">
         <Button.Template>
@@ -7997,7 +8111,7 @@ function Show-RebootDialog([string[]]$ItemNames) {
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Button.Template>
-        <TextBlock Text="立即重启"/>
+        <TextBlock Text="保存好了，立即重启"/>
       </Button>
       <Button x:Name="LaterBtn" MinWidth="110" Height="32" IsCancel="True" Foreground="{DynamicResource Green}" Margin="9,0,0,0">
         <Button.Template>
@@ -9071,6 +9185,7 @@ $script:UpdateInfo = $null
 $script:UpdatePromptedVersion = $null
 $script:UpdateDialogOpen = $false
 $script:HardwareInfo = $null
+Initialize-RunLogStore
 Initialize-NotificationState
 
 $window.Add_ContentRendered({
@@ -9331,7 +9446,7 @@ $ui.ReportBtn.Add_Click({
       '· 排障所需的关键环境变量（路径会脱敏；敏感变量只记录名称，不上传值）'
       '· 已定位的游戏主程序路径（用户名和机器名会脱敏）'
       '· 各优化项的当前状态'
-      '· 本次运行日志'
+      '· 本次运行日志与软件关闭前保留的最近历史日志'
       '· 受保护备份的位置，以及本次日志中的备份文件名与执行结果（不会读取注册表原值）'
       '· 本工具的版本号'
       ''
@@ -9592,11 +9707,7 @@ $ui.ApplyBtn.Add_Click({
       $rebootNames = @($rebootList | ForEach-Object { $_.Name })
       Write-Log "以下 $($rebootList.Count) 个成功项需重启电脑后完全生效：$($rebootNames -join '、')。"
       if (Show-RebootDialog $rebootNames) {
-        # 重启是破坏性动作：即便用户点了「立即重启」也必须再确认一次，双重确认不可省
-        if (Show-ConfirmDialog '确认重启' 'CONFIRM REBOOT' '确定现在重启电脑？未保存的工作会丢失。确认后系统将在 5 秒内重启。' '确认重启') {
-          Write-Log '已确认重启，系统将在 5 秒内重启…'
-          Invoke-SystemReboot
-        } else { Write-Log '已取消重启，稍后请自行重启电脑以让优化完全生效。' }
+        Start-ConfirmedSystemReboot
       } else { Write-Log '你选择了稍后重启，优化项将在下次重启后完全生效。' }
     }
   } catch {

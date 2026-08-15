@@ -28,10 +28,10 @@ $referenceData = $referenceRaw | ConvertFrom-Json
 
 Assert-True ($raw -match '(?s)\$window\.ShowDialog\(\)\s*\|\s*Out-Null\s*#.*?Invoke-AppExit') `
   'normal main-window close does not terminate background runspaces and release the launcher session'
-Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.10'") -and
-    $raw.Contains("`$script:DisplayVersion = '0.23.0.10'") -and
-    $raw.Contains('Text="[ v0.23.0.10 ]"')) `
-  'the unified v0.23.0.10 version is missing or inconsistent'
+Assert-True ($raw.Contains("`$script:GuiVersion = '0.23.0.11'") -and
+    $raw.Contains("`$script:DisplayVersion = '0.23.0.11'") -and
+    $raw.Contains('Text="[ v0.23.0.11 ]"')) `
+  'the unified v0.23.0.11 version is missing or inconsistent'
 Assert-True ($raw.Contains("`$script:UpdUi.CancelDlTxt.Text = '取消排队'") -and
     $raw.Contains("'正在取消排队…'") -and
     $raw.Contains('QueueEstimatedWaitSeconds') -and $raw.Contains('预计约 {0} 分钟') -and
@@ -203,7 +203,8 @@ Assert-True ($raw.Contains("`$lines.Add('== 分析字段（schema v3） ==')") -
   $raw.Contains('gpu_panel_status=') -and $raw.Contains('pagefile_auto_managed=') -and
   $raw.Contains('main_gpu_driver_version=') -and $raw.Contains('main_gpu_model_verified=') -and
   $raw.Contains('main_gpu_pci_matched=') -and $raw.Contains('display_mode=') -and
-  $raw.Contains('active_related_process_keys=')) `
+  $raw.Contains('active_related_process_keys=') -and $raw.Contains('vbs_state=') -and
+  $raw.Contains('memory_integrity_state=')) `
   'diagnostic report is missing stable machine-readable recommendation fields'
 Assert-True ($raw.Contains('function Get-TelemetryAnalysisContext') -and
   $raw.Contains('function Get-TelemetryRegValue') -and
@@ -256,6 +257,14 @@ $updateDropFrameFunction = Find-GuiFunction 'Update-DropFrameRepairPage'
 $itemRowFunction = Find-GuiFunction 'New-ItemRow'
 $protectReportFunction = Find-GuiFunction 'Protect-ReportText'
 $gpuPanelInventoryFunction = Find-GuiFunction 'Get-GuiGpuPanelInventory'
+$writeLogFunction = Find-GuiFunction 'Write-Log'
+$runLogTailFunction = Find-GuiFunction 'Get-RunLogTail'
+$runLogHistoryFunction = Find-GuiFunction 'Get-RecentRunLogHistory'
+$runLogInitFunction = Find-GuiFunction 'Initialize-RunLogStore'
+$runLogAppendFunction = Find-GuiFunction 'Add-PersistentRunLogLine'
+$rebootFunction = Find-GuiFunction 'Invoke-SystemReboot'
+$confirmedRebootFunction = Find-GuiFunction 'Start-ConfirmedSystemReboot'
+$rebootDialogFunction = Find-GuiFunction 'Show-RebootDialog'
 
 & {
   param([string]$FunctionText)
@@ -374,12 +383,74 @@ Assert-True ($restoreActionFunction.Extent.Text.Contains("ValidateSet('selected_
   $raw.Contains('检测到后续修改的项目不会被选择性覆盖。')) `
   'inline restore buttons are not connected to selected/full protected restore actions'
 Assert-True ($restoreActionFunction.Extent.Text.Contains('@($r.RebootItems).Count') -and
-  $restoreActionFunction.Extent.Text.Contains('Show-RebootDialog @($r.RebootItems)')) `
+  $restoreActionFunction.Extent.Text.Contains('Show-RebootDialog @($r.RebootItems)') -and
+  $restoreActionFunction.Extent.Text.Contains('Start-ConfirmedSystemReboot')) `
   'restore completion no longer forwards the engine reboot item names to the confirmation dialog'
+Assert-True ($rebootFunction.Extent.Text.Contains("Join-Path ([Environment]::SystemDirectory) 'shutdown.exe'") -and
+  $rebootFunction.Extent.Text.Contains('& $shutdownExe /r /t 10') -and
+  $rebootFunction.Extent.Text.Contains('$exitCode = $LASTEXITCODE') -and
+  $rebootFunction.Extent.Text.Contains('系统未接受重启请求') -and
+  -not $rebootFunction.Extent.Text.Contains('Start-Process')) `
+  'restart action does not synchronously verify the trusted shutdown.exe exit code'
+Assert-True ($confirmedRebootFunction.Extent.Text.Contains('Invoke-SystemReboot | Out-Null') -and
+  $confirmedRebootFunction.Extent.Text.Contains("Show-ConfirmDialog '重启未启动'") -and
+  $rebootDialogFunction.Extent.Text.Contains('保存好了，立即重启') -and
+  $rebootDialogFunction.Extent.Text.Contains('系统将在 10 秒内重启') -and
+  -not $raw.Contains("Show-ConfirmDialog '确认重启' 'CONFIRM REBOOT'")) `
+  'restart button still uses a hidden second confirmation or silently ignores command failure'
+& {
+  param([string]$FunctionText)
+  $script:RebootCalls = 0
+  $script:RebootDialogCalls = 0
+  $script:RebootLogs = @()
+  $script:RejectReboot = $false
+  function Write-Log([string]$Message) { $script:RebootLogs += $Message }
+  function Invoke-SystemReboot {
+    if ($script:RejectReboot) { throw 'mock shutdown rejected' }
+    $script:RebootCalls++
+  }
+  function Show-ConfirmDialog { $script:RebootDialogCalls++; $true }
+  . ([scriptblock]::Create($FunctionText))
+  Start-ConfirmedSystemReboot
+  Assert-True ($script:RebootCalls -eq 1 -and $script:RebootDialogCalls -eq 0) `
+    'confirmed restart does not invoke the restart command directly'
+  $script:RejectReboot = $true
+  Start-ConfirmedSystemReboot
+  Assert-True ($script:RebootDialogCalls -eq 1 -and ($script:RebootLogs -join "`n").Contains('[重启未启动]')) `
+    'restart command rejection is not surfaced to the user and run log'
+} $confirmedRebootFunction.Extent.Text
 Assert-True ($restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { '还原未完成' } else { '还原完成' }") -and
   $restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { 'RESTORE INCOMPLETE' } else { 'RESTORE DONE' }") -and
   $restoreActionFunction.Extent.Text.Contains("if (`$failN -gt 0) { '全部复原未完成' } else { '全部复原完成' }")) `
   'full restore still presents a partial failure as completed'
+Assert-True ($raw.Contains("Join-Path `$script:UserConfigDir 'run-logs'") -and
+  $raw.Contains('Initialize-RunLogStore') -and
+  $runLogInitFunction.Extent.Text.Contains('New-ProtectedDirectory $script:RunLogDir $false') -and
+  $runLogInitFunction.Extent.Text.Contains('Set-ProtectedFileAcl $path') -and
+  $runLogInitFunction.Extent.Text.Contains('Select-Object -Skip $script:RunLogRetentionCount') -and
+  $runLogHistoryFunction.Extent.Text.Contains('Test-ProtectedFileAcl $file.FullName') -and
+  $writeLogFunction.Extent.Text.Contains('Add-PersistentRunLogLine $line') -and
+  $raw.Contains('== 本次与最近历史运行日志 ==') -and
+  $raw.Contains('关闭软件后仍保留最近运行日志；重新打开可直接复制或上传')) `
+  'runtime logs are not retained in the protected per-user store or included after reopening'
+& {
+  param([string]$TailText, [string]$AppendText)
+  . ([scriptblock]::Create($TailText))
+  . ([scriptblock]::Create($AppendText))
+  $temp = Join-Path ([IO.Path]::GetTempPath()) ('dfb-run-log-test-' + [guid]::NewGuid().ToString('N') + '.log')
+  try {
+    [IO.File]::WriteAllText($temp, ((1..200 | ForEach-Object { "line-$_" }) -join "`r`n"), [Text.Encoding]::UTF8)
+    $tail = Get-RunLogTail $temp 160
+    Assert-True ($tail.Contains('较早内容已截断') -and $tail.Contains('line-200') -and -not $tail.Contains('line-1' + "`r`n")) `
+      'historical log tailing does not keep the newest bounded content'
+    $script:CurrentRunLogPath = $temp
+    $script:RunLogMaxFileBytes = 1MB
+    Add-PersistentRunLogLine '[12:34:56] persisted-after-close'
+    $persisted = [IO.File]::ReadAllText($temp, [Text.Encoding]::UTF8)
+    Assert-True $persisted.Contains('[12:34:56] persisted-after-close') `
+      'run-log append helper does not persist a completed GUI log line'
+  } finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+} $runLogTailFunction.Extent.Text $runLogAppendFunction.Extent.Text
 $mainXamlMatch = [regex]::Match($raw, '(?s)\$xaml\s*=\s*@''\r?\n(.*?)\r?\n''@\r?\n\r?\n\$window\s*=')
 Assert-True $mainXamlMatch.Success 'main window XAML block is missing'
 Add-Type -AssemblyName PresentationFramework

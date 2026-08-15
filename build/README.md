@@ -134,8 +134,8 @@ SHA256 与文件大小 → 提权 helper 复验并复制到受保护 staging →
 
 ```json
 {
-  "version": "0.23.0.10",
-  "displayVersion": "0.23.0.10",
+  "version": "0.23.0.11",
+  "displayVersion": "0.23.0.11",
   "minimumSupportedVersion": "0.23.0.8",
   "notes": "- 本版本包含关键还原修复，旧版本需完成更新后继续使用。",
   "url": "https://df.ltz88.cn/",

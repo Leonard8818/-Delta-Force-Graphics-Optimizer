@@ -687,9 +687,9 @@ if ($TestBuild) {
 $setupOut = Join-Path $build "DeltaForceBooster-Setup-v$displayVer.exe"
 $manifestOut = Join-Path $build 'update-manifest.json'
 $manifestNotes = @'
-- 修复电脑已安装 PawnIO 或存在残留组件时，安装器可能报退出码 183 并中断的问题。
-- 兼容 PawnIO 2.2.0 与 2.2.0.0，增加现有驱动、设备和 DriverStore 识别，避免重复安装。
-- 温度传感器驱动未就绪时不再阻断软件主体安装；仅 CPU 温度可能暂不显示，其他功能可继续使用。
+- 修复软件内「立即重启」在部分电脑上点击后没有反应的问题；现在会直接执行并检查系统返回结果。
+- 运行日志会自动保留最近 10 次会话，关闭软件后重新打开仍可查看和复制。
+- 「上传完整诊断」会携带最近历史日志，并补充 VBS 与内存完整性状态，方便排查卡顿和还原问题。
 - v0.23.0.8 以前的版本仍需完成更新后继续使用。
 '@
 $manifestObj = [ordered]@{
