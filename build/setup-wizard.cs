@@ -60,8 +60,8 @@ using WinForms = System.Windows.Forms;
 [assembly: AssemblyTitle("三角洲行动优化助手 安装向导")]
 [assembly: AssemblyDescription("DeltaForceBooster 安装向导（可选择安装磁盘）")]
 [assembly: AssemblyProduct("DeltaForceBooster")]
-[assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
-[assembly: AssemblyCopyright("DeltaForceBooster MIT 开源项目")]
+[assembly: AssemblyCompany("Leonard8818")]
+[assembly: AssemblyCopyright("Copyright © 2026 Leonard8818. All rights reserved.")]
 [assembly: AssemblyVersion("__VER4__")]
 [assembly: AssemblyFileVersion("__VER4__")]
 
@@ -2047,7 +2047,7 @@ static class Installer {
             FileVersionInfo vi = FileVersionInfo.GetVersionInfo(launcher);
             Version launcherVersion, setupVersion, guiVersion;
             if (!string.Equals(vi.ProductName, InstallProductId, StringComparison.Ordinal) ||
-                !string.Equals(vi.CompanyName, "DeltaForceBooster 开源项目", StringComparison.Ordinal) ||
+                !string.Equals(vi.CompanyName, "Leonard8818", StringComparison.Ordinal) ||
                 !TryNormalizeVersion(vi.ProductVersion, out launcherVersion) ||
                 !TryNormalizeVersion(Program.Version, out setupVersion) ||
                 !TryReadGuiVersion(ReadTextPrefix(gui, 65536), out guiVersion) ||
@@ -2229,7 +2229,7 @@ static class Installer {
             }
             FileVersionInfo vi = FileVersionInfo.GetVersionInfo(launcher);
             if (!string.Equals(vi.ProductName, InstallProductId, StringComparison.Ordinal) ||
-                !string.Equals(vi.CompanyName, "DeltaForceBooster 开源项目", StringComparison.Ordinal)) {
+                !string.Equals(vi.CompanyName, "Leonard8818", StringComparison.Ordinal)) {
                 reason = "旧版启动器产品身份不匹配"; return false;
             }
             string guiHead = ReadTextPrefix(gui, 65536);

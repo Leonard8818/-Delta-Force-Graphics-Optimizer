@@ -164,8 +164,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("三角洲行动优化助手")]
 [assembly: AssemblyDescription("DeltaForceBooster 安全启动器")]
 [assembly: AssemblyProduct("DeltaForceBooster")]
-[assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
-[assembly: AssemblyCopyright("DeltaForceBooster MIT 开源项目")]
+[assembly: AssemblyCompany("Leonard8818")]
+[assembly: AssemblyCopyright("Copyright © 2026 Leonard8818. All rights reserved.")]
 [assembly: AssemblyVersion("$ver4")]
 [assembly: AssemblyFileVersion("$ver4")]
 

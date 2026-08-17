@@ -20,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\make-installer.ps1
 | `update-manifest.json` | 更新清单：`sha256`/`size` 由构建脚本从本次 Setup.exe 现算，`version` 取自 GUI 的 `$script:GuiVersion`（构建期与界面徽标交叉校验，不一致直接构建失败），`notes` 由构建脚本中的本版公开说明生成 |
 
 **只发安装版**：绿色免安装 zip 已于 v0.15 停产（服务器上的下载入口也已移除）。
-payload 随包分发 `LICENSE`（MIT 要求保留版权声明，非可选）、`NOTICE.md`、
+payload 随包分发 `LICENSE`（最终用户许可协议，非可选）、`NOTICE.md`、
 `DISCLAIMER.md`（免责声明门控要读它），以及 PresentMon、LibreHardwareMonitor、PawnIO 的
 许可证/第三方声明；`SECURITY.md`/`CONTRIBUTING.md` 只留在仓库。
 

@@ -126,7 +126,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $launcher -PathType Lea
 # profiles\ 同样不进包——内置三套方案定义在 Get-BuiltinPresets 里，profiles\ 只存
 # 用户自存方案，打进包等于把构建者本机的方案发给每一个下载者（v0.16.1 已发生过）；
 # .bat 保留为后备入口
-# LICENSE 必须随包分发：MIT 要求保留版权声明，这不是可选项。
+# LICENSE 必须随包分发：它是最终用户许可协议，这不是可选项。
 # DISCLAIMER.md 是免责声明门控的正文来源，NOTICE.md 是非官方声明与出处。
 # SECURITY.md / CONTRIBUTING.md 是给仓库看的，不进安装包。目录不可整棵复制：本机构建者
 # 放进 tools\ 的测试 EXE/DLL 曾可能被静默带进发布包，所以每个发布文件都在这里明确列出。

@@ -2,7 +2,7 @@
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0A1512)](#环境要求)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-0A1512)](#环境要求)
-[![License](https://img.shields.io/badge/license-MIT-00E884)](LICENSE)
+[![License](https://img.shields.io/badge/license-Proprietary%20EULA-E5C46A)](LICENSE)
 [![Unofficial](https://img.shields.io/badge/%E9%9D%9E%E5%AE%98%E6%96%B9%E4%B8%AA%E4%BA%BA%E9%A1%B9%E7%9B%AE-E5C46A)](NOTICE.md)
 
 面向《三角洲行动》玩家的 Windows 画面与帧率优化工具，支持 AI Agent 调用 Skill，完成系统检测、优化执行与一键还原。
@@ -196,6 +196,8 @@ SHA256 和启动器内置的发布文件哈希可以发现传输后或安装后�
 
 ## 许可证
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目自 2026 年 8 月 17 日起作为**源码可见的专有软件**，依据[最终用户许可协议（EULA）](LICENSE)授权，不再作为开源软件授权。EULA 允许个人或组织内部安装、运行本软件；复制、修改、再分发、再许可及商业化等行为须遵守协议限制。为提交 Pull Request 而在 GitHub 内 Fork 和修改的例外见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+此前明确依据 MIT License 发布的版本与提交继续适用原 MIT License，既有授权不受追溯影响。第三方组件仍分别适用 [NOTICE.md](NOTICE.md) 及随附的第三方许可证。
 
 这是一个非官方个人项目，与腾讯公司及《三角洲行动》官方没有关联。商标、免责声明及其他说明见 [NOTICE.md](NOTICE.md) 和 [DISCLAIMER.md](DISCLAIMER.md)。
