@@ -216,7 +216,7 @@ function New-TestLegacyLauncher([string]$Path, [string]$Version = '0.19.3.0') {
   $code = @"
 using System.Reflection;
 [assembly: AssemblyProduct("DeltaForceBooster")]
-[assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
+[assembly: AssemblyCompany("Leonard8818")]
 [assembly: AssemblyVersion("$Version")]
 [assembly: AssemblyFileVersion("$Version")]
 static class LegacyLauncherFixture { [System.STAThread] static void Main() {} }

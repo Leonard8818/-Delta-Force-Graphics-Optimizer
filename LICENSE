@@ -1,21 +1,81 @@
-MIT License
+最终用户许可协议（EULA）
 
-Copyright (c) 2026 Leonard8818
+版本：1.0
+许可方：Leonard8818
+软件：DeltaForceBooster（三角洲行动画面优化助手）
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+请在下载、安装、复制、运行或使用本软件前仔细阅读本协议。你实施上述任一行为，即表示你已阅读、理解并同意受本协议约束。若你不同意本协议，请停止使用并删除本软件。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. 适用范围
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+本协议适用于许可方拥有或有权许可的源代码、可执行文件、脚本、配置、图形、文档及其更新（统称“本软件”）。本协议不适用于第 5 条所述第三方组件。
+
+2. 有限授权
+
+在你持续遵守本协议的前提下，许可方授予你一项有限的、非独占的、不可转让且不可再许可的许可，以便：
+
+- 在你拥有或合法控制的 Windows 设备上下载、安装和运行本软件，供个人使用或组织内部使用；
+- 仅为备份或灾难恢复目的制作一份本软件副本。
+
+本软件按许可提供，而非出售。本协议未明示授予的所有权利均由许可方保留。
+
+3. 公共仓库与贡献例外
+
+公开展示源代码不代表本软件属于开源软件，也不授予本协议以外的权利。GitHub 用户可依 GitHub 服务条款，通过 GitHub 提供的功能查看和 Fork 本仓库。
+
+仅为依照 CONTRIBUTING.md 向本仓库提交贡献，你可在 GitHub 服务内 Fork 本仓库并制作必要修改。该例外不构成对独立发布、再分发、商业利用或其他用途的授权。
+
+4. 使用限制
+
+除适用法律强制允许、第三方许可证另有规定或许可方事先书面同意外，你不得：
+
+- 复制、发布、上传、镜像、传播或向第三方提供本软件，但第 2 条允许的备份除外；
+- 出售、出租、出借、再许可、代运营本软件，或以本软件提供收费服务；
+- 修改、翻译、改编本软件，或基于本软件创作衍生作品，但第 3 条的贡献例外除外；
+- 对可执行文件进行反向工程、反编译或反汇编，或规避任何访问控制、完整性校验或技术限制；
+- 删除、遮盖或更改本软件中的版权、商标、许可或归属声明；
+- 使用许可方或第三方的名称、商标或标识暗示认可、合作或官方关系；
+- 以违法、侵权或损害他人系统、数据、账号或网络安全的方式使用本软件。
+
+5. 第三方组件
+
+本软件包含或随附由第三方提供的组件。第三方组件及其许可证列于 NOTICE.md、tools/*-LICENSE.txt 和 tools/*-THIRD-PARTY-NOTICES.txt。该等组件分别受其自身许可证约束；若本协议与第三方许可证冲突，以第三方许可证为准。本协议不限制第三方许可证已授予你的权利。
+
+6. 所有权与知识产权
+
+除第三方组件外，本软件及其所有副本、更新和相关知识产权均归许可方或其权利人所有。获得本软件副本不转移任何所有权、著作权、专利权、商标权或其他知识产权。
+
+7. 更新、支持与停止提供
+
+许可方可自行决定提供更新、修复或新版本，也可停止提供下载、更新或支持。更新或新版本可附带新的许可条款；新的条款仅在向你提供并由你接受后适用于相应版本。除非许可方另有书面承诺，本协议不产生持续维护、技术支持或功能更新义务。
+
+8. 数据与隐私
+
+本软件的数据处理范围、遥测开关、保留期限及诊断上传方式见 DISCLAIMER.md。使用涉及联网功能时，你应同时阅读该文件；就数据处理事项而言，其中的具体说明构成本协议的一部分。
+
+9. 系统修改与使用风险
+
+本软件会修改 Windows 系统设置，实际效果取决于硬件、驱动、操作系统和其他软件。你应在使用前备份重要数据、阅读每项提示并保留还原所需备份。完整风险、还原边界及非官方声明见 DISCLAIMER.md 和 NOTICE.md。
+
+10. 无担保
+
+在适用法律允许的最大范围内，本软件按“现状”和“可用状态”提供，不附带任何明示、默示或法定担保，包括适销性、特定用途适用性、准确性、不侵权、无错误、不中断或性能提升方面的担保。适用法律不允许排除的法定权利不受本条影响。
+
+11. 责任限制
+
+在适用法律允许的最大范围内，许可方不对因取得、安装、使用、无法使用或还原本软件而产生的任何间接、附带、特殊、惩罚性或后果性损失负责，包括数据丢失、利润损失、业务中断、硬件或系统异常及游戏账号损失。适用法律不允许限制或排除的责任不受本条影响。
+
+12. 终止
+
+你可随时停止使用并删除本软件，从而终止本协议。若你严重违反本协议且未在收到通知后的合理期限内纠正，许可方可终止本协议；对于无法纠正的违约，许可可立即终止。终止后，你应停止使用并删除本软件及其副本。第 5、6、10、11 和 13 条在终止后继续有效。
+
+13. 一般条款
+
+本协议连同其引用的文件构成双方就本软件许可事项的完整协议。任何条款被认定无效或不可执行时，其余条款仍然有效，并应在法律允许范围内按最接近原意的方式执行。许可方未立即行使权利不构成放弃。你不得未经许可方书面同意转让本协议或本协议项下权利。
+
+14. 联系方式
+
+许可申请或本协议相关问题，请通过本仓库的 GitHub Issues 联系：
+https://github.com/Leonard8818/-Delta-Force-Graphics-Optimizer/issues
+
+Copyright © Leonard8818. All rights reserved.

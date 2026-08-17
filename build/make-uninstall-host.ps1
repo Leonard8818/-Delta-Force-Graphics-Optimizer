@@ -41,7 +41,7 @@ try {
   $commonAssembly = @"
 using System.Reflection;
 [assembly: AssemblyProduct("DeltaForceBooster")]
-[assembly: AssemblyCompany("DeltaForceBooster 开源项目")]
+[assembly: AssemblyCompany("Leonard8818")]
 [assembly: AssemblyVersion("$ver4")]
 [assembly: AssemblyFileVersion("$ver4")]
 "@
