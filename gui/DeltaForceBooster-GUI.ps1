@@ -1103,6 +1103,28 @@ $xaml = @'
                              VerticalAlignment="Center"/>
                 </Grid>
               </Border>
+              <!-- 列含义表头：第一列与第二列之间可拖动调整列宽（数据行列0 固定宽度与之对齐，
+                   拖动结果由 Sync-OptHeaderColumnWidth 同步到所有数据行） -->
+              <Border Background="{DynamicResource TableHeader}" BorderBrush="{DynamicResource LineSoft}"
+                      BorderThickness="0,0,0,1" Padding="10,3">
+                <Grid x:Name="OptHeaderGrid">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" MinWidth="80"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0" Text="优化项" FontFamily="Consolas" FontSize="10"
+                             Foreground="{DynamicResource TextMut}" VerticalAlignment="Center"/>
+                  <GridSplitter x:Name="OptHeaderSplitter" Grid.Column="1" Width="6"
+                                HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                Background="{DynamicResource LineSoft}"/>
+                  <TextBlock Grid.Column="2" Text="当前状态" FontFamily="Consolas" FontSize="10"
+                             Foreground="{DynamicResource TextMut}" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="3" Text="优化状态/检测状态" FontFamily="Consolas" FontSize="10"
+                             Foreground="{DynamicResource TextMut}" VerticalAlignment="Center"/>
+                </Grid>
+              </Border>
               <StackPanel x:Name="ItemPanel"/>
             </StackPanel>
           </Border>
@@ -1702,7 +1724,7 @@ $window.Resources.MergedDictionaries.Add($script:ThemeRes)
 $ui = @{}
 foreach ($n in 'TitleBar','MinBtn','CloseBtn','UpdateBtn','NoticeBtn','NoticeText','NoticeBadge','NoticeBadgeTxt','ThemeBtn','ScanState','MetricsGrid','HwGrid','GameText','BrowseBtn','CountText',
                'SelAllChk',
-               'ItemPanel','RiskyGroup','RiskyPanel','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn',
+               'ItemPanel','RiskyGroup','RiskyPanel','OptHeaderGrid','OptHeaderSplitter','ApplyBtn','RestoreBtn','RefreshBtn','GuideBtn','CheckUpdBtn',
                'InlineRestorePanel','InlineRestoreItemsPanel','InlineRestoreEmptyText',
                'InlineRestoreLegacyNotice','InlineRestoreLegacyText','InlineRestoreSelectedText','InlineRestoreAllSummary',
                'InlineRestoreSelectAllBtn','InlineRestoreClearBtn','InlineRestoreSelectedBtn','InlineRestoreAllBtn','InlineRestoreCloseBtn',
@@ -2795,9 +2817,10 @@ function New-ItemRow($Item, $State, [bool]$Last) {
   }
 
   $g = New-Object Windows.Controls.Grid
-  foreach ($w in 'Auto', '*', 'Auto') {
+  foreach ($w in '220', '*', 'Auto') {
     $c = New-Object Windows.Controls.ColumnDefinition
     $c.Width = [Windows.GridLength]::Auto
+    if ($w -eq '220') { $c.Width = New-Object Windows.GridLength 220 }
     if ($w -eq '*') { $c.Width = New-Object Windows.GridLength 1, 'Star' }
     $g.ColumnDefinitions.Add($c) | Out-Null
   }
@@ -2856,6 +2879,13 @@ function New-ItemRow($Item, $State, [bool]$Last) {
   $detail = New-Text $State.Current $script:C.TextMut 11 -Mono
   $detail.Margin = New-Object Windows.Thickness 12, 0, 12, 0
   $detail.TextTrimming = 'CharacterEllipsis'
+  # 当前状态被省略号截断时，悬浮弹出完整文本（多底层设置以「；」连接）
+  $detailTip = New-Object Windows.Controls.TextBlock
+  $detailTip.Text = "$($State.Current)"
+  $detailTip.MaxWidth = 320
+  $detailTip.TextWrapping = 'Wrap'
+  $detailTip.Foreground = New-Brush $script:C.TextPri
+  $detail.ToolTip = $detailTip
   [Windows.Controls.Grid]::SetColumn($detail, 1)
   $g.Children.Add($detail) | Out-Null
 
@@ -8699,6 +8729,16 @@ function Show-DetectedUpdateDialog {
     $script:UpdateDialogOpen = $false
   }
 }
+
+# 表头分割线拖动结束后，把第一列新宽度同步到所有数据行（含 RiskyPanel）
+function Sync-OptHeaderColumnWidth([double]$w) {
+  foreach ($row in (@($ui.ItemPanel.Children) + @($ui.RiskyPanel.Children))) {
+    if ($row.Child -is [Windows.Controls.Grid]) {
+      $row.Child.ColumnDefinitions[0].Width = New-Object Windows.GridLength $w
+    }
+  }
+}
+if ($ui.OptHeaderSplitter) { $ui.OptHeaderSplitter.Add_DragCompleted({ Sync-OptHeaderColumnWidth $ui.OptHeaderGrid.ColumnDefinitions[0].ActualWidth }) }
 
 function Update-ItemList {
   $ui.ItemPanel.Children.Clear()
